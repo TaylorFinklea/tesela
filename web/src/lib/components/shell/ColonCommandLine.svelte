@@ -106,6 +106,8 @@
       error = `unknown verb: :${verb}`;
       return;
     }
+    // Most verbs operate on the focused pane — restore that focus first.
+    restoreFocus();
     closeColonMode();
     try {
       await cmd.run(arg, ctx);
@@ -157,8 +159,8 @@
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
+      restoreFocus();
       closeColonMode();
-      requestAnimationFrame(() => restoreFocus());
       return;
     }
     if (e.key === "Enter") {
