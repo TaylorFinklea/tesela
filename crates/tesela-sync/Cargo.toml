@@ -52,6 +52,12 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# Recovery-phrase encoding (`crypto::recovery`, tesela-ra7 P0): BIP39
+# mnemonic <-> the 32-byte GroupKey. Maintained rust-bitcoin crate;
+# default features (English wordlist only) are all we need since we
+# supply our own entropy (the GroupKey) rather than the crate's RNG.
+bip39.workspace = true
+
 # HTTP client for `transport::relay::RelayClient`. JSON-only feature
 # set keeps the binary smaller; rustls so we don't pull openssl.
 reqwest.workspace = true

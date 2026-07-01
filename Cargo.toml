@@ -73,6 +73,7 @@ base64 = "0.22"
 if-addrs = "0.13"
 chacha20poly1305 = "0.10"
 uniffi = "0.31"
+bip39 = "2"
 
 # Testing + benchmarking
 tempfile = "3"
