@@ -4079,6 +4079,47 @@ public func presenceWsHeaders(groupKey: Data, groupId: Data, deviceId: Data) -> 
 })
 }
 /**
+ * Recover group membership from a 24-word recovery phrase alone
+ * (`tesela-ra7` P0 step 3a): phrase -> `GroupKey` -> relay discovery
+ * -> a relay-only pairing code (empty server `url`, `relay_url` set)
+ * carrying the recovered `group_id` + `group_key`. Callers feed the
+ * returned string straight into the existing relay-pairing-code
+ * adoption path (iOS: `RelayTicker.cachePairingCode` + `.relay`
+ * mode) — recovery does NOT adopt group identity directly here.
+ *
+ * Errors: `FfiSyncError::Other` for an invalid phrase (bad word
+ * count / non-wordlist word / bad checksum), a relay/network
+ * failure, or the distinct "recovery phrase not found on this
+ * relay" when the phrase's group never published its discovery
+ * handle. Never includes phrase or key bytes in the error message.
+ */
+public func recoverPairingFromPhrase(relayUrl: String, phrase: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_func_recover_pairing_from_phrase(FfiConverterString.lower(relayUrl),FfiConverterString.lower(phrase)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+/**
+ * Inverse of [`recover_pairing_from_phrase`]: decode a pairing
+ * code's group key back into its 24-word recovery phrase, for "Show
+ * recovery phrase" screens.
+ */
+public func recoveryPhraseFromPairingCode(code: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiSyncError_lift) {
+    uniffi_tesela_sync_ffi_fn_func_recovery_phrase_from_pairing_code(
+        FfiConverterString.lower(code),$0
+    )
+})
+}
+/**
  * Sync op-format version stamped onto every locally produced op.
  * Mirrors `tesela_sync::SYNC_SCHEMA_VERSION` so the Swift layer can
  * surface "version mismatch with desktop" before the engine does.
@@ -4134,6 +4175,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_presence_ws_headers() != 31238) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_recover_pairing_from_phrase() != 8511) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_recovery_phrase_from_pairing_code() != 42672) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_sync_schema_version() != 23021) {

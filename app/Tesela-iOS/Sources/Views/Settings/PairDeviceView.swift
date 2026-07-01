@@ -22,7 +22,7 @@ struct PairDeviceView: View {
 
     /// Fired with the inviter's display name (from `PairingCodeRecord
     /// .displayName`) the moment a pair succeeds via either the QR-scan
-    /// or short-code path. `nil` everywhere except the onboarding flow,
+    /// or recovery-phrase path. `nil` everywhere except the onboarding flow,
     /// which is the only caller that wires this up — both Settings call
     /// sites (`SettingsView`, `GrSettingsView`) leave it at its default,
     /// so they see no behavior change.
@@ -100,27 +100,27 @@ struct PairDeviceView: View {
         }
         .sheet(isPresented: $showTypedCode) {
             NavigationStack {
-                PairWithShortCodeView(backend: backend, mosaic: mosaic, registry: registry, onPaired: onPaired)
+                EnterRecoveryPhraseView(backend: backend, mosaic: mosaic, registry: registry, onPaired: onPaired)
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
     }
 
-    // ── Typed-code card (join by typing the 6 digits) ───────────────────
+    // ── Typed-code card (join by typing the 24-word recovery phrase) ────
 
     private var typedCodeCard: some View {
         Button {
             showTypedCode = true
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: "keyboard")
+                Image(systemName: "key")
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(theme.accentPrimary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Type a 6-character code")
+                    Text("Enter recovery phrase")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(theme.fgDefault)
-                    Text("Read the short code from the other device's pairing screen.")
+                    Text("Type the 24-word phrase from another device.")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(theme.fgFaint)
                 }

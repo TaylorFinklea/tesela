@@ -98,6 +98,11 @@ struct SettingsView: View {
                     } label: {
                         LabeledContent("Pair a new device", value: "")
                     }
+                    NavigationLink {
+                        ShowRecoveryPhraseView()
+                    } label: {
+                        LabeledContent("Show recovery phrase", value: "")
+                    }
                 }
 
                 // Bridges (cross-app integrations only — voice has its
