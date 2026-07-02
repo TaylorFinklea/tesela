@@ -46,7 +46,9 @@
   let highlightedIdx = $state(0);
 
   // The context-filtered registry of verbs, computed once per open.
-  const allCommands = $derived.by(() => (open ? commandRegistry.availableOn('colon', ctx) : []));
+  const allCommands = $derived.by(() =>
+    open ? commandRegistry.availableOn('colon', ctx, keybindings.snapshot()) : [],
+  );
 
   type Row = {
     verb: string;

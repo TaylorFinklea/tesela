@@ -445,6 +445,7 @@
   import { detectTaskTokens, resolveDetectSpec, type DetectConfig } from "$lib/task-tokens";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { commandRegistry, type CommandContext } from "$lib/command-registry.svelte";
+  import * as keybindings from "$lib/stores/keybindings.svelte";
   import type { SlashContext } from "$lib/editor/slash-context";
   import { planEnterSplit } from "$lib/editor/enter-split";
   import "$lib/editor/commands/heading";
@@ -1421,7 +1422,7 @@
     const baseCtx = buildSlashCommandContext(editor);
 
     const verbLeaves: ChordNode[] = commandRegistry
-      .availableOn('slash', baseCtx)
+      .availableOn('slash', baseCtx, keybindings.snapshot())
       .filter((cmd) => cmd.slashKey)
       .map((cmd) => ({
         key: cmd.slashKey!,

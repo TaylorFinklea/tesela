@@ -12,6 +12,7 @@
 import {
   commandRegistry,
   effectiveChord,
+  isHiddenOn,
   type Command,
   type CommandContext,
 } from "../command-registry.svelte.ts";
@@ -76,7 +77,28 @@ function leafAction(leaf: Command, ctx?: CommandContext): () => void {
   return () => void leaf.run(undefined, ctx);
 }
 
-function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext): ChordNode[] {
+/**
+ * Resolve a bucket's label at `path` (the chord keys from the root down to
+ * and including this bucket's own key): a user override
+ * (`keybindings.getGroupLabel`, tesela-cmdd.4's "leader-tree regroup") wins
+ * first, then the compiled-in `CHORD_GROUP_LABELS`, then a joined-children
+ * fallback.
+ */
+function groupLabel(path: string[], childLabels: string[]): string {
+  const key = path[path.length - 1];
+  return (
+    keybindings.getGroupLabel(path.join(" ")) ??
+    CHORD_GROUP_LABELS[key] ??
+    childLabels.join(" / ")
+  );
+}
+
+function buildChordTree(
+  commands: Command[],
+  depth: number,
+  ctx?: CommandContext,
+  path: string[] = [],
+): ChordNode[] {
   const overrides = keybindings.snapshot();
   const groups = new Map<string, Command[]>();
   for (const cmd of commands) {
@@ -91,6 +113,7 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
   for (const [key, group] of groups) {
     const leaf = group.find((cmd) => effectiveChord(cmd, overrides)!.length === depth + 1);
     const branches = group.filter((cmd) => effectiveChord(cmd, overrides)!.length > depth + 1);
+    const childPath = [...path, key];
 
     if (leaf && branches.length === 0) {
       nodes.push({
@@ -106,20 +129,23 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
         label: leaf.label,
         action: leafAction(leaf, ctx),
       });
-      const children = buildChordTree(branches, depth + 1, ctx);
+      const children = buildChordTree(branches, depth + 1, ctx, childPath);
       if (children.length > 0) {
         nodes.push({
           key,
-          label: `${leaf.label}…`,
+          label: keybindings.getGroupLabel(childPath.join(" ")) ?? `${leaf.label}…`,
           children,
         });
       }
     } else {
-      const children = buildChordTree(branches, depth + 1, ctx);
+      const children = buildChordTree(branches, depth + 1, ctx, childPath);
       if (children.length > 0) {
         nodes.push({
           key,
-          label: CHORD_GROUP_LABELS[key] ?? children.map((c) => c.label).join(" / "),
+          label: groupLabel(
+            childPath,
+            children.map((c) => c.label),
+          ),
           children,
         });
       }
@@ -134,11 +160,12 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
 /** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
   const overrides = keybindings.snapshot();
-  const commands = (ctx ? commandRegistry.availableOn('leader', ctx) : commandRegistry.all()).filter(
-    (cmd) => {
-      const chord = effectiveChord(cmd, overrides);
-      return chord && chord.length > 0;
-    },
-  );
+  const commands = (
+    ctx ? commandRegistry.availableOn('leader', ctx, overrides) : commandRegistry.all()
+  ).filter((cmd) => {
+    if (!ctx && isHiddenOn(cmd, 'leader', overrides)) return false;
+    const chord = effectiveChord(cmd, overrides);
+    return chord && chord.length > 0;
+  });
   return buildChordTree(commands, 0, ctx);
 }

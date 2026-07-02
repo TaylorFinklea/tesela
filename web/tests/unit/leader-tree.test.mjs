@@ -21,6 +21,7 @@ globalThis.localStorage = localStorageMock;
 
 const { commandRegistry } = await import("../../src/lib/command-registry.svelte.ts");
 const { getLeaderTree } = await import("../../src/lib/v5/leader-tree.svelte.ts");
+const keybindings = await import("../../src/lib/stores/keybindings.svelte.ts");
 
 function reg(id, chord, label) {
   commandRegistry.register({
@@ -188,4 +189,73 @@ test("getLeaderTree siblings always have a unique render key (key+label) — ove
     for (const n of nodes) if (n.children) walk(n.children);
   };
   walk(getLeaderTree());
+});
+
+// ── user config: group-label + hide-per-surface overrides (tesela-cmdd.4) ──
+
+test("a user group-label override replaces the compiled-in bucket label", () => {
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("daily", ["g", "d"], "Today's daily note");
+  keybindings.setGroupLabel("g", "Jump around…");
+  const g = getLeaderTree().find((n) => n.key === "g");
+  assert.ok(g);
+  assert.equal(g.label, "Jump around…");
+  keybindings.resetAll();
+});
+
+test("a group-label override is scoped to its own chord-path prefix, not other buckets", () => {
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("daily", ["g", "d"], "Today's daily note");
+  reg("vsplit", ["w", "v"], "Split vertically");
+  keybindings.setGroupLabel("g", "Jump around…");
+  const tree = getLeaderTree();
+  assert.equal(tree.find((n) => n.key === "g").label, "Jump around…");
+  assert.equal(tree.find((n) => n.key === "w").label, "windows…"); // untouched
+  keybindings.resetAll();
+});
+
+test("a nested group-label override applies at its own depth (path-keyed, not just top-level key)", () => {
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("general", [",", "g"], "General");
+  reg("devices", [",", "d"], "Devices");
+  keybindings.setGroupLabel(",", "Settings…");
+  const bucket = getLeaderTree().find((n) => n.key === ",");
+  assert.equal(bucket.label, "Settings…");
+  keybindings.resetAll();
+});
+
+test("resetGroupLabel restores the compiled-in label", () => {
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("daily", ["g", "d"], "Today's daily note");
+  keybindings.setGroupLabel("g", "Custom");
+  assert.equal(getLeaderTree().find((n) => n.key === "g").label, "Custom");
+  keybindings.resetGroupLabel("g");
+  assert.equal(getLeaderTree().find((n) => n.key === "g").label, "go to…");
+  keybindings.resetAll();
+});
+
+test("a command hidden on the leader surface (no ctx) is excluded from the tree", () => {
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("daily", ["g", "d"], "Today's daily note");
+  reg("graph", ["g", "g"], "Fullscreen graph");
+  keybindings.setHidden("daily", ["leader"]);
+  const g = getLeaderTree().find((n) => n.key === "g");
+  // "daily" hidden leaves only "graph" under g — a single-child bucket
+  // collapses its own g/d slot away, so g's only remaining leaf is "graph".
+  assert.ok(g);
+  const leaves = [];
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      if (n.action) leaves.push(n.key);
+      if (n.children) walk(n.children);
+    }
+  };
+  walk([g]);
+  assert.deepEqual(leaves, ["g"]); // graph's leaf key within the g bucket
+  keybindings.resetAll();
 });

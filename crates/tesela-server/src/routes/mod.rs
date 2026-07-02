@@ -3,6 +3,7 @@ mod calendar;
 mod commands;
 mod data_ops;
 mod history;
+mod keymap;
 mod notes;
 pub mod peer_sync;
 mod relay;
@@ -130,6 +131,14 @@ pub fn build(state: AppState) -> Router {
         // shortcut/chord/surfaces/keywords/args-shape, no closures), embedded
         // from the checked-in web/src/lib/command-manifest.json.
         .route("/commands", get(commands::list_commands))
+        // tesela-cmdd.4 — keybinding + leader-tree user config over stable
+        // command ids (rebinds/hides/group-label overrides), server-
+        // persisted like preferences so it survives reload on a second
+        // browser hitting this same server.
+        .route(
+            "/keymap-config",
+            get(keymap::get_keymap_config).put(keymap::put_keymap_config),
+        )
         // Phase 13 — backup/export/import management (drives the web Settings UI)
         .route(
             "/backups",

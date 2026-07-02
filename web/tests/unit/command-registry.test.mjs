@@ -634,6 +634,33 @@ test("availableOn respects explicit surfaces (authoritative)", () => {
   assert.deepEqual(commandRegistry.availableOn("palette", {}).map((c) => c.id), []);
 });
 
+// ── isHiddenOn / availableOn overrides (tesela-cmdd.4 hide-per-surface) ────
+
+test("isHiddenOn is false with no overrides and false for an unlisted surface", () => {
+  const { isHiddenOn } = mod;
+  const cmd = { id: "x", label: "X", glyph: "x", category: "navigate", keywords: [], run: () => {} };
+  assert.equal(isHiddenOn(cmd, "leader", {}), false);
+  assert.equal(isHiddenOn(cmd, "leader", { x: { hidden: ["palette"] } }), false);
+  assert.equal(isHiddenOn(cmd, "palette", { x: { hidden: ["palette"] } }), true);
+});
+
+test("availableOn excludes a command hidden on that surface via overrides, but not other surfaces", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "hideme", label: "Hide me", glyph: "h", category: "navigate",
+    chord: ["h", "m"], keywords: [], run: () => {},
+  });
+  const overrides = { hideme: { hidden: ["leader"] } };
+  assert.deepEqual(commandRegistry.availableOn("leader", {}, overrides).map((c) => c.id), []);
+  // palette derivation doesn't require a chord, so it's still visible there.
+  assert.deepEqual(
+    commandRegistry.availableOn("palette", {}, overrides).map((c) => c.id),
+    ["hideme"],
+  );
+  // No overrides passed (default {}) → visible everywhere as before.
+  assert.deepEqual(commandRegistry.availableOn("leader", {}).map((c) => c.id), ["hideme"]);
+});
+
 test("availableOn still honors when() and editor gate from available()", () => {
   commandRegistry._reset();
   commandRegistry.register({

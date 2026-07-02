@@ -13,6 +13,7 @@ import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
 import type { PropertyDef } from "$lib/types/PropertyDef";
+import type { KeymapConfig } from "$lib/stores/keybindings.svelte";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
 import { buildUpdateNoteBody } from "$lib/api-request-bodies";
@@ -423,6 +424,17 @@ export const api = {
   switchMosaic: (path: string) =>
     post<{ config_path: string; default_mosaic: string }>("/mosaics/switch", { path }),
   restartServer: () => post<{ respawn_used: boolean }>("/server/restart", {}),
+
+  // Keybinding + leader-tree user config (tesela-cmdd.4). Server-persisted
+  // (mirrors backup-config/relay-config's GET/PUT-to-file idiom) so a
+  // rebind or leader-tree regroup survives reload on a second device
+  // hitting the same tesela-server. The server treats the body as opaque
+  // JSON — validation (conflicts, reserved keys) is client-only via
+  // `checkRebind`, which needs the live command registry the server
+  // doesn't have.
+  getKeymapConfig: () => get<KeymapConfig>("/keymap-config"),
+  putKeymapConfig: (config: KeymapConfig) =>
+    put<KeymapConfig>("/keymap-config", config),
 };
 
 /** One saved view in the synced views registry. Mirrors the Rust

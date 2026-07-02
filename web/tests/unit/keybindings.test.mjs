@@ -223,4 +223,124 @@ describe("keybindings store", () => {
       assert.deepEqual(snap, {});
     });
   });
+
+  describe("setHidden / isHidden", () => {
+    it("hides a command on the given surfaces", () => {
+      keybindings.setHidden("cmd1", ["palette", "colon"]);
+      assert.equal(keybindings.isHidden("cmd1", "palette"), true);
+      assert.equal(keybindings.isHidden("cmd1", "colon"), true);
+      assert.equal(keybindings.isHidden("cmd1", "leader"), false);
+    });
+
+    it("is false for a command with no override", () => {
+      assert.equal(keybindings.isHidden("unknown-cmd", "leader"), false);
+    });
+
+    it("preserves shortcut/chord when setting hidden", () => {
+      keybindings.setShortcut("cmd1", "⌘P");
+      keybindings.setChord("cmd1", ["g", "p"]);
+      keybindings.setHidden("cmd1", ["slash"]);
+      assert.deepEqual(keybindings.get("cmd1"), {
+        shortcut: "⌘P",
+        chord: ["g", "p"],
+        hidden: ["slash"],
+      });
+    });
+
+    it("persists to localStorage", () => {
+      keybindings.setHidden("cmd1", ["leader"]);
+      const stored = JSON.parse(localStorageMock.getItem("tesela:keybindings"));
+      assert.deepEqual(stored, { cmd1: { hidden: ["leader"] } });
+    });
+
+    it("an empty array clears hidden-ness on every surface", () => {
+      keybindings.setHidden("cmd1", ["leader"]);
+      keybindings.setHidden("cmd1", []);
+      assert.equal(keybindings.isHidden("cmd1", "leader"), false);
+    });
+  });
+
+  describe("leader-tree group-label overrides", () => {
+    it("getGroupLabel is undefined until set", () => {
+      assert.equal(keybindings.getGroupLabel("b"), undefined);
+    });
+
+    it("setGroupLabel / getGroupLabel round-trip, keyed by chord-path prefix", () => {
+      keybindings.setGroupLabel("b", "My Blocks");
+      keybindings.setGroupLabel("g d", "Daily nav");
+      assert.equal(keybindings.getGroupLabel("b"), "My Blocks");
+      assert.equal(keybindings.getGroupLabel("g d"), "Daily nav");
+    });
+
+    it("persists to its own localStorage key (does not touch overrides)", () => {
+      keybindings.setShortcut("cmd1", "⌘Q");
+      keybindings.setGroupLabel("b", "My Blocks");
+      const overridesStored = JSON.parse(localStorageMock.getItem("tesela:keybindings"));
+      assert.deepEqual(overridesStored, { cmd1: { shortcut: "⌘Q" } });
+      const labelsStored = JSON.parse(localStorageMock.getItem("tesela:leader-group-labels"));
+      assert.deepEqual(labelsStored, { b: "My Blocks" });
+    });
+
+    it("resetGroupLabel removes a single override", () => {
+      keybindings.setGroupLabel("b", "My Blocks");
+      keybindings.setGroupLabel("g", "Jump to…");
+      keybindings.resetGroupLabel("b");
+      assert.equal(keybindings.getGroupLabel("b"), undefined);
+      assert.equal(keybindings.getGroupLabel("g"), "Jump to…");
+    });
+
+    it("groupLabelsSnapshot returns a plain object copy", () => {
+      keybindings.setGroupLabel("b", "My Blocks");
+      assert.deepEqual(keybindings.groupLabelsSnapshot(), { b: "My Blocks" });
+    });
+
+    it("resetAll also clears group labels", () => {
+      keybindings.setGroupLabel("b", "My Blocks");
+      keybindings.resetAll();
+      assert.equal(keybindings.getGroupLabel("b"), undefined);
+      assert.equal(localStorageMock.getItem("tesela:leader-group-labels"), null);
+    });
+  });
+
+  describe("server persistence (tesela-cmdd.4)", () => {
+    it("wholeConfig bundles overrides + group_labels in the wire shape", () => {
+      keybindings.setShortcut("cmd1", "⌘R");
+      keybindings.setGroupLabel("b", "My Blocks");
+      assert.deepEqual(keybindings.wholeConfig(), {
+        overrides: { cmd1: { shortcut: "⌘R" } },
+        group_labels: { b: "My Blocks" },
+      });
+    });
+
+    it("hydrate replaces local state from a server config and updates localStorage", () => {
+      keybindings.setShortcut("stale", "⌘S");
+      keybindings.hydrate({
+        overrides: { fresh: { chord: ["g", "f"] } },
+        group_labels: { g: "Go to…" },
+      });
+      assert.equal(keybindings.get("stale"), undefined);
+      assert.deepEqual(keybindings.get("fresh"), { chord: ["g", "f"] });
+      assert.equal(keybindings.getGroupLabel("g"), "Go to…");
+      assert.deepEqual(
+        JSON.parse(localStorageMock.getItem("tesela:keybindings")),
+        { fresh: { chord: ["g", "f"] } },
+      );
+    });
+
+    it("hydrate tolerates a missing overrides/group_labels field", () => {
+      keybindings.hydrate({});
+      assert.deepEqual(keybindings.snapshot(), {});
+      assert.deepEqual(keybindings.groupLabelsSnapshot(), {});
+    });
+
+    it("setSyncHook fires on local mutations but not from hydrate", () => {
+      let calls = 0;
+      keybindings.setSyncHook(() => { calls++; });
+      keybindings.setShortcut("cmd1", "⌘T");
+      assert.equal(calls, 1);
+      keybindings.hydrate({ overrides: {}, group_labels: {} });
+      assert.equal(calls, 1, "hydrate must not re-trigger the push hook");
+      keybindings.setSyncHook(null);
+    });
+  });
 });

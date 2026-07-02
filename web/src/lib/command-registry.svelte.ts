@@ -154,8 +154,17 @@ class CommandRegistry {
     });
   }
 
-  availableOn(surface: Surface, ctx: CommandContext): RegisteredCommand[] {
-    return this.available(ctx).filter((cmd) => surfacesFor(cmd).has(surface));
+  /** `overrides` optionally hides a command from `surface` per-command
+   *  (tesela-cmdd.4 user config). Defaults to `{}` (nothing hidden) so
+   *  existing callers that don't pass overrides are unaffected. */
+  availableOn(
+    surface: Surface,
+    ctx: CommandContext,
+    overrides: Record<string, BindingOverride> = {},
+  ): RegisteredCommand[] {
+    return this.available(ctx).filter(
+      (cmd) => surfacesFor(cmd).has(surface) && !isHiddenOn(cmd, surface, overrides),
+    );
   }
 
   findByVerb(verb: string): RegisteredCommand | undefined {
@@ -247,6 +256,9 @@ export const BROWSER_RESERVED_KEYS = new Set([
 export type BindingOverride = {
   shortcut?: string | null;
   chord?: string[] | null;
+  /** Surfaces this command is hidden from (tesela-cmdd.4). Absent/empty =
+   *  hidden nowhere. */
+  hidden?: Surface[];
 };
 
 /**
@@ -279,6 +291,20 @@ export function effectiveChord(
     return override.chord ?? undefined;
   }
   return cmd.chord;
+}
+
+/**
+ * True when the user config has hidden `cmd` from `surface` (tesela-cmdd.4).
+ * Independent of `surfacesFor` — a hidden command still HAS the surface in
+ * its natural visibility set, it's just filtered out of that surface's
+ * listing (`availableOn`) by user override.
+ */
+export function isHiddenOn(
+  cmd: Command | RegisteredCommand,
+  surface: Surface,
+  overrides: Record<string, BindingOverride>
+): boolean {
+  return !!overrides[cmd.id]?.hidden?.includes(surface);
 }
 
 export function buildKeymapIndex(

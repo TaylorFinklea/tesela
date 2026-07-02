@@ -41,6 +41,7 @@
   import { api } from "$lib/api-client";
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
   import { registerBuiltinCommands } from "$lib/v4/commands";
+  import { initKeymapConfig } from "$lib/stores/keymap-sync";
   import "../app.css";
 
   let { children } = $props();
@@ -191,6 +192,10 @@
     });
 
     void ensureSystemWidgets(api);
+    // tesela-cmdd.4 — user keybinding/leader-tree config lives server-side
+    // (like preferences); hydrate the local store from it so a rebind or
+    // leader-tree regroup made on another device shows up here too.
+    void initKeymapConfig();
   });
 </script>
 

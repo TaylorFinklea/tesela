@@ -64,7 +64,9 @@
 
   const MAX_NOTES_IN_PALETTE = 12;
 
-  const allCommands = $derived(commandRegistry.availableOn('palette', ctx));
+  const allCommands = $derived(
+    commandRegistry.availableOn('palette', ctx, keybindings.snapshot()),
+  );
 
   // Raised 500→PALETTE_NOTES_LIMIT (tesela-sclr.1): a 500 cap silently made
   // notes past #500 unfindable in the palette with no signal anywhere. The
