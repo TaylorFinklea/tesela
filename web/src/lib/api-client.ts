@@ -371,7 +371,6 @@ export const api = {
       if (!r.ok) throw new ApiError(r.status, await r.text(), `${BASE_URL}/sync/relay/config`);
       return (await r.json()) as RelayConfigPutResponse;
     }),
-  syncNow: () => post<SyncNowResponse>("/sync/peer/now", {}),
   syncGetPairingCode: () => get<SyncPairingCode>("/sync/peer/pairing-code"),
   syncPairWithCode: (code: string) =>
     post<SyncPairWithCodeResult>("/sync/peer/pair-code", { code }),

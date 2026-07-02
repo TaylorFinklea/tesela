@@ -18,8 +18,6 @@
   let statuses = $state<SyncPeerStatus[]>([]);
   let discovered = $state<SyncDiscoveredPeer[]>([]);
   let errorMsg = $state<string | null>(null);
-  let syncingAll = $state(false);
-  let lastSyncResult = $state<{ peers: number; appliedTotal: number; errors: string[]; at: number } | null>(null);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
 
   // Manual-pair form. The full pairing-code flow lands in a follow-up; for
@@ -139,30 +137,6 @@
     }
   }
 
-  async function syncAll() {
-    syncingAll = true;
-    try {
-      const r = await api.syncNow();
-      const entries = Object.values(r.peers ?? {});
-      let applied = 0;
-      const errors: string[] = [];
-      for (const e of entries) {
-        if (typeof e.applied === "number") applied += e.applied;
-        if (e.error) errors.push(e.error);
-      }
-      lastSyncResult = {
-        peers: entries.length,
-        appliedTotal: applied,
-        errors,
-        at: Date.now(),
-      };
-      await refresh();
-    } catch (e) {
-      errorMsg = `sync failed: ${e instanceof ApiError ? `${e.status} ${e.body}` : (e as Error).message}`;
-    } finally {
-      syncingAll = false;
-    }
-  }
 
   async function copyHex() {
     if (!device) return;
@@ -339,21 +313,9 @@
 </section>
 
 <section>
-  <div class="flex items-center justify-between mb-3">
-    <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest">
-      Paired
-    </h2>
-    {#if paired.length > 0}
-      <button
-        type="button"
-        class="text-[11px] px-2 py-1 rounded-md border border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50"
-        disabled={syncingAll}
-        onclick={syncAll}
-      >
-        {syncingAll ? "Syncing…" : "Sync now"}
-      </button>
-    {/if}
-  </div>
+  <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
+    Paired
+  </h2>
   {#if paired.length === 0}
     <div class="rounded-md border border-dashed border-border/30 px-3 py-3 text-[11.5px] text-muted-foreground/60">
       No paired devices yet. Pair one from the LAN list above, or enter its address manually below.
@@ -382,16 +344,6 @@
         </div>
       {/each}
     </div>
-  {/if}
-  {#if lastSyncResult}
-    <div class="mt-2 text-[10.5px] text-muted-foreground/60">
-      Last manual sync: {lastSyncResult.peers} peer(s), {lastSyncResult.appliedTotal} op(s) received{#if lastSyncResult.errors.length > 0}, {lastSyncResult.errors.length} error(s){/if}
-    </div>
-    {#if lastSyncResult.errors.length > 0}
-      <div class="mt-1 text-[10.5px] text-red-500/80 break-words">
-        {lastSyncResult.errors[0]}
-      </div>
-    {/if}
   {/if}
 </section>
 

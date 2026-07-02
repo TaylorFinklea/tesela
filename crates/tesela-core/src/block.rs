@@ -1,7 +1,7 @@
 //! Block-level parsing for Tesela notes.
 //!
 //! Parses markdown body text into blocks, extracting tags and properties.
-//! Mirrors the Swift `BlockParser` but runs server-side during indexing.
+//! Runs server-side during indexing.
 
 use crate::regex_cache::{PROPERTY_RE, TAG_RE};
 use serde::Serialize;

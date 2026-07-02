@@ -86,13 +86,12 @@ impl ServeConfig {
 /// real port — handy when binding `127.0.0.1:0` — and build its webview URL
 /// while `serve` keeps running. The standalone bin passes a no-op.
 ///
-/// CAVEAT (resolved in L4 Phase B): the background daemons (sync, relay tick,
-/// reminders, notifications, backup scheduler) are detached `tokio::spawn`
-/// tasks with no shutdown handle — they currently rely on the PROCESS ending
-/// to stop. That's correct for the standalone bin (serve returning ⇒ `main`
-/// returns ⇒ exit) but an in-process embedder that calls `serve` more than once
-/// in a long-lived process would leak them; the Tauri cutover adds a
-/// `CancellationToken` that stops them when `serve` returns.
+/// CAVEAT: the background daemons (sync, relay tick, reminders, notifications,
+/// backup scheduler) are detached `tokio::spawn` tasks with no shutdown handle
+/// — they rely on the PROCESS ending to stop. That's correct for the standalone
+/// bin (serve returning ⇒ `main` returns ⇒ exit) but an in-process embedder
+/// that calls `serve` more than once in a long-lived process would leak them.
+/// Cleanup would require a `CancellationToken` mechanism (not yet implemented).
 pub async fn serve(
     config: ServeConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -353,30 +352,6 @@ pub async fn serve(
     );
     let group_identity = Arc::new(RwLock::new(group_identity));
 
-    // Phase 1.5 — background sync daemon. Every 5 seconds, pull from each
-    // paired peer. Symmetric: both peers pull, so both converge.
-    // Skipped in the desktop embed (TESELA_DISABLE_PEER_SYNC) — a loopback node
-    // must not also participate as a LAN peer alongside a standalone server.
-    if std::env::var_os("TESELA_DISABLE_PEER_SYNC").is_none() {
-        let mosaic_clone = mosaic_for_shutdown.clone();
-        let engine_clone = Arc::clone(&sync_engine);
-        let ws_tx_clone = ws_tx.clone();
-        let store_clone = Arc::clone(&store);
-        let index_clone = Arc::clone(&index);
-        let group_identity_clone = Arc::clone(&group_identity);
-        tokio::spawn(async move {
-            sync_daemon_loop(
-                mosaic_clone,
-                engine_clone,
-                ws_tx_clone,
-                store_clone,
-                index_clone,
-                group_identity_clone,
-            )
-            .await;
-        });
-    }
-
     let display_name = device_display_name();
     let public_url = build_public_url(&addr, bound_port);
 
@@ -635,57 +610,6 @@ pub(crate) fn device_display_name() -> String {
     "Tesela device".to_string()
 }
 
-/// Background sync daemon. Every 5 seconds, attempt one pull per known
-/// peer. Errors are logged; the loop continues so a single broken peer
-/// doesn't stop sync for everyone else.
-async fn sync_daemon_loop(
-    mosaic: PathBuf,
-    engine: Arc<dyn tesela_sync::SyncEngine>,
-    ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
-    store: Arc<FsNoteStore>,
-    index: Arc<SqliteIndex>,
-    group_identity: Arc<RwLock<tesela_sync::GroupIdentity>>,
-) {
-    let interval = std::env::var("TESELA_SYNC_INTERVAL_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(5);
-    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    info!(
-        "tesela-sync: daemon started (interval = {}s, device = {})",
-        interval,
-        engine.device().to_hex()
-    );
-    loop {
-        ticker.tick().await;
-        let peers = read_peers_for_daemon(&mosaic).await;
-        // Snapshot the identity once per tick. A concurrent pair-code
-        // adopt will land on the next tick. We avoid holding the read
-        // lock across `await` on the wire (drop before the loop body).
-        let ident = group_identity.read().await.clone();
-        for peer in peers {
-            if let Err(e) = routes::peer_sync::sync_with_peer_minimal(
-                &*engine, &mosaic, &store, &index, &ws_tx, &peer, &ident,
-            )
-            .await
-            {
-                tracing::debug!("sync to {}: {}", peer.url, e);
-            }
-        }
-    }
-}
-
-async fn read_peers_for_daemon(mosaic: &Path) -> Vec<routes::peer_sync::Peer> {
-    let path = mosaic.join(".tesela").join("sync_peers.json");
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => {
-            serde_json::from_slice::<Vec<routes::peer_sync::Peer>>(&bytes).unwrap_or_default()
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
 /// Acquire an exclusive advisory lock on `<mosaic>/.tesela/server.lock`, held
 /// for the process lifetime, so only one tesela-server ever writes a given
 /// mosaic. `flock(LOCK_EX | LOCK_NB)` returns an error if another process holds
@@ -710,12 +634,13 @@ fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
-/// When `TESELA_EXIT_WITH_PARENT` is set (the desktop / Tauri embed sets it),
-/// exit this server promptly if its parent process disappears. The OS reparents
-/// an orphan — its `getppid()` changes (→ launchd / init) — so we poll for that
-/// and then raise `SIGTERM` on ourselves to run the normal graceful shutdown
-/// (drain + backup), hard-exiting as a backstop if that stalls. Without the env
-/// var this is a no-op, so the standalone server is unaffected.
+/// When `TESELA_EXIT_WITH_PARENT` is set (the legacy standalone server sets it
+/// when spawned by the desktop app), exit promptly if the parent process
+/// disappears. The OS reparents an orphan — its `getppid()` changes (→ launchd /
+/// init) — so we poll for that and then raise `SIGTERM` on ourselves to run the
+/// normal graceful shutdown (drain + backup), hard-exiting as a backstop if that
+/// stalls. Without the env var this is a no-op, so the in-process embed is
+/// unaffected.
 pub fn spawn_parent_death_watchdog() {
     if std::env::var_os("TESELA_EXIT_WITH_PARENT").is_none() {
         return;
