@@ -71,17 +71,26 @@ private struct AnyCodingKey: CodingKey {
 // MARK: - Value-type / enums (mirror property-registry.ts:8-93)
 
 /// The declared value-type of a Property page (`value_type:` frontmatter).
+///
+/// The full canonical vocabulary mirrors Rust `property::ValueType`
+/// (`crates/tesela-core/src/property.rs`) — the ONE type list, spelled per
+/// this language's convention (`multi-select` here vs Rust's
+/// `multiselect`). `dateTime`/`node` exist for parity/typed-query use but
+/// aren't yet offered in the web Property-page type picker's `ALL_TYPES` —
+/// that's a separate product decision.
 enum PropertyType: String, Equatable {
     case text
     case number
     case select
     case multiSelect = "multi-select"
     case date
+    case dateTime = "datetime"
     case checkbox
     case url
     case email
     case phone
     case object
+    case node
 
     /// Coerce an arbitrary frontmatter string to a known type, defaulting to
     /// `.text` (mirror of `(c.value_type as PropertyType) || "text"`).
@@ -97,11 +106,13 @@ let PROPERTY_TYPE_LABELS: [PropertyType: String] = [
     .select: "Select",
     .multiSelect: "Multi-select",
     .date: "Date",
+    .dateTime: "Date & time",
     .checkbox: "Checkbox",
     .url: "URL",
     .email: "Email",
     .phone: "Phone",
     .object: "Object",
+    .node: "Node",
 ]
 
 /// Per-type visibility (Anytype/Logseq-DB 3-state). Serializes as the same

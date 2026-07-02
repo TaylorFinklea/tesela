@@ -4,7 +4,17 @@ import type { Visibility } from "./Visibility";
 /**
  * A property definition within a type
  */
-export type PropertyDef = { name: string, value_type: string, values: Array<string> | null, default: string | null, required: boolean, 
+export type PropertyDef = { name: string, 
+/**
+ * The string form of the canonical [`crate::property::ValueType`]
+ * vocabulary (stored as a plain `String` — not the enum itself — so it
+ * round-trips through TOML/JSON/SQLite without an intermediate
+ * serde-untagged dance). There is no second, independently-defined type
+ * vocabulary here: parse via [`crate::property::ValueType::parse`]
+ * (coerce-and-keep — an unrecognized string degrades to `Text`, never
+ * errors), or use [`PropertyDef::parsed_value_type`].
+ */
+value_type: string, values: Array<string> | null, default: string | null, required: boolean, 
 /**
  * Per-type visibility, resolved from the type's `property_overrides`
  * (`show`) or derived from `hide_by_default` when no override exists.

@@ -1313,8 +1313,8 @@ fn compare_typed(a: &str, b: &str, vt: ValueType) -> std::cmp::Ordering {
                 a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
             }
         }
-        // string bucket: Text / Url / Select / MultiSelect / Node — case-folded
-        // string compare, NO numeric promotion.
+        // string bucket: Text / Url / Select / MultiSelect / Node / Email /
+        // Phone / Object — case-folded string compare, NO numeric promotion.
         _ => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
     }
 }

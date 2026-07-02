@@ -5,17 +5,26 @@
 import type { Note } from "$lib/types/Note";
 import type { Visibility } from "$lib/types/Visibility";
 
+// The full canonical vocabulary mirrors Rust `property::ValueType`
+// (`crates/tesela-core/src/property.rs`) — the ONE type list, spelled per
+// this language's convention (`multi-select` here vs Rust's `multiselect`;
+// `valueTypeBucket` in `query-language.ts` maps both spellings onto the same
+// semantic buckets). `datetime`/`node` exist for parity/typed-query use but
+// aren't yet offered in the Property-page type picker (`PropertyTypeConfig
+// .svelte`'s `ALL_TYPES`) — that's a separate product decision.
 export type PropertyType =
   | "text"
   | "number"
   | "select"
   | "multi-select"
   | "date"
+  | "datetime"
   | "checkbox"
   | "url"
   | "email"
   | "phone"
-  | "object";
+  | "object"
+  | "node";
 
 export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   text: "Text",
@@ -23,11 +32,13 @@ export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   select: "Select",
   "multi-select": "Multi-select",
   date: "Date",
+  datetime: "Date & time",
   checkbox: "Checkbox",
   url: "URL",
   email: "Email",
   phone: "Phone",
   object: "Object",
+  node: "Node",
 };
 
 /**

@@ -1,0 +1,150 @@
+{
+  "_contract": [
+    "The ONE source of truth for per-type property-override resolution across the three implementations: Rust (build_overrides/apply_override in db/sqlite.rs, consumed by tests/property_override_conformance.rs), web TS (buildOverrides/applyOverride in src/lib/property-registry.ts, consumed by tests/unit/property-override-conformance.test.mjs), and iOS Swift (PropertyRegistry.buildOverrides/applyOverride, consumed by Tests/PropertyOverrideConformanceTests.swift).",
+    "Locked semantics under test: coerce-and-keep (2026-06-05) and the override merge rules (2026-06-22) — choices REPLACE the base list, hide_choices SUBTRACTs from the (possibly replaced) list, default/show override when present else derive show from hide_by_default. property_overrides.{Prop} rows are FIRST-INSERT-WINS across the extends chain (whole-override object, not per-field); the legacy hidden_{Prop} fold is ADDITIVE across the chain.",
+    "rows: the child→parent-ordered list of tag rows a real extends-chain walk would produce, each { overrides: {PropName: {choices?, default?, show?, hide_choices?}}, hidden: {PropName: [choice, ...]} } — fed verbatim to build_overrides/buildOverrides (Rust re-serializes `overrides` to a JSON string per row internally; TS/Swift consume the object directly).",
+    "property: the property name to resolve (matched case-insensitively against `rows[].overrides` keys, mirroring the real resolver).",
+    "definedInRegistry + base: when true, the property has a global Property-page def — base = { valueType, choices, default, hideByDefault }. When false, `base` is omitted/null and the resolver must build the §3.5c text stub (value_type 'text', choices [], default null) that an override still applies to.",
+    "expect: the resolved { choices, default, show } after apply_override/applyOverride. `show` is always a concrete on_new|on_set|hidden string on this path. Rust's `Option<Vec<String>>` None and TS/Swift's empty array `[]` are the SAME resolved state — both compare against `expect.choices`."
+  ],
+  "cases": [
+    {
+      "name": "task_status_replace_show_on_new_default_todo",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["todo", "doing", "done", "blocked"], "show": "on_new", "default": "todo" } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "in-review", "done", "canceled"], "default": "todo", "hideByDefault": false },
+      "expect": { "choices": ["todo", "doing", "done", "blocked"], "default": "todo", "show": "on_new" }
+    },
+    {
+      "name": "project_status_replace_show_derived_on_new",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["planned", "active", "shipped"] } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "in-review", "done", "canceled"], "default": "todo", "hideByDefault": false },
+      "expect": { "choices": ["planned", "active", "shipped"], "default": "todo", "show": "on_new" }
+    },
+    {
+      "name": "priority_show_on_set_keeps_global_choices",
+      "rows": [
+        { "overrides": { "Priority": { "show": "on_set" } }, "hidden": {} }
+      ],
+      "property": "priority",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["p1", "p2", "p3"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["p1", "p2", "p3"], "default": null, "show": "on_set" }
+    },
+    {
+      "name": "no_override_choices_identical_to_global_show_derived_on_new",
+      "rows": [],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["backlog", "todo", "doing", "done"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "hide_by_default_true_derives_show_hidden_no_override",
+      "rows": [],
+      "property": "secret",
+      "definedInRegistry": true,
+      "base": { "valueType": "text", "choices": [], "default": null, "hideByDefault": true },
+      "expect": { "choices": [], "default": null, "show": "hidden" }
+    },
+    {
+      "name": "replace_then_subtract_from_replaced_list",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["todo", "doing", "done", "blocked"], "hide_choices": ["blocked"] } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["todo", "doing", "done"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "hide_choices_subtracts_from_base_list_without_replace",
+      "rows": [
+        { "overrides": { "Status": { "hide_choices": ["doing"] } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["backlog", "todo", "done"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "legacy_hidden_prop_subtracts_after_replace",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["todo", "doing", "done", "blocked"] } }, "hidden": { "Status": ["done"] } }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["todo", "doing", "blocked"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "child_wins_first_insert_beats_parent",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["x", "y"], "default": "x", "show": "on_set" } }, "hidden": {} },
+        { "overrides": { "Status": { "choices": ["a", "b"], "default": "a", "show": "hidden" } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["x", "y"], "default": "x", "show": "on_set" }
+    },
+    {
+      "name": "legacy_hidden_additive_across_chain",
+      "rows": [
+        { "overrides": { "Status": { "choices": ["a", "b", "c", "d"] } }, "hidden": { "Status": ["a"] } },
+        { "overrides": {}, "hidden": { "Status": ["d"] } }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["b", "c"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "whole_override_first_insert_wins_choices_null_discards_parent",
+      "rows": [
+        { "overrides": { "Status": { "hide_choices": ["backlog"] } }, "hidden": {} },
+        { "overrides": { "Status": { "choices": ["a", "b", "c", "d"] } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["todo", "doing", "done"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "override_on_property_with_no_global_page_applies_to_text_stub",
+      "rows": [
+        { "overrides": { "Phase": { "choices": ["alpha", "beta"], "default": "alpha", "show": "on_set" } }, "hidden": {} }
+      ],
+      "property": "phase",
+      "definedInRegistry": false,
+      "expect": { "choices": ["alpha", "beta"], "default": "alpha", "show": "on_set" }
+    },
+    {
+      "name": "case_insensitive_override_keys",
+      "rows": [
+        { "overrides": { "STATUS": { "choices": ["x"] } }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["x"], "default": null, "show": "on_new" }
+    },
+    {
+      "name": "malformed_non_object_override_is_ignored",
+      "rows": [
+        { "overrides": { "Status": "garbage" }, "hidden": {} }
+      ],
+      "property": "status",
+      "definedInRegistry": true,
+      "base": { "valueType": "select", "choices": ["backlog", "todo", "doing", "done"], "default": null, "hideByDefault": false },
+      "expect": { "choices": ["backlog", "todo", "doing", "done"], "default": null, "show": "on_new" }
+    }
+  ]
+}

@@ -28,8 +28,13 @@ fn db_err(msg: &str, e: sqlx::Error) -> TeselaError {
 ///
 /// `hide_choices` is the new alias for legacy `hidden_{Prop}` — both feed
 /// the same subtract step (§3.3/§5.4).
+///
+/// `pub` (not just crate-visible) so the shared override-resolution
+/// conformance fixture (`tests/property_override_conformance.rs`) can drive
+/// this SAME production merge — mirrors how `query::block_matches_typed` is
+/// `pub` for `tests/query_conformance.rs`.
 #[derive(Debug, Clone, Default)]
-struct PropOverride {
+pub struct PropOverride {
     /// REPLACE the property's choice list for this type's instances.
     choices: Option<Vec<String>>,
     /// Per-type default value.
@@ -84,7 +89,7 @@ fn parse_prop_override(v: &serde_json::Value) -> PropOverride {
 /// `rows` is `(property_overrides_json, hidden_{Prop} pairs)` in the chain
 /// walk order (child first). Each `hidden_{Prop}` legacy key is folded into
 /// the same property's `hide_choices` subtract list.
-fn build_overrides(
+pub fn build_overrides(
     rows: &[(String, Vec<(String, Vec<String>)>)],
 ) -> std::collections::HashMap<String, PropOverride> {
     let mut map: std::collections::HashMap<String, PropOverride> =
@@ -139,7 +144,7 @@ fn legacy_hidden_pairs() -> Vec<(String, Vec<String>)> {
 ///
 /// `hide_by_default` is the property's global flag (from `property_defs`),
 /// used only for the derivation fallback.
-fn apply_override(
+pub fn apply_override(
     def: &mut crate::types::PropertyDef,
     over: Option<&PropOverride>,
     hide_by_default: bool,

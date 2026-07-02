@@ -67,6 +67,13 @@ pub enum Visibility {
 #[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct PropertyDef {
     pub name: String,
+    /// The string form of the canonical [`crate::property::ValueType`]
+    /// vocabulary (stored as a plain `String` — not the enum itself — so it
+    /// round-trips through TOML/JSON/SQLite without an intermediate
+    /// serde-untagged dance). There is no second, independently-defined type
+    /// vocabulary here: parse via [`crate::property::ValueType::parse`]
+    /// (coerce-and-keep — an unrecognized string degrades to `Text`, never
+    /// errors), or use [`PropertyDef::parsed_value_type`].
     #[serde(default = "default_value_type")]
     pub value_type: String,
     #[serde(default)]
@@ -93,11 +100,21 @@ pub struct PropertyDef {
 }
 
 fn default_value_type() -> String {
-    "text".to_string()
+    crate::property::ValueType::Text.as_str().to_string()
 }
 
 fn default_true() -> bool {
     true
+}
+
+impl PropertyDef {
+    /// Parse `value_type` through the canonical [`crate::property::ValueType`]
+    /// vocabulary (coerce-and-keep — an unrecognized string degrades to
+    /// `Text`). The one place `PropertyDef` defers to the typed vocabulary
+    /// rather than treating `value_type` as its own free-form string.
+    pub fn parsed_value_type(&self) -> crate::property::ValueType {
+        crate::property::ValueType::parse(&self.value_type)
+    }
 }
 
 impl Default for PropertyDef {
@@ -167,6 +184,39 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn property_def_default_value_type_matches_canonical_text() {
+        // `default_value_type()` and `PropertyDef::default()` must defer to
+        // `property::ValueType` rather than hardcoding their own "text"
+        // literal — the "one canonical vocabulary" this collapses the
+        // second, untyped PropertyDef into.
+        assert_eq!(
+            default_value_type(),
+            crate::property::ValueType::Text.as_str()
+        );
+        assert_eq!(PropertyDef::default().value_type, "text");
+    }
+
+    #[test]
+    fn property_def_parsed_value_type_defers_to_canonical_vocabulary() {
+        let def = PropertyDef {
+            value_type: "multiselect".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            def.parsed_value_type(),
+            crate::property::ValueType::MultiSelect
+        );
+
+        // Coerce-and-keep: an unrecognized value_type degrades to Text via
+        // the SAME vocabulary `ValueType::parse` uses everywhere else.
+        let bogus = PropertyDef {
+            value_type: "not-a-real-type".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(bogus.parsed_value_type(), crate::property::ValueType::Text);
+    }
 
     #[test]
     fn load_without_types_toml_is_empty() {

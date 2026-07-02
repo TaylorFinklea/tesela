@@ -6,9 +6,21 @@
 //! two replicas with equal state diverge on disk. Coerce-and-keep — never
 //! reject — per the failure policy (CRDT is the source of truth).
 
-/// The canonical value-type vocabulary. Unknown strings degrade to `Text`
-/// (coerce-and-keep: validation is a view, never a gate).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
+use ts_rs::TS;
+
+/// The canonical value-type vocabulary — THE one source of truth for what a
+/// property's `value_type` string may mean, across Rust, web (`PropertyType`
+/// in `property-registry.ts`), and iOS (`PropertyType` in
+/// `PropertyRegistry.swift`). `crate::types::PropertyDef::value_type` stores
+/// this vocabulary's string form (`as_str()`), parsed back via [`parse`] —
+/// there is no second, independently-validated type vocabulary in Rust.
+/// Unknown strings degrade to `Text` (coerce-and-keep: validation is a view,
+/// never a gate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "lowercase")]
 pub enum ValueType {
     Text,
     Number,
@@ -19,6 +31,9 @@ pub enum ValueType {
     Select,
     MultiSelect,
     Node,
+    Email,
+    Phone,
+    Object,
 }
 
 impl ValueType {
@@ -33,6 +48,9 @@ impl ValueType {
             "select" => ValueType::Select,
             "multiselect" => ValueType::MultiSelect,
             "node" => ValueType::Node,
+            "email" => ValueType::Email,
+            "phone" => ValueType::Phone,
+            "object" => ValueType::Object,
             _ => ValueType::Text,
         }
     }
@@ -49,6 +67,9 @@ impl ValueType {
             ValueType::Select => "select",
             ValueType::MultiSelect => "multiselect",
             ValueType::Node => "node",
+            ValueType::Email => "email",
+            ValueType::Phone => "phone",
+            ValueType::Object => "object",
         }
     }
 }
@@ -103,11 +124,19 @@ mod tests {
         assert_eq!(ValueType::parse("multiselect"), ValueType::MultiSelect);
         assert_eq!(ValueType::parse("datetime"), ValueType::DateTime);
         assert_eq!(ValueType::parse("node"), ValueType::Node);
+        assert_eq!(ValueType::parse("email"), ValueType::Email);
+        assert_eq!(ValueType::parse("phone"), ValueType::Phone);
+        assert_eq!(ValueType::parse("object"), ValueType::Object);
     }
 
     #[test]
     fn value_type_degrades_unknown_to_text() {
+        // Coerce-and-keep (locked 2026-06-05): an unrecognized `value_type`
+        // string — including one from a NEWER vocabulary this Rust build
+        // doesn't know about yet — silently degrades to `Text` rather than
+        // erroring, and round-trips through `as_str()` as `"text"`.
         assert_eq!(ValueType::parse("totally-bogus"), ValueType::Text);
+        assert_eq!(ValueType::parse("totally-bogus").as_str(), "text");
     }
 
     #[test]
@@ -122,6 +151,9 @@ mod tests {
             "select",
             "multiselect",
             "node",
+            "email",
+            "phone",
+            "object",
         ] {
             assert_eq!(ValueType::parse(s).as_str(), s);
         }
@@ -171,6 +203,18 @@ mod tests {
         assert_eq!(
             format_scalar(&parse_scalar(ValueType::Select, "doing")),
             "doing"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Email, "a@b.com")),
+            "a@b.com"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Phone, "555-0100")),
+            "555-0100"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Object, "some-note-id")),
+            "some-note-id"
         );
         assert_eq!(
             format_scalar(&parse_scalar(ValueType::Node, "alice")),
