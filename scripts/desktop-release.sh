@@ -21,8 +21,20 @@
 #   DESKTOP_ASC_API_KEY_ID     or ASC_API_KEY_ID
 #   DESKTOP_ASC_API_ISSUER_ID  or ASC_API_ISSUER_ID
 #
+# Auto-update manifest (tesela-ejn.1) — signs the updater artifact that
+# `cargo tauri build` emits (src-tauri/tauri.conf.json bundle.
+# createUpdaterArtifacts=true) and writes dist/desktop/latest.json for the
+# tauri-plugin-updater endpoint (GitHub Releases, see tauri.conf.json
+# plugins.updater.endpoints). Signing key lives in the macOS Keychain
+# (never committed) — see the private-key handling note below the flag
+# parsing. Override via env:
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (win if set)
+#   DESKTOP_UPDATER_TARGET   (default darwin-aarch64; darwin-x86_64 on Intel)
+#   DESKTOP_GH_REPO          (default TaylorFinklea/tesela)
+#   DESKTOP_RELEASE_NOTES    (freeform notes string embedded in latest.json)
+#
 # Run:
-#   scripts/desktop-release.sh                 # build/sign/zip/notarize/staple/zip
+#   scripts/desktop-release.sh                 # build/sign/zip/notarize/staple/zip/manifest
 #   scripts/desktop-release.sh --skip-notarize # plan/build-if-present/sign-if-possible/zip, no notary
 #
 set -euo pipefail
@@ -51,6 +63,27 @@ ASC_KEY_PATH="${DESKTOP_ASC_API_KEY_PATH:-${ASC_API_KEY_PATH:-$DEFAULT_ASC_KEY_P
 ASC_KEY_ID="${DESKTOP_ASC_API_KEY_ID:-${ASC_API_KEY_ID:-J79935N6P6}}"
 ASC_ISSUER="${DESKTOP_ASC_API_ISSUER_ID:-${ASC_API_ISSUER_ID:-fe27785a-1413-46ff-bd82-111de0da024f}}"
 
+# Updater signing key. `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]` win if already
+# exported (e.g. CI secrets); otherwise pull from the macOS Keychain items
+# this repo's `tesela-ejn.1` setup created (`security add-generic-password`,
+# never a file on disk). Missing either just means `cargo tauri build` won't
+# emit updater artifacts — the sign/notarize/zip path is unaffected.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
+  if TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -a "$USER" -s tesela-desktop-updater-key -w 2>/dev/null)"; then
+    export TAURI_SIGNING_PRIVATE_KEY
+  fi
+fi
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && command -v security >/dev/null 2>&1; then
+  if TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -a "$USER" -s tesela-desktop-updater-key-password -w 2>/dev/null)"; then
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  fi
+fi
+UPDATER_TARGET="${DESKTOP_UPDATER_TARGET:-darwin-aarch64}"
+GH_REPO="${DESKTOP_GH_REPO:-TaylorFinklea/tesela}"
+UPDATER_TAR_PATH="${APP_BUNDLE}.tar.gz"
+UPDATER_SIG_PATH="${UPDATER_TAR_PATH}.sig"
+MANIFEST_PATH="$DIST_DIR/latest.json"
+
 SKIP_NOTARIZE=false
 for arg in "$@"; do
   case "$arg" in
@@ -78,6 +111,64 @@ zip_app() {
   echo "    wrote $ZIP_PATH"
 }
 
+# `cargo tauri build` only emits `$APP_BUNDLE.tar.gz` + `.sig` when
+# TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] were set at build time (bundle.
+# createUpdaterArtifacts=true in tauri.conf.json makes it try). This step
+# just packages whatever it produced into dist/desktop/latest.json — it does
+# NOT re-sign or regenerate the tarball, so it's a no-op (with a warning) on
+# any build that ran without the signing env set, including a bare
+# --skip-notarize dry run with no fresh build.
+#
+# NOTE: the tarball is the pre-notarize/pre-staple build artifact (`cargo
+# tauri build` produces it in step 1, before notarization even runs). An
+# app updated from it is still notarized (Apple's servers have the record)
+# but not stapled, so Gatekeeper does one online check on first launch of
+# the updated app instead of reading a stapled ticket offline. Re-tarring +
+# re-signing post-staple to close that gap needs verifying Tauri's exact
+# bundler tar layout against a real signed build — left as a follow-up
+# rather than guessed at here.
+emit_updater_manifest() {
+  echo "==> 6/6  updater manifest (latest.json)"
+  if [[ ! -f "$UPDATER_TAR_PATH" || ! -f "$UPDATER_SIG_PATH" ]]; then
+    warn "no updater artifact at $UPDATER_TAR_PATH (and/or its .sig) — cargo tauri build only" \
+         "writes these when TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] are set at build time; skipping manifest"
+    return 0
+  fi
+  mkdir -p "$DIST_DIR"
+  local tar_dest="$DIST_DIR/$(basename "$UPDATER_TAR_PATH")"
+  cp -f "$UPDATER_TAR_PATH" "$tar_dest"
+  local sig
+  sig="$(cat "$UPDATER_SIG_PATH")"
+  local version
+  version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1)"
+  if [[ -z "$version" ]]; then
+    warn "could not read version from src-tauri/tauri.conf.json; skipping manifest"
+    return 0
+  fi
+  local pub_date
+  pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local asset_name
+  asset_name="$(basename "$tar_dest")"
+  local download_url="https://github.com/${GH_REPO}/releases/download/v${version}/${asset_name}"
+  cat >"$MANIFEST_PATH" <<JSON
+{
+  "version": "${version}",
+  "notes": "${DESKTOP_RELEASE_NOTES:-See the GitHub release notes.}",
+  "pub_date": "${pub_date}",
+  "platforms": {
+    "${UPDATER_TARGET}": {
+      "signature": "${sig}",
+      "url": "${download_url}"
+    }
+  }
+}
+JSON
+  echo "    wrote $MANIFEST_PATH (target=$UPDATER_TARGET, version=$version)"
+  echo "    publish (creates/updates the GitHub release + attaches assets):"
+  echo "      gh release create v${version} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --title v${version} --generate-notes"
+  echo "      # or, if v${version} already exists: gh release upload v${version} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --clobber"
+}
+
 echo "=== Tesela Desktop Release ==="
 echo "    product:      $PRODUCT_NAME"
 echo "    bundle id:    $BUNDLE_ID"
@@ -86,7 +177,7 @@ echo "    zip:          $ZIP_PATH"
 echo "    notarization: $([[ "$SKIP_NOTARIZE" == true ]] && echo skipped || echo enabled)"
 
 APP_AVAILABLE=false
-echo "==> 1/5  Tauri app bundle"
+echo "==> 1/6  Tauri app bundle"
 if [[ -d "$APP_BUNDLE" ]]; then
   echo "    using pre-built app bundle"
   APP_AVAILABLE=true
@@ -111,7 +202,7 @@ if [[ "$APP_AVAILABLE" != true ]]; then
 fi
 
 SIGNED=false
-echo "==> 2/5  codesign hardened runtime"
+echo "==> 2/6  codesign hardened runtime"
 if [[ -z "$SIGN_IDENTITY" ]]; then
   warn "DESKTOP_SIGN_IDENTITY is unset; skipping codesign"
   if codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
@@ -133,8 +224,9 @@ fi
 
 # notarytool submits a ZIP, so create it before submission. If stapling succeeds,
 # the ZIP is refreshed so the final distributable contains the stapled ticket.
-echo "==> 3/5  create distributable ZIP"
+echo "==> 3/6  create distributable ZIP"
 zip_app
+emit_updater_manifest
 
 if [[ "$SKIP_NOTARIZE" == true ]]; then
   echo "==> --skip-notarize: notarytool and stapler skipped"
@@ -166,15 +258,18 @@ if [[ "$NOTARY_READY" != true ]]; then
   exit 0
 fi
 
-echo "==> 4/5  submit ZIP to Apple notary service"
+echo "==> 4/6  submit ZIP to Apple notary service"
 xcrun notarytool submit "$ZIP_PATH" \
   --wait \
   --key "$ASC_KEY_PATH" \
   --key-id "$ASC_KEY_ID" \
   --issuer "$ASC_ISSUER"
 
-echo "==> 5/5  staple ticket and refresh ZIP"
+echo "==> 5/6  staple ticket and refresh ZIP"
 xcrun stapler staple "$APP_BUNDLE"
 zip_app
+# NOT re-run here: the updater tarball/signature/manifest emitted in step 3/6
+# are pre-staple (see emit_updater_manifest's doc comment) — the ZIP above is
+# the only artifact that carries the stapled ticket.
 
 echo "==> done — notarized desktop ZIP is at $ZIP_PATH"

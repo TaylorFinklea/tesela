@@ -16,6 +16,11 @@ serde_json = { workspace = true }
 # spawning a parallel process. The embedded server holds a single-writer
 # flock on the mosaic, so a 2nd process would deadlock on startup (#202).
 tauri-plugin-single-instance = { version = "2", features = [] }
+# Auto-update (tesela-ejn.1): checks the GitHub Releases `latest.json`
+# manifest (see tauri.conf.json plugins.updater) and, if newer, downloads +
+# installs the signed update artifact, then relaunches via the tauri-core
+# `AppHandle::restart()` (no separate process plugin needed for that).
+tauri-plugin-updater = { version = "2", features = [] }
 # L4: the server runs IN-PROCESS via `tesela_server::serve` on our own tokio
 # runtime, instead of being spawned as a child binary. Pulls whisper-rs/objc2
 # into this binary's link (previously linked only into the child).

@@ -23,12 +23,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_updater::UpdaterExt;
 
 use tesela_server::{serve, ServeConfig};
 
@@ -220,6 +222,9 @@ fn run(mode: Mode) {
                 let _ = window.set_focus();
             }
         }))
+        // Auto-update: `AppHandle::restart()` (tauri core, no plugin needed)
+        // is used after an update installs — see `check_and_install_update`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(menu_event)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -234,6 +239,14 @@ fn run(mode: Mode) {
             };
             build_main_window(app, &url)?;
             build_tray(app)?;
+            // Silent startup check: auto-downloads + installs a newer signed
+            // release if the manifest reports one, then restarts into it.
+            // User-triggered checks (View > Check for Updates…) reuse the
+            // same path with `user_initiated: true` for eval feedback.
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                check_and_install_update(update_handle, false).await;
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -270,8 +283,9 @@ fn run(mode: Mode) {
                         "tesela-desktop: stopping embedded server; waiting up to 30s for \
                          graceful shutdown (auto-backup running if enabled)..."
                     );
-                    let _ = handle
-                        .block_on(async { tokio::time::timeout(Duration::from_secs(30), join).await });
+                    let _ = handle.block_on(async {
+                        tokio::time::timeout(Duration::from_secs(30), join).await
+                    });
                 }
             }
         }
@@ -285,7 +299,8 @@ fn start_embedded_server(
     app: &mut tauri::App,
     handle: &tokio::runtime::Handle,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let config = ServeConfig::resolve(resolve_mosaic()).map_err(|e| format!("resolve mosaic: {e}"))?;
+    let config =
+        ServeConfig::resolve(resolve_mosaic()).map_err(|e| format!("resolve mosaic: {e}"))?;
     let (bound_tx, bound_rx) = std::sync::mpsc::channel::<std::net::SocketAddr>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -314,9 +329,11 @@ fn start_embedded_server(
             break addr;
         }
         if join.is_finished() {
-            return Err("the embedded tesela-server failed to start (is another instance \
+            return Err(
+                "the embedded tesela-server failed to start (is another instance \
                         already open on this mosaic?)"
-                .into());
+                    .into(),
+            );
         }
         if Instant::now() >= deadline {
             return Err("the embedded tesela-server did not bind within 20s".into());
@@ -343,14 +360,130 @@ fn menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
             }
         }
+        "check-updates" => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                check_and_install_update(handle, true).await;
+            });
+        }
         _ => {}
+    }
+}
+
+/// Dispatch a `CustomEvent` to the main window's `document`, mirroring the
+/// existing `tesela:open-settings` pattern (the webview loads an external
+/// `/g` URL, not a Tauri-aware frontend, so `eval` is the only bridge). Best-
+/// effort UI hook for the web app to surface update state; `detail` is
+/// JSON-serialized so arbitrary text (e.g. error messages) round-trips safely.
+fn notify_webview(app: &AppHandle, event: &str, detail: serde_json::Value) {
+    if let Some(w) = app.get_webview_window("main") {
+        let detail_json = serde_json::to_string(&detail).unwrap_or_else(|_| "{}".to_string());
+        let script = format!(
+            "document.dispatchEvent(new CustomEvent({event:?}, {{ detail: {detail_json} }}))"
+        );
+        let _ = w.eval(&script);
+    }
+}
+
+/// Check the updater manifest and, if a newer signed release is available,
+/// download + install it and restart into it. `user_initiated` gates the
+/// "checking" / "up to date" eval events (the silent startup check should not
+/// spam the webview when there's nothing to report); failures and an
+/// available/installed update are always logged to stderr either way.
+async fn check_and_install_update(app: AppHandle, user_initiated: bool) {
+    if user_initiated {
+        notify_webview(&app, "tesela:update-checking", serde_json::json!({}));
+    }
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("tesela-desktop: updater unavailable: {e}");
+            if user_initiated {
+                notify_webview(
+                    &app,
+                    "tesela:update-error",
+                    serde_json::json!({ "message": e.to_string() }),
+                );
+            }
+            return;
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            eprintln!(
+                "tesela-desktop: update {} available; downloading…",
+                update.version
+            );
+            notify_webview(
+                &app,
+                "tesela:update-available",
+                serde_json::json!({ "version": update.version }),
+            );
+            let downloaded = Arc::new(AtomicU64::new(0));
+            let downloaded_at_finish = downloaded.clone();
+            let result = update
+                .download_and_install(
+                    move |chunk_len, _content_len| {
+                        downloaded.fetch_add(chunk_len as u64, Ordering::Relaxed);
+                    },
+                    move || {
+                        eprintln!(
+                            "tesela-desktop: update download finished ({} bytes)",
+                            downloaded_at_finish.load(Ordering::Relaxed)
+                        );
+                    },
+                )
+                .await;
+            match result {
+                Ok(()) => {
+                    eprintln!("tesela-desktop: update installed; restarting");
+                    notify_webview(
+                        &app,
+                        "tesela:update-installed",
+                        serde_json::json!({ "version": update.version }),
+                    );
+                    app.restart();
+                }
+                Err(e) => {
+                    eprintln!("tesela-desktop: update install failed: {e}");
+                    notify_webview(
+                        &app,
+                        "tesela:update-error",
+                        serde_json::json!({ "message": e.to_string() }),
+                    );
+                }
+            }
+        }
+        Ok(None) => {
+            eprintln!("tesela-desktop: no update available");
+            if user_initiated {
+                notify_webview(&app, "tesela:update-none", serde_json::json!({}));
+            }
+        }
+        Err(e) => {
+            eprintln!("tesela-desktop: update check failed: {e}");
+            if user_initiated {
+                notify_webview(
+                    &app,
+                    "tesela:update-error",
+                    serde_json::json!({ "message": e.to_string() }),
+                );
+            }
+        }
     }
 }
 
 fn build_main_window(app: &mut tauri::App, url: &str) -> tauri::Result<()> {
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
-    let view = Submenu::with_items(app, "View", true, &[&settings, &reload])?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
+    let view = Submenu::with_items(app, "View", true, &[&settings, &reload, &check_updates])?;
     let menu = Menu::default(app.handle())?;
     menu.append(&view)?;
     app.set_menu(menu)?;
@@ -375,7 +508,11 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
     let tray_menu = Menu::with_items(app, &[&show, &hide, &quit])?;
     TrayIconBuilder::new()
-        .icon(app.default_window_icon().cloned().expect("default window icon"))
+        .icon(
+            app.default_window_icon()
+                .cloned()
+                .expect("default window icon"),
+        )
         .menu(&tray_menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-show" => {
