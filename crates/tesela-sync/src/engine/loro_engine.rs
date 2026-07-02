@@ -348,13 +348,15 @@ fn migrate_in_text_from_env() -> bool {
 /// (ADR-1, decisions.md 2026-07-01).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImportMode {
-    /// Live WS delta. The heal plan is gated on the note being ALREADY resident
-    /// before this apply (the tesela-qql landmine): a not-yet-resident note has
-    /// no local twin to protect, so it raw-imports without a per-block plan. A
-    /// discriminator error logs a warning (the frame still raw-imports).
+    /// Live WS delta. The heal plan is gated on the note ALREADY carrying
+    /// genuine local history before this apply (post-tesela-qql: sampled from
+    /// the doc's `len_changes()` AFTER lazy-load, not in-memory residency —
+    /// see the call site) — a genuinely new note has no local twin to
+    /// protect, so it raw-imports without a per-block plan. A discriminator
+    /// error logs a warning (the frame still raw-imports).
     Delta,
     /// Authoritative catch-up snapshot. The plan is computed whenever the note
-    /// isn't the views registry doc — residency is NOT consulted (a disjoint
+    /// isn't the views registry doc — local state is NOT consulted (a disjoint
     /// device catching up may not have the note resident yet, but its own
     /// authored twins still need the keep-winner resolve). A discriminator error
     /// is silently ignored (no warning).
@@ -538,23 +540,23 @@ impl LoroEngine {
 
     /// Encoded version vector of a note's doc — the relay cursor a peer
     /// sends so we export only updates newer than what it has. None if
-    /// the doc isn't resident. (Phase 4.)
+    /// the note is unknown (never resident and no on-disk snapshot);
+    /// otherwise lazy-loads. (Phase 4.)
     pub async fn doc_version(&self, note_id: [u8; 16]) -> Option<Vec<u8>> {
-        let docs = self.inner.docs.read().await;
-        Some(docs.get(&note_id)?.oplog_vv().encode())
+        Some(self.lazy_load_doc(note_id).await?.oplog_vv().encode())
     }
 
     /// Export a note's Loro updates since the peer's (encoded) version
     /// vector. `since = None` exports full state — a fresh-device
-    /// bootstrap. None if the doc isn't resident or export fails.
-    /// (Phase 4.)
+    /// bootstrap. None if the note is unknown or export fails; otherwise
+    /// lazy-loads. (Phase 4.)
     pub async fn export_doc_update(
         &self,
         note_id: [u8; 16],
         since: Option<&[u8]>,
     ) -> Option<Vec<u8>> {
-        let docs = self.inner.docs.read().await;
-        let doc = docs.get(&note_id)?;
+        let doc = self.lazy_load_doc(note_id).await?;
+        let doc = &doc;
         // First broadcast (no cursor yet): ship a COMPACT snapshot, not the
         // full op history from an empty version vector. `updates(empty)` replays
         // every op ever applied — including content later deleted — so a note
@@ -618,16 +620,30 @@ impl LoroEngine {
         bytes: &[u8],
         mode: ImportMode,
     ) -> SyncResult<ImportOutcome> {
-        // Residency must be sampled BEFORE `doc_for_note_mut` (which CREATES the
-        // doc on a miss). Only the Delta path gates its heal plan on it (the
-        // tesela-qql landmine); the authoritative path never consults residency,
-        // so it doesn't even acquire the read lock.
-        let already_resident = match mode {
-            ImportMode::Delta => self.inner.docs.read().await.contains_key(&note_id),
-            ImportMode::Authoritative => false,
-        };
         let doc = self.doc_for_note_mut(note_id).await;
         let is_views = Self::is_views_doc(&note_id);
+
+        // Sample "does this doc already carry genuine local history" AFTER
+        // `doc_for_note_mut` (which may have just lazy-loaded an on-disk
+        // snapshot for a note that wasn't in-memory resident) but BEFORE
+        // `doc.import` mutates it below. Only the Delta path gates its heal
+        // plan on it; the authoritative path never consults this.
+        //
+        // This replaces the former in-memory-RESIDENCY sample (the
+        // tesela-qql landmine, tesela-engc.5 audit): residency and "has
+        // local state" were equivalent ONLY while `doc_for_note_mut`
+        // unconditionally fabricated an empty doc on every map miss — a
+        // non-resident note was ALWAYS empty. Now that a miss can lazy-load
+        // real disk state, a note can be non-resident-in-memory yet have
+        // genuine local history; gating on residency there would raw-import
+        // an inbound delta with no twin protection and revert real local
+        // edits. `len_changes() == 0` is true for both "genuinely brand new"
+        // and "freshly lazy-loaded from an empty/nonexistent snapshot" —
+        // exactly the cases with nothing local to protect.
+        let has_local_state = match mode {
+            ImportMode::Delta => doc.len_changes() > 0,
+            ImportMode::Authoritative => false,
+        };
 
         // POISON GUARD (2026-06-26): loro 1.12 can PANIC *inside* its richtext
         // apply (`insert_elem_at_entity_index` index-out-of-bounds) on certain
@@ -660,7 +676,7 @@ impl LoroEngine {
         // import without per-block prop protection, never panic — but the Delta
         // path additionally warns.
         let plan_gate = match mode {
-            ImportMode::Delta => already_resident && !is_views,
+            ImportMode::Delta => has_local_state && !is_views,
             ImportMode::Authoritative => !is_views,
         };
         let plan = if plan_gate {
@@ -925,8 +941,7 @@ impl LoroEngine {
         // lock, then drop it before `record_local` (which re-acquires).
         let mut block_ops: Vec<([u8; 16], String, PropOp)> = Vec::new();
         {
-            let docs = self.inner.docs.read().await;
-            let Some(doc) = docs.get(&note_id) else {
+            let Some(doc) = self.lazy_load_doc(note_id).await else {
                 return Ok(());
             };
             let tree = doc.get_tree("blocks");
@@ -1067,8 +1082,7 @@ impl LoroEngine {
     /// splice is applied to reconcile the open editor with the merged text.
     /// `None` for an unknown note/block or an empty block.
     pub async fn read_block_text(&self, note_id: [u8; 16], block_id: [u8; 16]) -> Option<String> {
-        let docs = self.inner.docs.read().await;
-        let doc = docs.get(&note_id)?;
+        let doc = self.lazy_load_doc(note_id).await?;
         let tree = doc.get_tree("blocks");
         let block_hex = hex_id(&block_id);
         let node = find_node_by_block_id(&tree, &block_hex)?;
@@ -1190,7 +1204,23 @@ impl LoroEngine {
     /// returns the same set. This is the relay BROADCAST model (Phase 5):
     /// we emit our deltas and let every receiver import idempotently.
     pub async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
-        let note_ids: Vec<[u8; 16]> = self.inner.docs.read().await.keys().copied().collect();
+        // Residency-independent candidate set (tesela-engc.5 audit: this is a
+        // FULL-MAP walk, not a single KEYED lookup — `doc_version` /
+        // `export_doc_update` below lazy-load on demand, but only for a
+        // note_id this loop actually visits). Union memory-resident docs
+        // (covers the views registry doc, which the always-resident `index`
+        // deliberately excludes) with every note the always-resident index
+        // knows about (covers a note whose doc isn't currently in
+        // `self.inner.docs` — not-yet-loaded today, or evicted once eviction
+        // lands), so an evicted note's un-broadcast local edits are never
+        // silently dropped from a relay tick.
+        let mut note_ids: std::collections::HashSet<[u8; 16]> =
+            self.inner.docs.read().await.keys().copied().collect();
+        for entry in self.index_entries().await {
+            if let Some(id) = parse_note_id_from_hex(&entry.note_id) {
+                note_ids.insert(id);
+            }
+        }
         let mut out = Vec::new();
         for note_id in note_ids {
             let current = match self.doc_version(note_id).await {
@@ -1340,12 +1370,27 @@ impl LoroEngine {
 
         let docs = self.inner.docs.read().await;
 
-        // Prune index entries that have no backing doc, so the rebuild is
-        // a TRUE projection of the loaded docs — not an upsert-merge that
-        // leaves ghost entries (review finding [6]). A doc can be absent
+        // Prune index entries that have no backing doc AT ALL, so the
+        // rebuild is a TRUE projection — not an upsert-merge that leaves
+        // ghost entries (review finding [6]). A doc can be genuinely absent
         // because its snapshot was corrupt/unreadable on load; its index
         // entry must not survive as a phantom note.
-        let live: std::collections::HashSet<String> = docs.keys().map(hex_id).collect();
+        //
+        // "Backing doc" is deliberately checked against ON-DISK snapshots
+        // (when `snapshot_dir` is set), NOT `docs.keys()` alone
+        // (tesela-engc.5 audit, highest-severity unstubbed item): this
+        // function currently only ever runs right after boot's eager
+        // `load_snapshots_from_dir`, where the two sets are identical, but
+        // `docs.keys()` alone would silently prune the index entry of any
+        // note that's merely not memory-resident the instant that stops
+        // being true (a future partial/lazy boot, or an evicted note) —
+        // indistinguishable from "genuinely gone". An in-memory-only engine
+        // (no `snapshot_dir`) has no disk to consult, so memory stays the
+        // live set there.
+        let live: std::collections::HashSet<String> = match self.inner.snapshot_dir.as_ref() {
+            Some(dir) => snapshot_note_ids_on_disk(dir).await,
+            None => docs.keys().map(hex_id).collect(),
+        };
         let notes_map = self.inner.index.get_map("notes");
         let stale: Vec<String> = existing
             .keys()
@@ -1525,10 +1570,9 @@ impl LoroEngine {
         if Self::is_views_doc(&note_id) {
             return None;
         }
-        let docs = self.inner.docs.read().await;
-        let doc = docs.get(&note_id)?;
+        let doc = self.lazy_load_doc(note_id).await?;
         Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
-            doc, None,
+            &doc, None,
         )))
     }
 
@@ -1549,9 +1593,8 @@ impl LoroEngine {
         if Self::is_views_doc(&note_id) {
             return None;
         }
-        let docs = self.inner.docs.read().await;
-        let doc = docs.get(&note_id)?;
-        Some(doc_full_markdown(doc))
+        let doc = self.lazy_load_doc(note_id).await?;
+        Some(doc_full_markdown(&doc))
     }
 
     /// This engine's Loro PeerID, derived deterministically from its
@@ -1577,10 +1620,52 @@ impl LoroEngine {
         let _ = doc.set_peer_id(self.peer_id());
     }
 
+    /// Resolve a note's doc, transparently lazy-loading its `.bin` snapshot
+    /// from `snapshot_dir` into `self.inner.docs` when the map doesn't
+    /// currently hold it — the eviction-ready reload every future `evict()`
+    /// depends on (tesela-qql / tesela-engc.5 residency audit): a note
+    /// dropped from the map by eviction must be indistinguishable from one
+    /// that stayed resident. Returns `None` when the note isn't resident AND
+    /// has no on-disk snapshot (a genuinely unknown note, or an in-memory-only
+    /// engine with no `snapshot_dir`) — never fabricates content.
+    ///
+    /// Double-checks under the write lock (`entry().or_insert`) so a race
+    /// between two callers loading the same note settles on ONE doc
+    /// instance; the loser's freshly-imported doc is simply dropped.
+    async fn lazy_load_doc(&self, note_id: [u8; 16]) -> Option<LoroDoc> {
+        {
+            let docs = self.inner.docs.read().await;
+            if let Some(doc) = docs.get(&note_id) {
+                return Some(doc.clone());
+            }
+        }
+        let dir = self.inner.snapshot_dir.as_ref()?;
+        let path = dir.join(format!("{}.bin", hex_id(&note_id)));
+        let bytes = tokio::fs::read(&path).await.ok()?;
+        let doc = LoroDoc::new();
+        if let Err(e) = doc.import(&bytes) {
+            tracing::warn!(
+                "tesela-sync/loro: lazy-load snapshot {}: {e}",
+                path.display()
+            );
+            return None;
+        }
+        self.set_doc_peer(&doc);
+        let mut docs = self.inner.docs.write().await;
+        Some(docs.entry(note_id).or_insert(doc).clone())
+    }
+
     /// Get-or-create the Loro doc for a given note id, with this engine's
     /// PeerID stamped. Called from `record_local` when a NoteUpsert or
-    /// BlockUpsert lands.
+    /// BlockUpsert lands. Tries [`lazy_load_doc`](Self::lazy_load_doc) first
+    /// — a note whose doc was dropped from memory (future eviction) but whose
+    /// `.bin` survives on disk MUST be reloaded here, not silently recreated
+    /// empty (the tesela-qql landmine): every local-edit path funnels
+    /// through this one entry point.
     async fn doc_for_note_mut(&self, note_id: [u8; 16]) -> LoroDoc {
+        if let Some(doc) = self.lazy_load_doc(note_id).await {
+            return doc;
+        }
         let mut docs = self.inner.docs.write().await;
         docs.entry(note_id)
             .or_insert_with(|| {
@@ -1611,11 +1696,14 @@ impl LoroEngine {
     async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<([u8; 16], LoroDoc, TreeID)> {
         let note_id = *self.inner.block_index.read().await.get(block_id)?;
         let block_hex = hex_id(block_id);
-        let docs = self.inner.docs.read().await;
-        let doc = docs.get(&note_id)?;
+        // The final `docs` step is the one KEYED lookup here that needs
+        // load-on-demand (tesela-engc.5 audit) — `block_index` above is
+        // always-resident by design and already resolves the owning note
+        // for an evicted-but-on-disk block.
+        let doc = self.lazy_load_doc(note_id).await?;
         let tree = doc.get_tree("blocks");
         let node = find_node_by_block_id(&tree, &block_hex)?;
-        Some((note_id, doc.clone(), node))
+        Some((note_id, doc, node))
     }
 
     /// Register every block in a note as owned by it (block_id →
@@ -1915,12 +2003,8 @@ impl LoroEngine {
     /// devices. Empty when the registry doc doesn't exist yet (fresh
     /// device pre-seed / pre-bootstrap).
     pub async fn views_list(&self) -> Vec<crate::engine::ViewRecord> {
-        let doc = {
-            let docs = self.inner.docs.read().await;
-            match docs.get(&VIEWS_DOC_ID) {
-                Some(d) => d.clone(),
-                None => return Vec::new(),
-            }
+        let Some(doc) = self.lazy_load_doc(VIEWS_DOC_ID).await else {
+            return Vec::new();
         };
         let value = doc.get_map("views").get_deep_value();
         let mut out = Vec::new();
@@ -2052,12 +2136,8 @@ impl LoroEngine {
     /// over edits INSIDE the removed container, so both peers converge on
     /// the view being gone.
     pub async fn views_delete(&self, view_id: &str) -> SyncResult<bool> {
-        let doc = {
-            let docs = self.inner.docs.read().await;
-            match docs.get(&VIEWS_DOC_ID) {
-                Some(d) => d.clone(),
-                None => return Ok(false),
-            }
+        let Some(doc) = self.lazy_load_doc(VIEWS_DOC_ID).await else {
+            return Ok(false);
         };
         let views = doc.get_map("views");
         let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -2093,12 +2173,9 @@ impl LoroEngine {
     /// (TDD'd in `offline_first_seed_then_sync_preserves_remote_builtin_edit`
     /// and `concurrent_seed_converges_to_one_inbox`).
     pub async fn ensure_builtin_views(&self) -> SyncResult<()> {
-        {
-            let docs = self.inner.docs.read().await;
-            if let Some(doc) = docs.get(&VIEWS_DOC_ID) {
-                if doc.get_map("views").get(INBOX_VIEW_ID).is_some() {
-                    return Ok(());
-                }
+        if let Some(doc) = self.lazy_load_doc(VIEWS_DOC_ID).await {
+            if doc.get_map("views").get(INBOX_VIEW_ID).is_some() {
+                return Ok(());
             }
         }
         let seed = builtin_views_seed_update()?;
@@ -2186,6 +2263,33 @@ async fn load_snapshots_from_dir(dir: &Path) -> SyncResult<HashMap<[u8; 16], Lor
         docs.insert(note_id, doc);
     }
     Ok(docs)
+}
+
+/// Every note_id with a `.bin` snapshot on disk in `dir` — a cheap
+/// filename-only scan (never imports bytes). Used by
+/// `LoroEngine::rebuild_index_from_docs` to distinguish "not currently
+/// memory-resident" (safe — lazy-load reloads it on demand) from
+/// "genuinely gone" (missing/corrupt snapshot — the prune-ghost-entries
+/// case, review finding [6]).
+async fn snapshot_note_ids_on_disk(dir: &Path) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("bin") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if parse_note_id_from_hex(stem).is_some() {
+            out.insert(stem.to_string());
+        }
+    }
+    out
 }
 
 fn parse_note_id_from_hex(s: &str) -> Option<[u8; 16]> {
@@ -10046,24 +10150,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Residency audit (tesela-engc.5): #[ignore]'d assumption stubs for
-    // the lazy-load/evict implementer (blocking bead tesela-qql and
-    // follow-ups). The full classification table of every walk over
+    // Residency audit (tesela-engc.5): lazy-load regression tests
+    // (tesela-qql). The full classification table of every walk over
     // `self.inner.docs` lives in the bead's close note; these three
     // encode the highest-severity assumptions a future evict() must not
     // violate — that a note's `LoroDoc` can be dropped from
     // `self.inner.docs` while its `.bin` snapshot survives on disk, and
     // every one of these three call sites must keep working transparently.
-    // All three currently FAIL (that's the point — they're `#[ignore]`d
-    // pre-fix regressions); un-ignore each as its corresponding walk
-    // gains load-on-demand or a residency-independent signal.
+    // Un-ignored now that `doc_for_note_mut` / the apply_import heal gate /
+    // `produce_relay_updates` all lazy-load or consult a
+    // residency-independent signal.
     // -----------------------------------------------------------------
 
     #[tokio::test]
-    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
-                doc_for_note_mut residency assumption from the tesela-engc.5 \
-                audit — activate once doc_for_note_mut loads a note's .bin \
-                on a docs-map miss instead of creating a fresh empty doc"]
     async fn doc_for_note_mut_must_not_recreate_evicted_note() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("loro");
@@ -10120,13 +10219,29 @@ mod tests {
         assert!(after.contains("post-eviction content"));
     }
 
+    // NOTE: this test's ORIGINAL (tesela-engc.5) assertion expected the
+    // server's evicted-then-reimported block A text to survive collapse
+    // ("Awesome sweet") over the device's disjoint twin. That predates
+    // tesela-fte (`e4a61454`, landed AFTER the residency audit), which
+    // deleted the genuine-edit/stale-guard discriminator and made the twin
+    // TEXT survivor a PURE function of max-`TreeID` (peer, then counter) —
+    // see `ws_apply_disjoint_conflict_resolves_to_max_treeid_twin`. Since
+    // each engine's peer id is constant across all its own history, the
+    // higher-peer engine (device, 0x7f) wins EVERY disjoint-twin block's
+    // TEXT uniformly, so no two-engine scenario can make "server keeps A,
+    // device keeps B" true anymore — that combination is no longer
+    // reachable regardless of residency/eviction.
+    //
+    // What the heal GATE (`has_local_state`/`plan_gate`) actually protects
+    // is orthogonal to the text-survivor rule: it's whether the tombstoned
+    // LOSER's `props` are unioned onto the survivor (`reassert_prop_heals`).
+    // That's the meaningful, still-discriminating regression surface for
+    // the tesela-qql landmine: the server's own PROPERTY on its (about to
+    // lose) A-twin must not be silently dropped just because the note
+    // wasn't memory-resident when the inbound frame arrived — mirrors
+    // `disjoint_twins_each_with_distinct_property_both_survive`, plus the
+    // evict-between-edit-and-import step.
     #[tokio::test]
-    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
-                apply_import already_resident heal-gate assumption from the \
-                tesela-engc.5 audit — activate once the Delta path's twin-heal \
-                protection plan is gated on 'has genuine local state (resident \
-                OR evicted-with-snapshot)', not on the docs-map's CURRENT \
-                in-memory residency"]
     async fn apply_import_heal_gate_must_protect_evicted_note_local_edits() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("loro");
@@ -10140,35 +10255,22 @@ mod tests {
 
         seed_disjoint(&server, &device, note).await;
 
-        // Server's own genuine edit — the value that must survive.
+        // Server's own genuine property on its (disjoint) twin of A — the
+        // value that must survive the twin-heal's props-union reassert even
+        // though pure max-`TreeID` always keeps device's TEXT as the
+        // surviving node for every block in this note.
         server
-            .record_local(OpPayload::BlockUpsert {
-                block_id: A_BID_BYTES,
+            .record_local(OpPayload::BlockPropertySet {
                 note_id: note,
-                parent_block_id: None,
-                order_key: "00000000".into(),
-                indent_level: 0,
-                text: "Awesome sweet".into(),
-                after_block_id: None,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
             })
             .await
             .unwrap();
 
-        // Device, stale (never saw the server edit), re-authors A back to
-        // its old value AND genuinely edits B, then exports a full
-        // snapshot (the cold-launch first-push frame).
-        device
-            .record_local(OpPayload::BlockUpsert {
-                block_id: A_BID_BYTES,
-                note_id: note,
-                parent_block_id: None,
-                order_key: "00000000".into(),
-                indent_level: 0,
-                text: "Awesome".into(),
-                after_block_id: None,
-            })
-            .await
-            .unwrap();
+        // Device genuinely edits B, then exports a full snapshot (the
+        // cold-launch first-push frame that triggered the incident).
         device
             .record_local(OpPayload::BlockUpsert {
                 block_id: B_BID_BYTES,
@@ -10184,25 +10286,23 @@ mod tests {
         let snapshot = device.export_doc_update(note, None).await.unwrap();
 
         // Evict the SERVER's note between its own edit and the inbound
-        // frame — exactly the window `already_resident`
-        // (loro_engine.rs:628) samples. The note's snapshot is safely on
-        // disk; only the in-memory entry is gone.
+        // frame — exactly the window the heal gate samples. The note's
+        // snapshot is safely on disk; only the in-memory entry is gone.
         server.inner.docs.write().await.remove(&note);
 
         server.import_doc_update(note, &snapshot).await.unwrap();
 
-        let a = block_text(&server, note, A_BID_BYTES)
-            .await
-            .unwrap_or_default();
+        assert_eq!(
+            block_prop_scalar(&server, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "an evicted-but-locally-edited note must still get twin-heal \
+             props protection on the next Delta import — the server's own \
+             property must NOT be silently dropped just because the note \
+             wasn't memory-resident when the frame arrived"
+        );
         let b = block_text(&server, note, B_BID_BYTES)
             .await
             .unwrap_or_default();
-        assert_eq!(
-            a, "Awesome sweet",
-            "an evicted-but-locally-edited note must still get twin-heal \
-             protection on the next Delta import — A must NOT revert to the \
-             device's stale value (got {a:?})"
-        );
         assert_eq!(
             b, "B device",
             "the device's genuine edit must still apply (got {b:?})"
@@ -10210,11 +10310,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
-                produce_relay_updates residency assumption from the \
-                tesela-engc.5 audit — activate once an evicted note's \
-                un-broadcast local edits can still be produced (load-on-demand \
-                or a residency-independent dirty-set)"]
     async fn produce_relay_updates_must_include_evicted_dirty_note() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("loro");
@@ -10246,5 +10341,55 @@ mod tests {
              self.inner.docs.keys() directly — an evicted note's \
              un-broadcast local edits silently never reach the relay"
         );
+    }
+
+    /// tesela-engc.5 audit, highest-severity UNSTUBBED item:
+    /// `rebuild_index_from_docs` used to prune any index entry whose note
+    /// wasn't in `self.inner.docs` — safe only because it's called
+    /// exclusively at boot, right after eager `load_snapshots_from_dir`,
+    /// where the two sets are identical. Simulate the residency gap a
+    /// future evict() (or a partial/lazy boot) would leave: the note's
+    /// snapshot is safely on disk, but the in-memory doc is gone.
+    #[tokio::test]
+    async fn rebuild_index_from_docs_must_not_prune_evicted_note_with_disk_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir)
+            .await
+            .unwrap();
+        let note_id = [0x66; 16];
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("evicted".into()),
+                title: "Evicted".into(),
+                content: "- hello\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.index_entries().await.len(),
+            1,
+            "indexed pre-eviction"
+        );
+
+        // Simulate eviction: the snapshot is safely on disk (the NoteUpsert
+        // above wrote it via `save_snapshot`), but the in-memory doc is
+        // dropped — exactly what a future evict() would leave behind.
+        engine.inner.docs.write().await.remove(&note_id);
+
+        engine.rebuild_index_from_docs().await;
+
+        let entries = engine.index_entries().await;
+        assert_eq!(
+            entries.len(),
+            1,
+            "rebuild_index_from_docs must not prune a note's index entry \
+             just because it isn't memory-resident — only a note with no \
+             on-disk snapshot at all is a genuine ghost (got {entries:?})"
+        );
+        assert_eq!(entries[0].title, "Evicted");
     }
 }
