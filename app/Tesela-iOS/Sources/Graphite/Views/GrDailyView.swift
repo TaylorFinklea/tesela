@@ -67,6 +67,18 @@ struct GrDailyView: View {
                 // inbound remote splice on it can be live-applied to the
                 // editor (the deferred full refresh still covers the rest).
                 mosaic.editingBlockId = newValue
+                // tesela-ect: this view only ever edits the daily family
+                // (today/yesterday/past days), never a loaded PAGE — set the
+                // EXPLICIT `.daily` marker on EVERY change (mirrors
+                // `openBlockInserter = nil` below) so a stale `.page(_)` left
+                // by a PRIOR `GrPageView` edit can't survive navigating back
+                // here and mis-scope the next `applyRemoteChange()` (it
+                // decides whether an unrelated open page is safe to refresh
+                // right now). `.daily` — not `nil`/`.unknown` — fix-round
+                // FINDING 2: `.unknown` means "caller never migrated" and
+                // takes the conservative full-defer path; this view HAS
+                // migrated and always knows it's the daily family.
+                mosaic.editingScope = .daily
                 // Drop any previously-registered editor inserter on EVERY
                 // change (close OR switch-to-another-block). onChange fires
                 // before the newly-focused block's onAppear re-registers its

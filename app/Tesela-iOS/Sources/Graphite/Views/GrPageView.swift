@@ -67,6 +67,19 @@ struct GrPageView: View {
             // previously-registered inserter on EVERY change (close OR switch)
             // — the newly-focused block's onAppear re-registers its own.
             mosaic.editingBlockId = newValue
+            // tesela-ect: this page's own slug, so `reconcileOpenBlockLive`
+            // reconciles against THIS note instead of a hardcoded daily slug
+            // (previously always a silent no-op for a page's focused block),
+            // and `applyRemoteChange()` knows it's safe to refresh every
+            // OTHER open note right now — only THIS page needs the
+            // defer-until-blur clobber protection. Set on EVERY change (not
+            // just while `newValue != nil`) — this view only ever edits
+            // THIS page, so `.page(slug)` — never `nil`/`.unknown` — is
+            // always the right marker (fix-round FINDING 2: `.unknown`
+            // means "caller never migrated" and takes the conservative
+            // full-defer path; this view HAS migrated and always knows
+            // which page it is).
+            mosaic.editingScope = .page(slug)
             mosaic.openBlockInserter = nil
             if let id = newValue,
                let block = mosaic.loadedPageBlocks[slug]?.first(where: { $0.id == id })

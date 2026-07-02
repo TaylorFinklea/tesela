@@ -173,6 +173,273 @@ final class MockMosaicServiceTests: XCTestCase {
             "an inbound change to yesterday must re-render on iOS, like today")
     }
 
+    /// Baseline: with NOTHING being edited, an inbound change to an OPEN
+    /// non-daily PAGE (GrPageView / `loadedPageBlocks`) must re-render
+    /// exactly like today/yesterday do above — `refreshLoadedPages()`
+    /// (called from `applyRemoteChange()`'s debounced tail) picks up a
+    /// page that's currently loaded.
+    func testRelayRemotePageEditIsReflectedAfterApplyRemoteChangeWhilePageIsOpen() async throws {
+        let pageId = "diagnostic-page-ect"
+        try resetLocalDailyFixtures([pageId])
+        defer { try? resetLocalDailyFixtures([pageId]) }
+        try writeLocalDaily(id: pageId, body: "- original text")
+
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        await service.loadPage(id: pageId)
+        XCTAssertEqual(service.loadedPageBlocks[pageId]?.map(\.text), ["original text"])
+
+        // Remote convergence merge lands: engine re-materializes the page.
+        try writeLocalDaily(id: pageId, body: "- merged text")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.map(\.text), ["merged text"],
+            "a relay-arriving change to an OPEN non-daily page must re-render, not linger until manual refresh")
+    }
+
+    /// ROOT CAUSE (tesela-ect): `applyRemoteChange()`'s `isEditingBlock`
+    /// branch used to return BEFORE calling `refresh`/`refreshLoadedPages`
+    /// at all — so editing a block in TODAY's daily silently starved every
+    /// OTHER already-open note (a Library page has zero relation to that
+    /// edit) of its live refresh until the edit's blur flushed
+    /// `pendingRemoteRefresh`. If the user never blurred (kept the field
+    /// focused while just watching the OTHER note), it stayed stale until a
+    /// manual pull-to-refresh, which calls `mosaic.refresh`/
+    /// `refreshLoadedPages` DIRECTLY, bypassing this gate entirely — exactly
+    /// the reported symptom. Guards the note-scoped fix: an unrelated open
+    /// page must refresh immediately even mid-edit on the daily, while the
+    /// daily itself stays protected from a wholesale reassignment (the
+    /// original clobber risk the gate exists for).
+    ///
+    /// Fix-round update: the refresh now runs through
+    /// `scheduleEditingRefresh`'s ~300ms coalescing window rather than
+    /// synchronously inline, so this asserts after outlasting it (mirrors
+    /// every other debounced-refresh test in this file).
+    func testApplyRemoteChangeWhileEditingDailyStillRefreshesOtherOpenPage() async throws {
+        let today = "2099-06-25"
+        let pageId = "diagnostic-page-ect-2"
+        try resetLocalDailyFixtures([today, pageId])
+        defer { try? resetLocalDailyFixtures([today, pageId]) }
+        try writeLocalDaily(id: today, body: "- today original")
+        try writeLocalDaily(id: pageId, body: "- page original")
+
+        let now = date(2099, 6, 25)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        await service.loadPage(id: pageId)
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["today original"])
+        XCTAssertEqual(service.loadedPageBlocks[pageId]?.map(\.text), ["page original"])
+
+        // User is mid-edit on a TODAY block (mirrors GrDailyView's
+        // onChange(of: editingBlockId): isEditingBlock + editingBlockId set,
+        // editingScope explicitly `.daily` — the daily family, not a page).
+        service.isEditingBlock = true
+        service.editingBlockId = service.todayBlocks[0].id
+        service.editingScope = .daily
+
+        // A remote merge lands for the UNRELATED page while the daily edit
+        // is still focused (no blur).
+        try writeLocalDaily(id: pageId, body: "- page merged")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.map(\.text), ["page merged"],
+            "an unrelated open page must refresh immediately, not wait for the daily edit's blur")
+        XCTAssertEqual(
+            service.todayBlocks.map(\.text), ["today original"],
+            "the note actually being edited must stay protected from a wholesale reassignment mid-edit")
+        XCTAssertTrue(
+            service.isEditingBlock,
+            "the refresh above must have landed WITHOUT the daily edit blurring")
+    }
+
+    /// Symmetric case: editing a block in a PAGE must not starve TODAY or a
+    /// DIFFERENT page of their live refresh, while the edited page itself
+    /// keeps the same protection today's daily gets. Doubles as the (c)
+    /// anti-regression from the fix-round: other notes must refresh
+    /// WITHOUT the page edit ever blurring (`isEditingBlock` stays `true`
+    /// throughout — see the final assertion) — a coalesce delay is fine,
+    /// blur-gating is not (blur-gating was the ORIGINAL ect bug this whole
+    /// note-scoping fix exists to undo).
+    func testApplyRemoteChangeWhileEditingPageStillRefreshesTodayAndOtherPage() async throws {
+        let today = "2099-06-26"
+        let editedPageId = "diagnostic-page-ect-edited"
+        let otherPageId = "diagnostic-page-ect-other"
+        try resetLocalDailyFixtures([today, editedPageId, otherPageId])
+        defer { try? resetLocalDailyFixtures([today, editedPageId, otherPageId]) }
+        try writeLocalDaily(id: today, body: "- today original")
+        try writeLocalDaily(id: editedPageId, body: "- edited-page original")
+        try writeLocalDaily(id: otherPageId, body: "- other-page original")
+
+        let now = date(2099, 6, 26)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        await service.loadPage(id: editedPageId)
+        await service.loadPage(id: otherPageId)
+
+        // User is mid-edit on a block in `editedPageId` (mirrors
+        // GrPageView's onChange(of: editingBlockId)).
+        service.isEditingBlock = true
+        service.editingBlockId = service.loadedPageBlocks[editedPageId]?.first?.id
+        service.editingScope = .page(editedPageId)
+
+        // Remote merges land for TODAY and the OTHER page while that edit
+        // is still focused (no blur).
+        try writeLocalDaily(id: today, body: "- today merged")
+        try writeLocalDaily(id: otherPageId, body: "- other-page merged")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.todayBlocks.map(\.text), ["today merged"],
+            "today's daily is unrelated to a page edit and must refresh immediately")
+        XCTAssertEqual(
+            service.loadedPageBlocks[otherPageId]?.map(\.text), ["other-page merged"],
+            "a different open page is unrelated to this page's edit and must refresh immediately")
+        XCTAssertEqual(
+            service.loadedPageBlocks[editedPageId]?.map(\.text), ["edited-page original"],
+            "the page actually being edited must stay protected from a wholesale reassignment mid-edit")
+        XCTAssertTrue(
+            service.isEditingBlock,
+            "today/other-page must have refreshed WITHOUT the page edit ever blurring (anti-regression " +
+            "for the original ect bug, which required blur to refresh anything)")
+    }
+
+    /// ROOT CAUSE (tesela-ect), second half: `reconcileOpenBlockLive` used
+    /// to be hardcoded to `serverDailyId`, so a remote splice landing on a
+    /// PAGE's focused block silently no-oped (the engine read was issued
+    /// against the wrong note) — it never lived-reconciled, only the
+    /// deferred blur refresh could ever show it. Guards that the live
+    /// reconcile now routes through `editingScope` and writes the merged
+    /// text into `loadedPageBlocks[slug]`, not `todayBlocks`.
+    func testApplyRemoteChangeLiveReconcilesFocusedPageBlockIntoLoadedPageBlocks() async throws {
+        let pageId = "diagnostic-page-ect-reconcile"
+        try resetLocalDailyFixtures([pageId])
+        defer { try? resetLocalDailyFixtures([pageId]) }
+        try writeLocalDaily(id: pageId, body: "- local text")
+
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        await service.loadPage(id: pageId)
+        let bid = try XCTUnwrap(service.loadedPageBlocks[pageId]?.first?.id)
+
+        // `openBlockInserter` is `weak` (BlockRow's `@State` owns the strong
+        // reference in production) — hold it here or ARC deallocates it
+        // immediately and `reconcileOpenBlockLive` silently no-ops.
+        let inserter = CollabTextInserter()
+        service.isEditingBlock = true
+        service.editingBlockId = bid
+        service.editingScope = .page(pageId)
+        service.openBlockInserter = inserter
+        service.readEngineBlockText = { slug, blockId in
+            (slug == pageId && blockId == bid) ? "merged block text" : nil
+        }
+
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 300_000_000)  // let the detached reconcile Task run
+
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.first?.text, "merged block text",
+            "a remote splice on a focused PAGE block must live-reconcile into loadedPageBlocks, " +
+            "not silently no-op against the wrong (daily) slug")
+    }
+
+    /// FIX-ROUND FINDING 1: a burst of N inbound `applyRemoteChange()`
+    /// calls while editing must collapse to exactly ONE coalesced refresh
+    /// cycle. Un-coalesced, each of the three inbound seams (2s relay
+    /// poll, `liveSync.onNoteChange`, per-WS-frame `onBinaryDelta`) drove a
+    /// full `refresh(from:)` + `refreshLoadedPages(force: true)` PER EVENT
+    /// — stacking concurrent network/local-read calls and reintroducing
+    /// the exact main-actor freeze `scheduleRemoteRefresh`'s debounce (T4)
+    /// was built to prevent. Counts ACTUAL fires via
+    /// `testableEditingRefreshFireCount()` rather than inferring it from
+    /// final state — final state alone can't distinguish "collapsed to 1"
+    /// from "N ran redundantly but converged to the same result".
+    func testApplyRemoteChangeEditingBurstCoalescesToOneRefreshCycle() async throws {
+        let today = "2099-06-28"
+        let pageId = "diagnostic-page-ect-burst"
+        try resetLocalDailyFixtures([today, pageId])
+        defer { try? resetLocalDailyFixtures([today, pageId]) }
+        try writeLocalDaily(id: today, body: "- today original")
+        try writeLocalDaily(id: pageId, body: "- page original")
+
+        let now = date(2099, 6, 28)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        await service.loadPage(id: pageId)
+
+        service.isEditingBlock = true
+        service.editingBlockId = service.todayBlocks[0].id
+        service.editingScope = .daily
+
+        // A burst of N inbound events lands in a tight loop, mirroring
+        // several un-batched seams firing in quick succession.
+        for _ in 0..<10 {
+            await service.applyRemoteChange()
+        }
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.testableEditingRefreshFireCount(), 1,
+            "a burst of N inbound events while editing must collapse to exactly one refresh cycle, not N")
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.map(\.text), ["page original"],
+            "sanity: the unrelated open page is still tracked through the coalesced pass")
+    }
+
+    /// FIX-ROUND FINDING 2: a legacy caller (`DailyView`/`PageView`, still
+    /// shipped behind the `-legacy` flag / `tesela.useLegacyShell`) sets
+    /// `isEditingBlock` but never migrated to set `editingScope` — it
+    /// stays at the `.unknown` default. That MUST take the conservative
+    /// pre-tesela-ect path (defer EVERYTHING to blur), not silently
+    /// misclassify it as a daily edit (the old `?? serverDailyId`
+    /// fallback) and force-reload an open page out from under the legacy
+    /// edit — the exact clobber this gate exists to stop.
+    func testApplyRemoteChangeWithUnknownEditingScopeDefersEverythingToBlur() async throws {
+        let pageId = "diagnostic-page-ect-legacy"
+        try resetLocalDailyFixtures([pageId])
+        defer { try? resetLocalDailyFixtures([pageId]) }
+        try writeLocalDaily(id: pageId, body: "- page original")
+
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        await service.loadPage(id: pageId)
+        XCTAssertEqual(service.loadedPageBlocks[pageId]?.map(\.text), ["page original"])
+
+        // Legacy PageView/DailyView shape: isEditingBlock is set, but
+        // editingScope is left at its .unknown default (never migrated).
+        service.isEditingBlock = true
+        XCTAssertEqual(service.editingScope, .unknown)
+
+        // A remote merge lands for the "open" page while isEditingBlock is
+        // true and the scope is unknown.
+        try writeLocalDaily(id: pageId, body: "- page merged")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the debounce window, if any fired
+
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.map(\.text), ["page original"],
+            "an UNKNOWN editing scope must defer EVERYTHING to blur, not force-reload a page it " +
+            "cannot prove is unrelated to the in-flight (unidentified) edit")
+        XCTAssertEqual(
+            service.testableEditingRefreshFireCount(), 0,
+            "the coalesced editing-refresh pass must never fire for an unknown editing scope")
+
+        // Blurring flushes the deferred refresh, exactly like the
+        // pre-tesela-ect behavior.
+        service.isEditingBlock = false
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(
+            service.loadedPageBlocks[pageId]?.map(\.text), ["page merged"],
+            "blur must flush the deferred refresh, same as before this whole note-scoping fix existed")
+    }
+
     /// 2026-07-02 device flicker fix (tesela-z1e): rapid deletes on
     /// yesterday's blocks re-showed a just-deleted block for a tick. Root
     /// cause: `scheduleWriteback` (today) opens the remote-refresh

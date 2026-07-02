@@ -1698,8 +1698,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Refresh every currently-loaded page from the server. Cheap when
     /// the cache is small; safe to call on app foreground.
-    func refreshLoadedPages() async {
-        let ids = Array(loadedPageBlocks.keys)
+    ///
+    /// `except` (tesela-ect) skips a SET of page ids — the note(s)
+    /// actively being edited, when this is called from
+    /// `applyRemoteChange()`'s mid-edit branch (`scheduleEditingRefresh`
+    /// unions every note excluded across a coalesced burst, so this takes
+    /// a set rather than a single id — tesela-ect fix-round FINDING 1). A
+    /// wholesale reassignment of an edited page's blocks could desync the
+    /// focused block's live splice-offset math against the UITextView
+    /// (`reconcileOpenBlockLive` already reconciles that ONE block); every
+    /// OTHER loaded page has no such risk and refreshes normally.
+    func refreshLoadedPages(except excludedIds: Set<String> = []) async {
+        let ids = Array(loadedPageBlocks.keys).filter { !excludedIds.contains($0) }
         for id in ids {
             await loadPage(id: id, force: true)
         }
@@ -2074,6 +2084,66 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// which block's merged text to reconcile when a remote splice lands
     /// mid-edit. `nil` when nothing is being edited.
     var editingBlockId: String? = nil
+    /// Explicit identity of the note `editingBlockId` belongs to, set by
+    /// the SAME owner that sets `editingBlockId` (`GrDailyView` always
+    /// sets `.daily`; `GrPageView` always sets `.page(slug)`).
+    ///
+    /// tesela-ect fix-round (FINDING 2): the first cut of this used
+    /// `editingNoteSlug: String?` with `nil` meaning EITHER "editing the
+    /// daily" (`GrDailyView` set it to `nil` explicitly) OR "this caller
+    /// never migrated" (the legacy `DailyView`/`PageView`, still shipped
+    /// behind the `-legacy` flag / `tesela.useLegacyShell`, set
+    /// `isEditingBlock` but never touched `editingNoteSlug` at all) —
+    /// resolved via `editingNoteSlug ?? serverDailyId`. Those two "nil"
+    /// cases need OPPOSITE handling (daily = safe to scope-and-protect;
+    /// unknown = MUST take the conservative full-defer path) but were
+    /// indistinguishable, so a legacy PAGE edit got silently misread as a
+    /// daily edit and the actively-edited page was force-reloaded out
+    /// from under the editor — the exact clobber this gate exists to
+    /// prevent. `.unknown` is now the actual default, so an un-migrated
+    /// caller is unambiguous and `applyRemoteChange()` can special-case it.
+    enum EditingScope: Equatable {
+        /// Nothing known — the default, and where a legacy caller that
+        /// never sets this property stays forever. Must take the
+        /// pre-tesela-ect conservative path: defer everything to blur.
+        case unknown
+        /// The daily family (today/yesterday/past days). `GrDailyView`
+        /// only ever edits this family, so it sets `.daily` on EVERY
+        /// `editingBlockId` change (focus and blur alike) rather than
+        /// leaving a stale `.page` from a previously-visited `GrPageView`
+        /// on the same mosaic instance.
+        case daily
+        /// A specific loaded page, by id/slug. `GrPageView` sets this on
+        /// every `editingBlockId` change for the same reason.
+        case page(String)
+    }
+    /// tesela-ect: `isEditingBlock`/`editingBlockId` used to be treated as
+    /// GLOBAL — editing ANY block anywhere deferred the live refresh of
+    /// EVERY open note, including ones with no relation to the edit, and
+    /// `reconcileOpenBlockLive` was hardcoded to the daily slug so a page's
+    /// focused block never got the live per-character reconcile at all
+    /// (always silently deferred to blur). This makes the edit/refresh
+    /// scoping NOTE-AWARE: `applyRemoteChange()` still protects the note
+    /// actually being edited from a wholesale mid-edit reassignment (the
+    /// original clobber risk), but refreshes every OTHER open note
+    /// immediately (coalesced, see `editingRefreshDebounce` below), and
+    /// `reconcileOpenBlockLive` reconciles against whichever note is
+    /// really open.
+    var editingScope: EditingScope = .unknown
+    /// Live-resolves `editingScope` to the concrete note id it refers to
+    /// right now. `.daily` re-reads `serverDailyId` (rather than freezing
+    /// it at focus time) — harmless because a daily edit's `applyRemoteChange`
+    /// branch skips `refresh(from:)` for its own note the whole time it's
+    /// focused, so `serverDailyId` cannot change mid-edit; see the
+    /// day-rollover-mid-edit note on `scheduleEditingRefresh`. `nil` for
+    /// `.unknown` (nothing to resolve).
+    private var editingScopeSlug: String? {
+        switch editingScope {
+        case .unknown: return nil
+        case .daily: return serverDailyId
+        case .page(let slug): return slug
+        }
+    }
     /// The open editor's imperative inserter, registered by the focused
     /// `BlockRow`. Weak: the row's `@State` owns it; a stale ref (a
     /// torn-down text view) is a harmless no-op since the inserter holds
@@ -2117,6 +2187,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// shows on the device in well under a second.
     private static let remoteRefreshDebounceNanos: UInt64 = 300_000_000
 
+    /// Debounce handle for `applyRemoteChange()`'s mid-edit "refresh every
+    /// OTHER open note" pass (tesela-ect fix-round FINDING 1). Fed by the
+    /// SAME three un-batched inbound seams as `remoteRefreshDebounce` (2s
+    /// relay poll, `liveSync.onNoteChange`, per-WS-frame `onBinaryDelta`),
+    /// so without coalescing a burst re-introduces the exact per-event
+    /// storm (stacked `loadPage(force: true)` calls, main-actor freeze)
+    /// `remoteRefreshDebounce` was built to prevent. Deliberately a
+    /// SEPARATE Task/property from `remoteRefreshDebounce` rather than
+    /// reusing it: `scheduleRemoteRefresh`'s fire-time re-check MUST defer
+    /// the whole pass if still editing when it fires (blur-gated by
+    /// design — it refreshes the edited note's own family), but this
+    /// pass's contract is the opposite — it must fire on schedule
+    /// REGARDLESS of `isEditingBlock`, since it excludes the actively-
+    /// edited note(s) rather than waiting for them to stop being edited.
+    private var editingRefreshDebounce: Task<Void, Never>?
+    /// Page ids to exclude from the coalesced pass's `refreshLoadedPages`,
+    /// unioned across every `applyRemoteChange()` call folded into the
+    /// current window — the user can blur one page and focus another
+    /// inside the ~300ms window, and neither must be force-reloaded out
+    /// from under a still-fresh edit. Snapshotted and cleared the instant
+    /// the debounce fires.
+    private var editingRefreshExclusions: Set<String> = []
+    /// True if ANY event folded into the current window was editing the
+    /// daily family — sticky for the whole window (not re-derived from
+    /// whichever note happens to be open when the debounce fires) so a
+    /// daily edit anywhere in the burst keeps `refresh(from:)` (which
+    /// repopulates `todayBlocks`/`yesterdayBlocks`) out of this pass.
+    private var editingRefreshSkipDaily: Bool = false
+    /// Test-observable counter, bumped once per ACTUAL fire of the
+    /// mid-edit coalesced refresh — i.e. once per settled burst, not once
+    /// per `applyRemoteChange()` call folded into it. See
+    /// `testableEditingRefreshFireCount()`.
+    private var editingRefreshFireCount = 0
+
     /// React to a server-side note change announced over the live-sync
     /// WebSocket. Coalesces a burst of inbound events into a single
     /// debounced refresh (~300 ms) so N rapid web edits cause O(1-few)
@@ -2139,8 +2243,33 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // concurrent same-block edit appears under the cursor immediately,
             // instead of waiting for the blur-time full refresh (which is the
             // only time a FOCUSED field otherwise updates). The deferred
-            // refresh above still reconciles every other block on blur.
+            // refresh above still reconciles every other block in THIS note
+            // on blur. Per-event, not coalesced: cheap, and it already has
+            // its own stale-read guards (see `reconcileOpenBlockLive`).
             reconcileOpenBlockLive()
+            // tesela-ect fix-round FINDING 2: an `.unknown` scope means the
+            // caller (the legacy `DailyView`/`PageView`, behind the
+            // `-legacy` flag / `tesela.useLegacyShell`) never migrated to
+            // set `editingScope` — we cannot tell which note is actually
+            // open, so this MUST take the conservative pre-tesela-ect path
+            // and defer EVERYTHING to blur, exactly like before this whole
+            // note-scoping fix existed. Only a KNOWN scope (`.daily` /
+            // `.page`, set by `GrDailyView`/`GrPageView`) is safe to
+            // refresh-around.
+            guard editingScope != .unknown else { return }
+            // tesela-ect fix-round FINDING 1: route the "refresh every
+            // OTHER open note" pass through the SAME coalescing machinery
+            // `scheduleRemoteRefresh` uses, instead of calling
+            // `refresh`/`refreshLoadedPages` directly on every event — a
+            // burst (2s relay poll, `liveSync.onNoteChange`, per-WS-frame
+            // `onBinaryDelta`) would otherwise stack concurrent
+            // `loadPage(force: true)` calls and reintroduce the exact
+            // main-actor freeze `remoteRefreshDebounce` exists to prevent.
+            // Must fire WITHOUT waiting for blur (unlike
+            // `scheduleRemoteRefresh`'s fire-time re-check) — only the
+            // actively-edited note stays protected, via the exclusion
+            // passed in here.
+            scheduleEditingRefresh(excluding: editingScope)
             return
         }
         if let until = suppressRemoteUntil, until > Date() {
@@ -2160,15 +2289,25 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the reconcile is a no-op when the editor already matches the engine
     /// (the echo of our OWN splice). Also refreshes the in-memory mirror for
     /// the block so subsequent local splice offsets and the blur-commit stay
-    /// aligned with the engine. Today-blocks only (the collab editor path);
-    /// the open block's slug is `serverDailyId`.
+    /// aligned with the engine.
+    ///
+    /// tesela-ect: reconciles against whichever note is ACTUALLY open
+    /// (`editingScope`, set by the owning view — `GrDailyView` or
+    /// `GrPageView`) instead of a slug hardcoded to the daily. Before this,
+    /// editing a block in a PAGE meant this always no-oped (the engine read
+    /// was issued against the WRONG note), so a page's focused block never
+    /// got the live per-character reconcile — it silently sat stale until
+    /// blur, every time. A caller that leaves `editingScope` at `.unknown`
+    /// (the legacy views) also no-ops here — they never set `editingBlockId`
+    /// either, so the first guard already bails.
     private func reconcileOpenBlockLive() {
         guard let bid = editingBlockId,
               let read = readEngineBlockText,
               let inserter = openBlockInserter,
-              !serverDailyId.isEmpty
+              let slug = editingScopeSlug,
+              !slug.isEmpty
         else { return }
-        let slug = serverDailyId
+        let isDaily = (editingScope == .daily)
         let seqAtStart = localSpliceSeq
         Task { @MainActor [weak self] in
             guard let self, let merged = await read(slug, bid) else { return }
@@ -2179,6 +2318,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // the just-typed char from the view. Skip and retry once typing
             // settles so the remote edit still lands shortly.
             guard self.editingBlockId == bid,
+                  self.editingScopeSlug == slug,
                   self.openBlockInserter === inserter,
                   self.localSpliceSeq == seqAtStart
             else {
@@ -2189,8 +2329,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // mirror and the UITextView are updated together and stay in
             // lockstep — the next local splice's offset (UITextView-relative)
             // therefore matches the mirror length the clamp uses. Same
-            // projection `spliceTodayBlock` maintains, so a blur-commit/refresh
-            // doesn't revert the merge.
+            // projection `spliceTodayBlock`/`splicePageBlock` maintains, so a
+            // blur-commit/refresh doesn't revert the merge.
             // P5.1: strip any solely-`key:: value` property lines the raw
             // engine `text_seq` carries (a task's status::/tags:: folded in by
             // a NoteUpsert round-trip) so the edit buffer + rawText stay
@@ -2198,11 +2338,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // chips. Derive EVERYTHING (body/tags + the UITextView reconcile)
             // from the stripped text so prose-offset splices stay aligned.
             let cleanMerged = Self.stripPropertyLines(merged)
-            if let idx = self.todayBlocks.firstIndex(where: { $0.id == bid }) {
-                let (body, tags) = Self.splitTrailingTags(cleanMerged)
-                self.todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
-                self.todayBlocks[idx].rawText = body
-                self.todayBlocks[idx].tags = tags
+            let (body, tags) = Self.splitTrailingTags(cleanMerged)
+            if isDaily {
+                if let idx = self.todayBlocks.firstIndex(where: { $0.id == bid }) {
+                    self.todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
+                    self.todayBlocks[idx].rawText = body
+                    self.todayBlocks[idx].tags = tags
+                }
+            } else if let idx = self.loadedPageBlocks[slug]?.firstIndex(where: { $0.id == bid }) {
+                self.loadedPageBlocks[slug]?[idx].text = body.components(separatedBy: "\n").first ?? body
+                self.loadedPageBlocks[slug]?[idx].rawText = body
+                self.loadedPageBlocks[slug]?[idx].tags = tags
             }
             inserter.reconcile(toEngineText: cleanMerged)
         }
@@ -2255,6 +2401,57 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // refresh rather than one per inbound event.
             await self.refresh(from: self.currentBackend)
             await self.refreshLoadedPages()
+        }
+    }
+
+    /// tesela-ect fix-round FINDING 1: coalesces `applyRemoteChange()`'s
+    /// mid-edit "refresh every OTHER open note" pass the same way
+    /// `scheduleRemoteRefresh` coalesces the non-editing path — cancel any
+    /// pending fire and schedule a fresh one ~300ms out, so a burst of N
+    /// inbound events during an edit (2s relay poll, `liveSync.onNoteChange`,
+    /// per-WS-frame `onBinaryDelta`) collapses to ONE refresh cycle instead
+    /// of N stacked `loadPage(force: true)` calls.
+    ///
+    /// UNLIKE `scheduleRemoteRefresh`, this must NOT blur-gate: the whole
+    /// point is that an unrelated open note refreshes WHILE the user keeps
+    /// editing, not only once they stop. `scope` is folded into the
+    /// window's accumulated exclusions (`editingRefreshExclusions` /
+    /// `editingRefreshSkipDaily`) rather than re-derived from whatever
+    /// happens to be focused at fire time, so a user who blurs one note and
+    /// focuses another inside the coalescing window keeps BOTH excluded —
+    /// merging exclusions across every event folded into the burst.
+    private func scheduleEditingRefresh(excluding scope: EditingScope) {
+        switch scope {
+        case .daily:
+            editingRefreshSkipDaily = true
+        case .page(let slug):
+            editingRefreshExclusions.insert(slug)
+        case .unknown:
+            break
+        }
+        editingRefreshDebounce?.cancel()
+        editingRefreshDebounce = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.remoteRefreshDebounceNanos)
+            guard let self, !Task.isCancelled else { return }
+            self.editingRefreshDebounce = nil
+            // Snapshot-and-clear so a NEW burst starting the instant this
+            // pass begins (e.g. during the awaits below) accumulates its
+            // own exclusions rather than reusing ones already handled.
+            let excludedPages = self.editingRefreshExclusions
+            let skipDaily = self.editingRefreshSkipDaily
+            self.editingRefreshExclusions = []
+            self.editingRefreshSkipDaily = false
+            self.editingRefreshFireCount += 1
+            // Deliberately NOT gated on `self.isEditingBlock` — an edit
+            // still in progress is exactly the case this pass exists to
+            // serve; the actively-edited note(s) are protected via
+            // `excludedPages`/`skipDaily`, not by deferring the whole pass.
+            if !skipDaily {
+                // No daily edit anywhere in this window — today/yesterday/
+                // pages/tags are unrelated to a page edit, safe in full.
+                await self.refresh(from: self.currentBackend)
+            }
+            await self.refreshLoadedPages(except: excludedPages)
         }
     }
 
@@ -4424,6 +4621,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func testableIsRemoteSuppressionActive() -> Bool {
         guard let until = suppressRemoteUntil else { return false }
         return until > Date()
+    }
+
+    /// Number of times `scheduleEditingRefresh`'s coalesced pass has
+    /// actually FIRED (not how many `applyRemoteChange()` calls were
+    /// folded into it) — lets a regression test prove a burst of N
+    /// inbound events during an edit collapses to a single refresh cycle
+    /// (tesela-ect fix-round FINDING 1).
+    func testableEditingRefreshFireCount() -> Int {
+        editingRefreshFireCount
     }
 }
 
