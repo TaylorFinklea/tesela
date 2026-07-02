@@ -47,3 +47,7 @@ harness = false
 [[bench]]
 name = "typed_blocks"
 harness = false
+
+[[bench]]
+name = "inbox_query"
+harness = false

@@ -1,19 +1,36 @@
 //! SQLite+FTS5 implementation of SearchIndex and LinkGraph traits
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 use super::queries;
 use super::schema;
+use crate::block::ParsedBlock;
 use crate::error::{Result, TeselaError};
 use crate::link::{Link, LinkType};
 use crate::note::{Note, NoteId, SearchHit};
 use crate::traits::link_graph::LinkGraph;
 use crate::traits::search_index::SearchIndex;
+
+/// One note's cached [`crate::block::parse_blocks`] output, keyed
+/// externally by note_id in `SqliteIndex::blocks_cache`. `body_hash` is a
+/// SHA-256 hex digest of the exact `body` text that produced `blocks` — a
+/// hit requires that hash to match the freshly-fetched row's body hash, so
+/// a stale read is structurally impossible: whenever the note's body
+/// changes at all (even whitespace), the hash changes and the cache
+/// misses, forcing a fresh parse. Keying on content instead of a
+/// timestamp/version/generation counter means there is no "did I remember
+/// to bump this" invalidation step to forget.
+struct CachedBlocks {
+    body_hash: String,
+    blocks: Arc<Vec<ParsedBlock>>,
+}
 
 fn db_err(msg: &str, e: sqlx::Error) -> TeselaError {
     TeselaError::Database {
@@ -185,6 +202,12 @@ pub fn apply_override(
 /// is lost, `rebuild_from_notes()` reconstructs it from the on-disk notes.
 pub struct SqliteIndex {
     pool: Pool<Sqlite>,
+    /// Per-note `parse_blocks` cache for `execute_block_query`'s no-tag-
+    /// filter path (tesela-sclr.2). Keyed by note_id; overwritten in place
+    /// on every reparse, so it never grows past one entry per note
+    /// currently in `notes`. See `CachedBlocks` for the invalidation
+    /// contract. Explicitly evicted in `remove_note`.
+    blocks_cache: Mutex<std::collections::HashMap<String, CachedBlocks>>,
 }
 
 const DEFAULT_MAX_CONNECTIONS: u32 = 5;
@@ -208,7 +231,10 @@ impl SqliteIndex {
 
         Self::migrate(&pool).await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            blocks_cache: Mutex::new(std::collections::HashMap::new()),
+        })
     }
 
     /// Open an in-memory SQLite database (for testing).
@@ -226,7 +252,10 @@ impl SqliteIndex {
 
         Self::migrate(&pool).await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            blocks_cache: Mutex::new(std::collections::HashMap::new()),
+        })
     }
 
     /// Run schema migrations.
@@ -357,6 +386,15 @@ impl SqliteIndex {
             .execute(&self.pool)
             .await
             .map_err(|e| db_err("Failed to remove note", e))?;
+
+        // A deleted note no longer appears in the `candidate_notes` scan
+        // that `execute_block_query` builds its cache from, so a lingering
+        // entry could never be served as a wrong answer — but it would sit
+        // there as dead weight for the note's lifetime otherwise. Evict it.
+        self.blocks_cache
+            .lock()
+            .expect("blocks_cache mutex poisoned")
+            .remove(id.as_str());
 
         Ok(())
     }
@@ -1559,7 +1597,6 @@ impl SqliteIndex {
         &self,
         query: &crate::query::ParsedQuery,
     ) -> Result<Vec<crate::query::QueryItem>> {
-        use crate::block::parse_blocks;
         use crate::query::{block_matches_typed, Kind, QueryItem, QueryOp};
 
         // L5: typed-comparison registry — built once, consulted per block.
@@ -1617,7 +1654,7 @@ impl SqliteIndex {
 
         let mut out = Vec::new();
         for (note_id, note_title, body, page_note_type) in &candidate_notes {
-            let mut blocks = parse_blocks(note_id, body);
+            let mut blocks = self.parsed_blocks_cached(note_id, body);
             // Enrich every block with its containing page's note_type so
             // DSL predicates that depend on parent metadata (`on:system-
             // pages`, `on:daily-page`'s fallback branch) can run inside
@@ -1671,6 +1708,61 @@ impl SqliteIndex {
         Ok(out)
     }
 
+    /// `parse_blocks(note_id, body)`, served from `blocks_cache` when a
+    /// prior call already parsed this exact `body` for this `note_id`.
+    ///
+    /// Correctness contract: the cache key is a SHA-256 digest of `body`
+    /// itself, not a timestamp, version counter, or "was this note
+    /// touched" flag. A hit therefore requires the input to be
+    /// byte-identical to what produced the cached output — there is no
+    /// window where an edited note can still serve its pre-edit parse.
+    /// Any change to the note's body (including a no-op-looking edit like
+    /// re-saving unchanged text) either hits with the *same* hash and
+    /// returns an identical reparse, or misses and reparses; either way
+    /// the result matches what a full reparse would give right now.
+    /// Property-only edits (frontmatter, tags) don't touch `body`, so
+    /// they naturally keep hitting — that's not a staleness risk because
+    /// `parse_blocks` doesn't consume frontmatter/tags in the first
+    /// place. Deletion is handled separately by `remove_note` evicting
+    /// the entry (dead weight cleanup, not a correctness requirement:
+    /// a deleted note no longer appears in the candidate rows this is
+    /// called from).
+    ///
+    /// Always returns an **owned** `Vec` — the cached copy lives behind an
+    /// `Arc` so concurrent callers share the parse, but each caller gets
+    /// its own clone to mutate per-query (`execute_block_query` stamps
+    /// the current `parent_note_type` on every call) without corrupting
+    /// what's cached.
+    fn parsed_blocks_cached(&self, note_id: &str, body: &str) -> Vec<ParsedBlock> {
+        use crate::block::parse_blocks;
+
+        let body_hash = format!("{:x}", Sha256::digest(body.as_bytes()));
+
+        if let Some(entry) = self
+            .blocks_cache
+            .lock()
+            .expect("blocks_cache mutex poisoned")
+            .get(note_id)
+        {
+            if entry.body_hash == body_hash {
+                return (*entry.blocks).clone();
+            }
+        }
+
+        let fresh = Arc::new(parse_blocks(note_id, body));
+        self.blocks_cache
+            .lock()
+            .expect("blocks_cache mutex poisoned")
+            .insert(
+                note_id.to_string(),
+                CachedBlocks {
+                    body_hash,
+                    blocks: Arc::clone(&fresh),
+                },
+            );
+        (*fresh).clone()
+    }
+
     /// Execute a `kind:page` query. Loads all notes (corpus is small) and
     /// filters in-memory using the same `block_matches` semantics applied to
     /// a synthetic "page block" (tags + properties from frontmatter).
@@ -1678,7 +1770,6 @@ impl SqliteIndex {
         &self,
         query: &crate::query::ParsedQuery,
     ) -> Result<Vec<crate::query::QueryItem>> {
-        use crate::block::ParsedBlock;
         use crate::query::{block_matches_typed, Kind, QueryItem};
         use std::collections::HashMap;
 
@@ -3150,6 +3241,199 @@ mod tests {
             status_of(&def).values.as_deref(),
             Some(&["todo", "doing", "done"].map(String::from)[..]),
             "hide_choices must subtract from the REPLACED list"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_block_query parsed-blocks cache invalidation (tesela-sclr.2)
+    // -----------------------------------------------------------------------
+
+    /// Flatten a `QueryResult` into its items' display text, in group
+    /// order — enough to assert presence/absence without caring about
+    /// grouping/sort for these cache tests.
+    fn item_texts(result: &crate::query::QueryResult) -> Vec<String> {
+        result
+            .groups
+            .iter()
+            .flat_map(|g| g.items.iter().map(|i| i.text.clone()))
+            .collect()
+    }
+
+    fn find_item<'a>(
+        result: &'a crate::query::QueryResult,
+        text: &str,
+    ) -> Option<&'a crate::query::QueryItem> {
+        result
+            .groups
+            .iter()
+            .flat_map(|g| g.items.iter())
+            .find(|i| i.text == text)
+    }
+
+    /// A note edit (body changes, same note_id) must invalidate the
+    /// per-note parsed-blocks cache. A stale cache would keep matching
+    /// `-has:status` against the PRE-edit block even after the block
+    /// gained a `status::` property.
+    #[tokio::test]
+    async fn parsed_blocks_cache_reflects_note_edit() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let note = make_test_note("cache-edit-1", "Edit Note", "- buy milk", &[]);
+        index.reindex(&note).await.unwrap();
+
+        let query = crate::query::parse_query("kind:block -has:status");
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        assert!(
+            item_texts(&result).contains(&"buy milk".to_string()),
+            "expected untriaged block before edit: {:?}",
+            item_texts(&result)
+        );
+
+        // Same note_id, edited body — a status:: line is added to the
+        // block. This must be a cache MISS (different body hash).
+        let mut edited = note.clone();
+        edited.body = "- buy milk\n  status:: done".to_string();
+        edited.content = format!("# Edit Note\n\n{}", edited.body);
+        index.reindex(&edited).await.unwrap();
+
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        assert!(
+            !item_texts(&result).contains(&"buy milk".to_string()),
+            "block now has status:: done but still matched -has:status — \
+             stale cache served the pre-edit parse: {:?}",
+            item_texts(&result)
+        );
+    }
+
+    /// A deleted note's blocks must never resurface from the cache. Also
+    /// exercises `remove_note`'s explicit `blocks_cache` eviction.
+    #[tokio::test]
+    async fn parsed_blocks_cache_evicted_on_note_delete() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let keep = make_test_note("cache-keep-1", "Keep Note", "- keep me", &[]);
+        let gone = make_test_note("cache-gone-1", "Gone Note", "- remove me", &[]);
+        index.reindex(&keep).await.unwrap();
+        index.reindex(&gone).await.unwrap();
+
+        let query = crate::query::parse_query("kind:block -has:status");
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        let texts = item_texts(&result);
+        assert!(texts.contains(&"keep me".to_string()));
+        assert!(texts.contains(&"remove me".to_string()));
+
+        index
+            .remove_note(&NoteId::new("cache-gone-1"))
+            .await
+            .unwrap();
+
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        let texts = item_texts(&result);
+        assert!(texts.contains(&"keep me".to_string()));
+        assert!(
+            !texts.contains(&"remove me".to_string()),
+            "deleted note's block still served after delete: {texts:?}"
+        );
+    }
+
+    /// A property-only reindex (note_type changes, `body` text untouched)
+    /// keeps the same body hash — the parsed-blocks cache correctly HITS
+    /// — but the query must still see the new note_type, because
+    /// `parent_note_type` is stamped fresh from the current SQL row on
+    /// every call rather than being baked into the cached blocks.
+    #[tokio::test]
+    async fn parsed_blocks_cache_reflects_note_type_change_without_body_edit() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let mut note = make_test_note("cache-prop-1", "Some Page", "- a stray block", &[]);
+        index.reindex(&note).await.unwrap();
+
+        let query = crate::query::parse_query("kind:block on:system-pages");
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        assert!(
+            item_texts(&result).is_empty(),
+            "not a system page yet, should match nothing: {:?}",
+            item_texts(&result)
+        );
+
+        // Body is byte-identical — only note_type (frontmatter-derived)
+        // changes. This is exactly the case where the cache SHOULD hit.
+        assert_eq!(note.body, "- a stray block");
+        note.metadata.note_type = Some("Tag".to_string());
+        index.reindex(&note).await.unwrap();
+
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        assert!(
+            item_texts(&result).contains(&"a stray block".to_string()),
+            "note_type change not reflected after a body-unchanged reindex \
+             (parent_note_type must never be cached): {:?}",
+            item_texts(&result)
+        );
+    }
+
+    /// Moving a block to a different parent changes its computed
+    /// breadcrumb. A stale cache (serving the pre-move parse) would keep
+    /// reporting the OLD parent even after the note was reindexed with
+    /// the new structure.
+    #[tokio::test]
+    async fn parsed_blocks_cache_reflects_block_moved() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let mut note = make_test_note(
+            "cache-move-1",
+            "Move Note",
+            "- Project A\n  - subtask one\n- Project B",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+
+        let query = crate::query::parse_query("kind:block -has:status");
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        let sub = find_item(&result, "subtask one").expect("subtask present before move");
+        assert_eq!(
+            sub.parent_breadcrumb,
+            vec!["Move Note".to_string(), "Project A".to_string()]
+        );
+
+        // Same note_id, body reorganized so "subtask one" now nests under
+        // "Project B" instead of "Project A".
+        note.body = "- Project A\n- Project B\n  - subtask one".to_string();
+        note.content = format!("# Move Note\n\n{}", note.body);
+        index.reindex(&note).await.unwrap();
+
+        let result = index.execute_query(&query, None, None).await.unwrap();
+        let sub = find_item(&result, "subtask one").expect("subtask still present after move");
+        assert_eq!(
+            sub.parent_breadcrumb,
+            vec!["Move Note".to_string(), "Project B".to_string()],
+            "breadcrumb still reflects the PRE-move parent — stale cache"
+        );
+    }
+
+    /// A cache HIT (second call, nothing changed) must return exactly the
+    /// same items as the cache MISS (first call) — guards against the
+    /// cached `Arc<Vec<ParsedBlock>>` being mutated in place by the
+    /// per-query `parent_note_type` stamping instead of cloned out.
+    #[tokio::test]
+    async fn parsed_blocks_cache_hit_matches_cache_miss() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let note = make_test_note(
+            "cache-stable-1",
+            "Stable Note",
+            "- steady block\n  - child block",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+
+        let query = crate::query::parse_query("kind:block -has:status");
+        let first = index.execute_query(&query, None, None).await.unwrap();
+        let second = index.execute_query(&query, None, None).await.unwrap();
+
+        assert_eq!(
+            item_texts(&first),
+            item_texts(&second),
+            "cache-hit query diverged from the cache-miss query"
+        );
+        let child = find_item(&second, "child block").expect("child block present");
+        assert_eq!(
+            child.parent_breadcrumb,
+            vec!["Stable Note".to_string(), "steady block".to_string()]
         );
     }
 }
