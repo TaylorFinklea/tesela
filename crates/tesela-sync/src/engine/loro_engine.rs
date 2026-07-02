@@ -10398,4 +10398,63 @@ mod tests {
             );
         }
     }
+
+    // Verification gap closed (audit L6, tesela-9t0): deleted-wins
+    // (`reconcile_tree_to_blocks`'s tombstoned-skip, ~line 3272) depends on
+    // tombstones surviving a GC-compacted `ExportMode::Snapshot` round-trip
+    // through a FRESH engine that never saw the delete op directly — only
+    // via the snapshot's current-state bytes. Prove it: delete a block,
+    // export a snapshot, import fresh on a 2nd engine, then apply a stale
+    // NoteUpsert on that 2nd engine whose body still carries the deleted
+    // bid — it must stay deleted, not resurrect.
+    #[tokio::test]
+    async fn deleted_wins_survives_snapshot_gc_round_trip() {
+        let note = blake3_note_id("gc-tombstone");
+        let bid = content_bid("gc-tombstone-block");
+
+        // Engine A: create + delete a block, then export a GC-compacted
+        // snapshot (ExportMode::Snapshot — the same bytes save_snapshot
+        // writes; see export_doc_update's doc comment).
+        let dev_a = DeviceId::from_bytes([0xa9; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        upsert_block(&a, note, bid, "doomed", None).await;
+        a.record_local(OpPayload::BlockDelete { block_id: bid })
+            .await
+            .unwrap();
+        let snapshot = a.export_doc_update(note, None).await.unwrap();
+
+        // Engine B: FRESH — never saw the delete op directly, only the
+        // GC-compacted snapshot's current state.
+        let dev_b = DeviceId::from_bytes([0xb9; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        b.import_authoritative_snapshot(note, &snapshot)
+            .await
+            .unwrap();
+        assert_eq!(
+            block_text(&b, note, bid).await,
+            None,
+            "fresh import of the GC snapshot must land the block deleted"
+        );
+
+        // A STALE whole-content NoteUpsert on B still carries the deleted
+        // bid in its body (as if authored before the delete propagated).
+        let bid_uuid = uuid::Uuid::from_bytes(bid);
+        b.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("gc-tombstone".into()),
+            title: "GC".into(),
+            content: format!("- doomed <!-- bid:{bid_uuid} -->\n"),
+            created_at_millis: 2,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            block_text(&b, note, bid).await,
+            None,
+            "deleted-wins must survive a GC-compacted snapshot round-trip: \
+             a stale NoteUpsert on a fresh engine must not resurrect a bid \
+             tombstoned only in the imported snapshot's current state"
+        );
+    }
 }

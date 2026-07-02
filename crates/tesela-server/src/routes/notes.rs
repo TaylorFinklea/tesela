@@ -1119,14 +1119,16 @@ pub async fn rename_tag(
         };
         s.store.update(&updated_note).await?;
         s.index.reindex(&updated_note).await?;
+        // Bootstrap-before-author (tesela-1fe, 2026-07-02): a note this bulk
+        // rewrite touches may be non-resident (evicted, or a `.md`-without-
+        // `.bin` import) — a fresh `record_sync_update` would then fork a
+        // disjoint Loro lineage instead of diffing onto the note's shared
+        // base. Adopt the relay's authoritative snapshot first, as the
+        // create paths above do. No-op once resident / absent on the relay.
+        bootstrap_note_if_needed(&s, note.id.as_str()).await;
         // Server-internal rewrite: `note.content` IS the base (no stale
         // client view), so the historical prev→new diff is correct. Pass
         // `None` to keep that path exactly.
-        // SAFE today: these are resident on-disk notes whose docs the engine
-        // already holds, so this diffs onto the live tree (no fork). Becomes a
-        // fork risk under eviction / for `.md`-without-`.bin` imports (the doc
-        // would be non-resident) — those would need `bootstrap_note_if_needed`
-        // first, like the create paths above.
         record_sync_update(&s, &note.content, None, &updated_note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated_note });
     }
@@ -1221,6 +1223,12 @@ pub async fn cleanup_tag_references(
         };
         s.store.update(&updated_note).await?;
         s.index.reindex(&updated_note).await?;
+        // Bootstrap-before-author (tesela-1fe, 2026-07-02): mirrors the
+        // `rename_tag` rewrite loop above — a touched note may be
+        // non-resident, so adopt the relay's authoritative snapshot as a
+        // shared base before diffing, else this admin op forks a disjoint
+        // lineage. No-op once resident / absent on the relay.
+        bootstrap_note_if_needed(&s, note.id.as_str()).await;
         // Server-internal rewrite: `note.content` IS the base. Pass `None`
         // to keep the historical prev→new diff (see the tag-rename twin).
         record_sync_update(&s, &note.content, None, &updated_note).await?;
@@ -2627,6 +2635,181 @@ mod tests {
             // The doc is now resident on the server (bootstrap imported it).
             assert!(
                 engine.doc_version(note_id).await.is_some(),
+                "the note must be resident after the bootstrap import"
+            );
+        }
+
+        /// Residual bootstrap-before-author gap (tesela-1fe, 2026-07-02):
+        /// `rename_tag`'s corpus-rewrite loop calls `record_sync_update` on
+        /// every touched note, but (before the fix) never bootstrapped that
+        /// note's doc first. A note the rewrite touches may be non-resident
+        /// on this server (evicted, or a `.md`-without-`.bin` import) even
+        /// though it already has authoritative history on the relay — a bare
+        /// `record_sync_update` would then fork a disjoint lineage and later
+        /// clobber that history. Reproduces the exact shape: the relay holds
+        /// `referencing-note`'s authoritative snapshot (alpha); the server's
+        /// engine does NOT hold that doc; `rename_tag` rewrites its on-disk
+        /// `#old-tag` reference to `#new-tag`. With the fix, alpha survives
+        /// the rewrite and the rewritten reference merges onto the SAME
+        /// lineage — no disjoint twin.
+        #[tokio::test]
+        async fn rename_tag_bootstraps_relay_snapshot_before_authoring() {
+            let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+            let (group, key) = fresh_group();
+
+            let ref_slug = "referencing-note";
+            let ref_note_id = stable_uuid_from_slug(ref_slug);
+            let alpha_bid = "01010101-0101-0101-0101-010101010101";
+            let local_bid = "04040404-0404-0404-0404-040404040404";
+
+            // ── Peer authors content X and deposits its snapshot to the relay ──
+            let peer_tmp = tempfile::tempdir().unwrap();
+            let peer_dev = DeviceId::from_bytes([0xaa; 16]);
+            let peer = loro_engine_in(peer_tmp.path(), peer_dev).await;
+            peer.record_local(OpPayload::NoteUpsert {
+                note_id: ref_note_id,
+                display_alias: Some(ref_slug.into()),
+                title: ref_slug.into(),
+                content: format!("- alpha from relay <!-- bid:{alpha_bid} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .expect("peer seed NoteUpsert");
+            let snapshot_x = peer
+                .export_doc_update(ref_note_id, None)
+                .await
+                .expect("peer snapshot export");
+            let peer_client = RelayClient::new(base_url.clone(), group, peer_dev, key.clone());
+            peer_client
+                .register_or_recover()
+                .await
+                .expect("peer register");
+            peer_client
+                .put_snapshots(0, vec![(ref_note_id.to_vec(), snapshot_x)])
+                .await
+                .expect("peer deposit snapshot");
+
+            // ── Server: fresh engine that does NOT hold the doc (disjoint) ──
+            let mosaic = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(mosaic.path().join("notes")).unwrap();
+            std::fs::create_dir_all(mosaic.path().join(".tesela")).unwrap();
+            let srv_dev = DeviceId::from_bytes([0xbb; 16]);
+            let engine: Arc<dyn SyncEngine> =
+                Arc::new(loro_engine_in(mosaic.path(), srv_dev).await);
+            assert!(
+                engine.doc_version(ref_note_id).await.is_none(),
+                "server must start without the doc (the disjoint pre-condition)"
+            );
+
+            // The tag's own file (rename_tag requires `from_slug` to be a Tag).
+            std::fs::write(
+                mosaic.path().join("notes/old-tag.md"),
+                "---\ntype: Tag\n---\n- Old Tag\n",
+            )
+            .unwrap();
+            // The note `rename_tag` will rewrite: a LOCAL on-disk body that
+            // references `#old-tag`. The server's engine has never authored
+            // this note — alpha in the merged result can ONLY have come from
+            // the relay bootstrap.
+            std::fs::write(
+                mosaic.path().join(format!("notes/{ref_slug}.md")),
+                format!(
+                    "---\ntitle: \"{ref_slug}\"\n---\n- ref #old-tag <!-- bid:{local_bid} -->\n"
+                ),
+            )
+            .unwrap();
+
+            let store = Arc::new(FsNoteStore::new(
+                mosaic.path().to_path_buf(),
+                StorageConfig::default(),
+            ));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&mosaic.path().join(".tesela").join("test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = broadcast::channel(16);
+            let (ws_delta_tx, _) = broadcast::channel(16);
+            let group_identity = Arc::new(RwLock::new(GroupIdentity {
+                group_id: group,
+                group_key: key.clone(),
+            }));
+
+            // Server relay handle pointing at the spawned relay (same group).
+            let relay_client = Arc::new(RelayClient::new(base_url.clone(), group, srv_dev, key));
+            relay_client
+                .register_or_recover()
+                .await
+                .expect("server register");
+            let relay_handle = RelayHandle {
+                url: base_url.to_string(),
+                client: relay_client,
+                state: Arc::new(RwLock::new(RelayState::default())),
+                mosaic_root: mosaic.path().to_path_buf(),
+            };
+
+            let state = Arc::new(AppState {
+                mosaic_root: mosaic.path().to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(mosaic.path()),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine: Arc::clone(&engine),
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: Some(base_url.to_string()),
+                relay: Some(relay_handle),
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
+            });
+
+            // ── Rename old-tag -> new-tag, rewriting the corpus ──
+            let res = rename_tag(
+                State(Arc::clone(&state)),
+                Json(RenameTagReq {
+                    from_slug: "old-tag".into(),
+                    to_slug: "new-tag".into(),
+                    commit: true,
+                }),
+            )
+            .await;
+            assert!(
+                res.is_ok(),
+                "rename_tag should succeed (got {:?})",
+                res.err().map(|e| e.into_response().status())
+            );
+
+            // The relay's authoritative alpha (X) was bootstrapped as the shared
+            // base, and the rewritten `#new-tag` reference (Y) merged onto it —
+            // NOT a disjoint clobber that drops alpha. `render_note` is the CRDT
+            // truth.
+            let merged = engine
+                .render_note(ref_note_id)
+                .await
+                .expect("server renders the note after rename");
+            assert!(
+                merged.contains("alpha from relay"),
+                "bootstrapped relay base (X) must survive the rewrite; render:\n{merged}"
+            );
+            assert!(
+                merged.contains("#new-tag"),
+                "the rewritten tag reference (Y) must be present; render:\n{merged}"
+            );
+            // Exactly one alpha — no disjoint same-bid twin.
+            assert_eq!(
+                merged.matches(&format!("bid:{alpha_bid}")).count(),
+                1,
+                "alpha must render exactly once (no twin); render:\n{merged}"
+            );
+            // The doc is now resident on the server (bootstrap imported it).
+            assert!(
+                engine.doc_version(ref_note_id).await.is_some(),
                 "the note must be resident after the bootstrap import"
             );
         }
