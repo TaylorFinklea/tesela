@@ -8,6 +8,7 @@ pub mod import_logseq;
 pub mod indexer;
 pub mod lifecycle;
 pub mod link;
+pub mod nlp_lift;
 pub mod note;
 pub mod note_tree;
 pub mod property;

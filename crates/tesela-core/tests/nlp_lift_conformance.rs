@@ -1,22 +1,21 @@
 //! Shared inline-NLP-lift conformance fixture
 //! (`tests/fixtures/nlp-lift-conformance.json`).
 //!
-//! Unlike `recurrence-conformance.json` (partially Rust-derived — `valid`
-//! comes from the real Rust `recurrence::parse`), NEITHER `tesela-core` nor
-//! any other Rust crate has an inline-NLP-lift parser yet (that unification
-//! is the blocked `tesela-ug7` — "share one Rust+FFI NLP/date parser across
-//! iOS and web"; this fixture is the FIXTURE HALF of that work, landing
-//! ahead of the hoist per `tesela-pfix.3`). So — exactly like
-//! `recurrence_conformance.rs`'s `client_extraction_cases` section — every
-//! case here is a PINNED LITERAL: `expected` was computed by running the
-//! REAL web `detectTaskTokens` (`web/src/lib/task-tokens.ts`) against
-//! `text` + `registry` + `anchor_date`, then copied in. Rust still owns
-//! writing/comparing the on-disk JSON so it has exactly one generator; the
-//! web and iOS conformance runners
-//! (`web/tests/unit/nlp-lift-conformance.test.mjs`,
-//! `app/Tesela-iOS/Tests/NLPLiftConformanceTests.swift`) each assert their
-//! REAL lift implementation against these pinned values, so drift between
-//! the two client mirrors is caught immediately.
+//! Every case's `expected` is a PINNED LITERAL (computed by running the REAL
+//! web `detectTaskTokens`, `web/src/lib/task-tokens.ts`, against `text` +
+//! `registry` + `anchor_date`, then copied in) — the fixture predates the
+//! Rust hoist (`tesela-pfix.3` landed first per the module's original
+//! docs) and stays pinned rather than becoming Rust-generated, so this file
+//! doubles as an independent conformance check on the Rust port
+//! (`tesela_core::nlp_lift`, `tesela-ug7`) rather than the port grading its
+//! own homework. `rust_detect_task_tokens_matches_fixture` (below) asserts
+//! the REAL `nlp_lift::detect_task_tokens` against every case; the web
+//! (`web/tests/unit/nlp-lift-conformance.test.mjs`) and iOS
+//! (`app/Tesela-iOS/Tests/NLPLiftConformanceTests.swift`, which now asserts
+//! through the FFI — `detectNlpLifts` — rather than a native Swift
+//! reimplementation) conformance runners assert their own consumer against
+//! the same pinned values, so drift between all three is caught
+//! immediately.
 //!
 //! `registry` is ONE shared `DetectSpec`-shaped spec (select `priority` +
 //! date `deadline`, deliberately excluding `number`-typed properties —
@@ -321,4 +320,41 @@ fn fixture_covers_required_surface() {
     let (_, midprose_text, midprose_stripped, midprose_props) = by_name("bare_midprose_not_lifted");
     assert!(midprose_props.is_empty(), "mid-prose bare date without an intent word must not lift");
     assert_eq!(midprose_stripped, midprose_text, "unchanged when nothing lifts");
+}
+
+/// The Rust hoist (`tesela_core::nlp_lift::detect_task_tokens`,
+/// `tesela-ug7`) must reproduce every pinned case — this is the
+/// conformance check that proves the Rust port is faithful to the web
+/// implementation the fixture was generated from, independent of the
+/// generator above.
+#[test]
+fn rust_detect_task_tokens_matches_fixture() {
+    use std::collections::HashSet;
+    use tesela_core::nlp_lift;
+
+    // Round-trip this file's `Registry` (identical JSON shape) into the
+    // real `nlp_lift::Registry` rather than re-parsing the on-disk file.
+    let registry_json = serde_json::to_string(&build_registry()).expect("registry serializes");
+    let registry: nlp_lift::Registry =
+        serde_json::from_str(&registry_json).expect("registry round-trips");
+    let today = chrono::NaiveDate::parse_from_str("2026-05-22", "%Y-%m-%d").expect("anchor date");
+
+    let mut failures = Vec::new();
+    for (name, text, expected_stripped, expected_props) in raw_cases() {
+        let result = nlp_lift::detect_task_tokens(text, &registry, today);
+        let want: HashSet<String> = expected_props.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let got: HashSet<String> = result.props.iter().map(|p| format!("{}={}", p.key, p.value)).collect();
+        if result.stripped != expected_stripped || got != want {
+            failures.push(format!(
+                "  {name} — text {text:?}: expected stripped={expected_stripped:?} props={want:?}, got stripped={:?} props={got:?}",
+                result.stripped
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} conformance case(s) diverged:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

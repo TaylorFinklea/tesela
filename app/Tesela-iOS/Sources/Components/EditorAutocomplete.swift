@@ -349,12 +349,58 @@ enum SlashVerbs {
     }
 }
 
+/// JSON wire shape for `detectNlpLifts`'s `registry_json` argument — mirrors
+/// the shared `DetectSpec` the fixture (`nlp-lift-conformance.json`) and
+/// `tesela_core::nlp_lift::Registry` both use.
+private struct NLPRegistrySpec: Encodable {
+    let defaultDateProperty: String
+    let properties: [NLPPropertySpec]
+
+    enum CodingKeys: String, CodingKey {
+        case properties
+        case defaultDateProperty = "default_date_property"
+    }
+}
+
+private struct NLPPropertySpec: Encodable {
+    let key: String
+    let valueType: String
+    let choices: [String]
+    let triggers: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case key, choices, triggers
+        case valueType = "value_type"
+    }
+}
+
+/// JSON wire shape for `detectNlpLifts`'s return value.
+private struct NLPDetectResult: Decodable {
+    let stripped: String
+    let props: [NLPLiftedProp]
+}
+
+private struct NLPLiftedProp: Decodable {
+    let key: String
+    let value: String
+}
+
 /// Inline NLP detection (P5.5): scans the just-typed tail/token of the live
 /// block text for a property `nl_trigger` token or a confident `DateParser`
 /// phrase, and surfaces a one-tap "lift into a structured property" suggestion
 /// in the SAME chip strip the slash/link/tag triggers use. Conservative —
 /// only an EXACT `nl_trigger` token or a confident `DateParser.parse`; never
 /// auto-applies (the user taps to lift; declining leaves the text as prose).
+///
+/// The blur-time whole-block lift (`detectLifts`, below) delegates to the
+/// shared Rust `tesela_core::nlp_lift::detect_task_tokens` via the
+/// `detectNlpLifts` FFI call (tesela-ug7) rather than a native Swift
+/// reimplementation — it's the surface the `nlp-lift-conformance.json`
+/// fixture pins. The live caret-anchored chip suggestion (`detect`) and its
+/// derived per-keystroke highlight (`detectHighlightRanges`) stay native
+/// Swift: they're an iOS-only UX (no web equivalent), not covered by that
+/// fixture, and reusing the whole-block FFI call per keystroke/boundary
+/// would add FFI-crossing overhead to a hot path for no conformance benefit.
 enum InlineNLP {
 
     /// One detected lift candidate: which UTF-16 span to remove on apply and
@@ -602,27 +648,49 @@ enum InlineNLP {
         registry: PropertyRegistry,
         today: Date = Date()
     ) -> (stripped: String, props: [(key: String, value: String)]) {
-        var working = text
-        var props: [(key: String, value: String)] = []
-        var guardCount = 0
-        while guardCount < 64 {
-            guardCount += 1
-            guard let hit = firstLift(in: working, tags: tags, registry: registry, today: today)
-            else { break }
-            switch hit.suggestion.action {
-            case .setProperty(let key, let value): props.append((key, value))
-            case .setStatus(let choice): props.append(("status", choice))
-            case .insertText, .openDateSheet: break
+        guard let spec = detectSpec(tags: tags, registry: registry),
+              let specData = try? JSONEncoder().encode(spec),
+              let specJSON = String(data: specData, encoding: .utf8)
+        else { return (text, []) }
+        let json = detectNlpLifts(text: text, registryJson: specJSON, anchorDate: fmt(today))
+        guard let data = json.data(using: .utf8),
+              let result = try? JSONDecoder().decode(NLPDetectResult.self, from: data)
+        else { return (text, []) }
+        return (result.stripped, result.props.map { ($0.key, $0.value) })
+    }
+
+    /// The `{key, value_type, choices, triggers}` registry spec (JSON) the
+    /// `detectNlpLifts` FFI call takes — resolved from the block's DIRECT
+    /// tags, matching `detect`/`firstLift`'s own def resolution above. The
+    /// default date property is the FIRST date-typed property in
+    /// `tag_properties` order (mirrors `detect`'s `dateDefs.first` fallback
+    /// — see `nlp_lift_conformance.rs`'s module docs on why this trivially
+    /// agrees with web's `default_date_property` frontmatter when a type
+    /// declares only one date property). `nil` when the tags resolve no
+    /// properties (detection off for this block).
+    private static func detectSpec(tags: [String], registry: PropertyRegistry) -> NLPRegistrySpec? {
+        var defs: [PropertyDef] = []
+        var seen = Set<String>()
+        for tag in tags {
+            let clean = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+            for def in registry.resolvedDefs(forTag: clean) {
+                let key = def.name.lowercased()
+                if seen.contains(key) { continue }
+                seen.insert(key)
+                defs.append(def)
             }
-            let mut = NSMutableString(string: working)
-            mut.replaceCharacters(
-                in: NSRange(location: hit.start, length: hit.length), with: "")
-            working = mut as String
         }
-        guard !props.isEmpty else { return (text, []) }
-        working = working.replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
-        working = working.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (working, props)
+        guard !defs.isEmpty else { return nil }
+        let defaultDateProperty = defs.first(where: { $0.valueType == .date })?.name.lowercased() ?? "scheduled"
+        let properties = defs.map {
+            NLPPropertySpec(
+                key: $0.name.lowercased(),
+                valueType: $0.valueType.rawValue,
+                choices: $0.choices,
+                triggers: $0.nlTriggers.map { $0.lowercased() }
+            )
+        }
+        return NLPRegistrySpec(defaultDateProperty: defaultDateProperty, properties: properties)
     }
 
     /// Live-highlight spans (P-surface-parity, iOS): the UTF-16 ranges of EVERY

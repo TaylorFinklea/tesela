@@ -463,6 +463,11 @@ uint64_t uniffi_tesela_sync_ffi_fn_method_syncenginehandle_views_upsert(uint64_t
 RustBuffer uniffi_tesela_sync_ffi_fn_func_decode_pairing_code(RustBuffer code, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_DETECT_NLP_LIFTS
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_DETECT_NLP_LIFTS
+RustBuffer uniffi_tesela_sync_ffi_fn_func_detect_nlp_lifts(RustBuffer text, RustBuffer registry_json, RustBuffer anchor_date, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_ENCODE_PAIRING_CODE
 #define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_ENCODE_PAIRING_CODE
 RustBuffer uniffi_tesela_sync_ffi_fn_func_encode_pairing_code(RustBuffer group_id_hex, RustBuffer group_key_hex, RustBuffer device_id_hex, RustBuffer url, RustBuffer display_name, RustBuffer relay_url, RustCallStatus *_Nonnull out_status
@@ -790,6 +795,12 @@ void ffi_tesela_sync_ffi_rust_future_complete_void(uint64_t handle, RustCallStat
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_DECODE_PAIRING_CODE
 #define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_DECODE_PAIRING_CODE
 uint16_t uniffi_tesela_sync_ffi_checksum_func_decode_pairing_code(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_DETECT_NLP_LIFTS
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_DETECT_NLP_LIFTS
+uint16_t uniffi_tesela_sync_ffi_checksum_func_detect_nlp_lifts(void
     
 );
 #endif

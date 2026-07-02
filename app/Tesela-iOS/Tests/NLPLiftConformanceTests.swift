@@ -5,16 +5,17 @@ import XCTest
 /// (`crates/tesela-core/tests/fixtures/nlp-lift-conformance.json`,
 /// `tesela-pfix.3`).
 ///
-/// No Rust NLP-lift parser exists yet (blocked on `tesela-ug7`), so the
-/// fixture's `expected` values are PINNED LITERALS generated from the real
-/// web `detectTaskTokens` (see the module docs in
+/// The fixture's `expected` values are PINNED LITERALS generated from the
+/// real web `detectTaskTokens` (see the module docs in
 /// `nlp_lift_conformance.rs`). This file asserts the REAL iOS
 /// `InlineNLP.detectLifts` (`EditorAutocomplete.swift`) against those same
-/// values — not a reimplementation — so web/iOS drift is caught
-/// immediately. The fixture's shared `registry` (select `priority` + date
-/// `deadline`) is synthesized here into a `PropertyRegistry` via a single
-/// `Fixture` Tag page, mirroring `PropertyRegistryTests`' `RegistryNote`
-/// builder pattern.
+/// values. `detectLifts` no longer reimplements the detection logic in
+/// Swift — it delegates to the shared Rust `tesela_core::nlp_lift`
+/// implementation via the `detectNlpLifts` FFI call (`tesela-ug7`), so this
+/// test runs THROUGH the FFI boundary, not against a Swift mirror. The
+/// fixture's shared `registry` (select `priority` + date `deadline`) is
+/// synthesized here into a `PropertyRegistry` via a single `Fixture` Tag
+/// page, mirroring `PropertyRegistryTests`' `RegistryNote` builder pattern.
 final class NLPLiftConformanceTests: XCTestCase {
 
     // MARK: - Fixture decoding

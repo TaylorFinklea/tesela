@@ -4142,6 +4142,29 @@ public func decodePairingCode(code: String)throws  -> PairingCodeRecord  {
 })
 }
 /**
+ * Registry-driven inline-NLP-lift detection (tesela-ug7): scans `text`'s
+ * first line for select/number/date property triggers plus a bare
+ * trailing/line-start/intent-gated default date, strips whatever lifts,
+ * and returns the result as JSON — `{"stripped": "...", "props":
+ * [{"key":"...","value":"..."}]}`. `registry_json` is the caller's
+ * resolved `DetectSpec`-shaped registry (`{"default_date_property":
+ * "...", "properties": [{"key","value_type","choices","triggers"}]}`),
+ * `anchor_date` is `"YYYY-MM-DD"`. Mirrors `parse_recurrence`'s
+ * plain-string-in/out shape (rather than a richer FFI record type) and
+ * never errors — malformed input degrades to "no lift" (the input text
+ * unchanged, no props). Backs the iOS `InlineNLP.detectLifts` path — see
+ * `tesela_core::nlp_lift::detect_task_tokens`.
+ */
+public func detectNlpLifts(text: String, registryJson: String, anchorDate: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_detect_nlp_lifts(
+        FfiConverterString.lower(text),
+        FfiConverterString.lower(registryJson),
+        FfiConverterString.lower(anchorDate),$0
+    )
+})
+}
+/**
  * Mirror of `decode_pairing_code` for the producing side. Builds a
  * `PairingCode` from raw fields and returns the encoded string. The
  * Swift caller is responsible for supplying a real reachable URL
@@ -4363,6 +4386,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_decode_pairing_code() != 3947) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_detect_nlp_lifts() != 32514) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_encode_pairing_code() != 5465) {

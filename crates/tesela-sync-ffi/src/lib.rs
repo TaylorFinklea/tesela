@@ -90,6 +90,23 @@ pub fn format_recurrence(value: String) -> String {
     tesela_core::recurrence::format(&value)
 }
 
+/// Registry-driven inline-NLP-lift detection (tesela-ug7): scans `text`'s
+/// first line for select/number/date property triggers plus a bare
+/// trailing/line-start/intent-gated default date, strips whatever lifts,
+/// and returns the result as JSON — `{"stripped": "...", "props":
+/// [{"key":"...","value":"..."}]}`. `registry_json` is the caller's
+/// resolved `DetectSpec`-shaped registry (`{"default_date_property":
+/// "...", "properties": [{"key","value_type","choices","triggers"}]}`),
+/// `anchor_date` is `"YYYY-MM-DD"`. Mirrors `parse_recurrence`'s
+/// plain-string-in/out shape (rather than a richer FFI record type) and
+/// never errors — malformed input degrades to "no lift" (the input text
+/// unchanged, no props). Backs the iOS `InlineNLP.detectLifts` path — see
+/// `tesela_core::nlp_lift::detect_task_tokens`.
+#[uniffi::export]
+pub fn detect_nlp_lifts(text: String, registry_json: String, anchor_date: String) -> String {
+    tesela_core::nlp_lift::detect_nlp_lifts_json(&text, &registry_json, &anchor_date)
+}
+
 /// Generate a fresh random device id (UUIDv7, hex-encoded). Used on
 /// first run of the iOS app to mint the device's identity.
 #[uniffi::export]
@@ -2020,6 +2037,45 @@ mod tests {
     fn format_recurrence_renders_and_falls_back() {
         assert_eq!(format_recurrence("daily count 3".to_string()), "Daily, 3×");
         assert_eq!(format_recurrence("blarg".to_string()), "blarg");
+    }
+
+    // --- inline-NLP-lift detection (tesela-ug7) -----------------------------
+
+    #[test]
+    fn detect_nlp_lifts_strips_select_and_date_triggers() {
+        let registry_json = serde_json::json!({
+            "default_date_property": "deadline",
+            "properties": [
+                {"key": "priority", "value_type": "select", "choices": ["p1","p2","p3","p4"], "triggers": ["p1","p2","p3","p4"]},
+                {"key": "deadline", "value_type": "date", "choices": [], "triggers": ["due", "deadline"]},
+            ],
+        })
+        .to_string();
+        let json = detect_nlp_lifts(
+            "fix parser p1 due tomorrow".to_string(),
+            registry_json,
+            "2026-05-22".to_string(),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["stripped"], "fix parser");
+        let props = parsed["props"].as_array().unwrap();
+        assert_eq!(props.len(), 2);
+        assert_eq!(props[0]["key"], "priority");
+        assert_eq!(props[0]["value"], "p1");
+        assert_eq!(props[1]["key"], "deadline");
+        assert_eq!(props[1]["value"], "2026-05-23");
+    }
+
+    #[test]
+    fn detect_nlp_lifts_never_errors_on_malformed_input() {
+        let json = detect_nlp_lifts(
+            "fix the bug p1".to_string(),
+            "not json".to_string(),
+            "not a date".to_string(),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["stripped"], "fix the bug p1");
+        assert!(parsed["props"].as_array().unwrap().is_empty());
     }
 
     // --- relay presence (Option B) -----------------------------------------
