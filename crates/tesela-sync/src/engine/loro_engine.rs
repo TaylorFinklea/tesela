@@ -10880,6 +10880,15 @@ mod tests {
             })
             .await
             .unwrap();
+        server
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
 
         // Fabricate a GENUINE standing twin for A directly on the doc,
         // bypassing every self-healing apply path — the only realistic
@@ -10897,6 +10906,14 @@ mod tests {
             meta.insert("indent_level", 0i64).unwrap();
             meta.insert("parent", "").unwrap();
             write_block_text(&meta, "raw twin residue").unwrap();
+            let (props, prop_keys) = prop_containers::node_prop_containers(&meta).unwrap();
+            apply_prop_op(
+                &props,
+                &prop_keys,
+                "priority",
+                &PropOp::SetScalar(PropScalar::Int(3)),
+            )
+            .unwrap();
             doc.commit();
         }
         assert_eq!(
@@ -10905,6 +10922,35 @@ mod tests {
             "fixture setup must actually produce a standing twin for A \
              before the race"
         );
+
+        // Pad the tree with MANY additional single-node (non-twin) blocks
+        // so `twin_winners_for`'s doc-wide scan and `tombstone_duplicate_
+        // twins`'s own scan take long enough in wall-clock time to give the
+        // concurrent `record_local` writers below (spawned alongside the
+        // heal/import race) a REAL chance to land their write on block A's
+        // about-to-be-tombstoned node between heal's plan-fork read of A's
+        // props and its tombstone call. With only A's twin present, that
+        // window is a handful of CPU instructions wide and effectively
+        // unhittable by scheduling luck alone — created AFTER A (so the
+        // scan processes A early and still has to plow through every pad
+        // node before `twin_winners_for` returns and `tombstone_duplicate_
+        // twins` runs), this widens it to real, hittable microseconds.
+        const PAD_BLOCKS: u32 = 1000;
+        {
+            let doc = server.doc_for_note_mut(note).await;
+            let tree = doc.get_tree("blocks");
+            for i in 0..PAD_BLOCKS {
+                let mut pad_bid = [0xf0u8; 16];
+                pad_bid[14..16].copy_from_slice(&(i as u16).to_be_bytes());
+                let node = tree.create(TreeParentId::Root).unwrap();
+                let meta = tree.get_meta(node).unwrap();
+                meta.insert("block_id", hex_id(&pad_bid).as_str()).unwrap();
+                meta.insert("indent_level", 0i64).unwrap();
+                meta.insert("parent", "").unwrap();
+                write_block_text(&meta, "pad").unwrap();
+            }
+            doc.commit();
+        }
 
         // A peer concurrently authors a genuinely NEW block (disjoint from
         // A) on the SAME note — the concurrent inbound import this races
@@ -10926,14 +10972,39 @@ mod tests {
 
         // Race: `heal_disjoint_twins()` (sweeping every resident note,
         // including this one) concurrently with `import_doc_update` for the
-        // SAME note. Pre-fix (heal running unlocked) this could interleave
-        // heal's tombstone against the import's own plan/tombstone; post-fix
-        // (this bead) both take the SAME per-note `apply_locks` guard, so
-        // they serialize into SOME total order — never mid-sequence. Either
-        // order is valid (whichever wins the lock first may incidentally
-        // collapse A's twin itself, since `tombstone_duplicate_twins` is
-        // doc-wide) — this test asserts the invariant that holds under
-        // EITHER order, not a specific winner.
+        // SAME note, PLUS N concurrent `record_local` edits to block A's
+        // props — mirroring
+        // `record_local_races_apply_import_for_same_note_preserves_local_edits`.
+        // The STATIC pre-race props (`status`/`priority` above) alone don't
+        // discriminate the reverted lock: `heal_disjoint_twins`'s plan and
+        // `apply_import`'s own plan (`peer_genuine_block_changes` →
+        // `twin_winners_for`) are both PURE functions of the same
+        // (unchanging) twin set, so either racer reasserts them identically
+        // regardless of interleaving — there's no genuinely racing WRITE for
+        // a static fixture to catch. A CONCURRENT write can land on the twin
+        // node about to be tombstoned AFTER heal's plan-fork already
+        // captured a stale snapshot: with the per-note lock intact, `heal_
+        // disjoint_twins` holds it across its whole plan→tombstone→reassert
+        // body, so no `record_local` for this note can land mid-sequence;
+        // with the lock reverted, heal never blocks the other lock holders
+        // and the drop window is real (tesela-xh4 REVIEW REJECT,
+        // 2026-07-02).
+        const N: u8 = 20;
+        let mut local_set = tokio::task::JoinSet::new();
+        for i in 0..N {
+            let server = server.clone();
+            local_set.spawn(async move {
+                server
+                    .record_local(OpPayload::BlockPropertySet {
+                        note_id: note,
+                        block_id: A_BID_BYTES,
+                        key: "race_tag".into(),
+                        value: PropOp::AddToList(PropScalar::Text(format!("local-{i}"))),
+                    })
+                    .await
+                    .map(|_| ())
+            });
+        }
         let heal_task = {
             let server = server.clone();
             tokio::spawn(async move { server.heal_disjoint_twins().await })
@@ -10942,6 +11013,10 @@ mod tests {
             let server = server.clone();
             tokio::spawn(async move { server.import_doc_update(note, &peer_frame).await })
         };
+        while let Some(res) = local_set.join_next().await {
+            res.expect("race_local task must not panic")
+                .expect("concurrent record_local must not error");
+        }
         heal_task.await.expect("heal task must not panic");
         import_task
             .await
@@ -10972,6 +11047,37 @@ mod tests {
             Some("Peer concurrent block C"),
             "the concurrent import's genuinely new block C must land intact, \
              not be corrupted/dropped by the racing heal"
+        );
+        assert_eq!(
+            block_prop_scalar(&server, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "the pre-existing A twin's scalar property must survive the racing heal"
+        );
+        assert_eq!(
+            block_prop_scalar(&server, note, A_BID_BYTES, "priority").await,
+            Some(PropScalar::Int(3)),
+            "the fabricated A twin's distinct scalar property must be reasserted \
+             onto the survivor by the racing heal"
+        );
+        let mut tags: Vec<String> = block_prop_list(&server, note, A_BID_BYTES, "race_tag")
+            .await
+            .into_iter()
+            .map(|s| match s {
+                PropScalar::Text(t) => t,
+                other => format!("{other:?}"),
+            })
+            .collect();
+        tags.sort();
+        let mut expected: Vec<String> = (0..N).map(|i| format!("local-{i}")).collect();
+        expected.sort();
+        assert_eq!(
+            tags, expected,
+            "every concurrent record_local AddToList onto block A must survive \
+             a racing heal_disjoint_twins for the SAME note — a dropped entry \
+             here means the local edit landed between heal's plan-fork \
+             (twin_winners_for) and its twin tombstone/reassert and got \
+             silently discarded (the tesela-xh4 REVIEW REJECT finding this \
+             test guards)"
         );
     }
 }
