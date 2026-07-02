@@ -6,6 +6,7 @@ pub mod error;
 pub mod export;
 pub mod import_logseq;
 pub mod indexer;
+pub mod lifecycle;
 pub mod link;
 pub mod note;
 pub mod note_tree;
