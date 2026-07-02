@@ -6,10 +6,6 @@
   import { commandRegistry, effectiveShortcut, effectiveChord, checkRebind } from "$lib/command-registry.svelte";
   import { eventToShortcutGlyph } from "$lib/shortcut-glyph";
   import * as keybindings from "$lib/stores/keybindings.svelte";
-  // Side-effect import: populates commandRegistry (buildV4Commands runs on
-  // module load) so the rebindable list isn't empty on this standalone route
-  // — the /g shell loads it via the leader/palette, but /settings doesn't.
-  import "$lib/v4/commands";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;

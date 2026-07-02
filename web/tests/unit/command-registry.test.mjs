@@ -15,8 +15,10 @@ class KeyboardEvent {
 globalThis.KeyboardEvent = KeyboardEvent;
 
 // We test the pure registry utilities by importing the module's named exports.
-// The singleton registry is populated as a side effect of importing v4/commands,
-// so tests that need a clean registry call _reset().
+// This module alone never registers anything as an import side effect (the
+// builtin V4 command set is registered explicitly via registerBuiltinCommands(),
+// called once from the root layout) — the singleton registry starts empty, but
+// tests still call _reset() defensively for isolation from each other.
 const mod = await import("../../src/lib/command-registry.svelte.ts");
 const { BUILTIN_SLASH_CHORDS } = await import("../../src/lib/chord-keys.ts");
 
@@ -30,9 +32,10 @@ const {
   checkRebind,
   resolveShortcut,
   surfacesFor,
+  matchesCommand,
 } = mod;
 
-test("register deduplicates by id", () => {
+test("register throws on duplicate id (dev — includes plain node test runs)", () => {
   commandRegistry._reset();
   commandRegistry.register({
     id: "test-cmd",
@@ -42,15 +45,19 @@ test("register deduplicates by id", () => {
     keywords: ["test"],
     run: () => {},
   });
-  commandRegistry.register({
-    id: "test-cmd",
-    label: "Test 2",
-    glyph: "t",
-    category: "navigate",
-    keywords: ["test"],
-    run: () => {},
-  });
+  assert.throws(() => {
+    commandRegistry.register({
+      id: "test-cmd",
+      label: "Test 2",
+      glyph: "t",
+      category: "navigate",
+      keywords: ["test"],
+      run: () => {},
+    });
+  }, /registered twice/);
+  // The first registration wins; the throwing duplicate never landed.
   assert.equal(commandRegistry.all().length, 1);
+  assert.equal(commandRegistry.get("test-cmd")?.label, "Test");
 });
 
 test("buildKeymapIndex groups shortcuts and chords", () => {
@@ -781,4 +788,23 @@ test("availableOn('leader'): editor+chord command shows only when a block is foc
   );
   // Slash surface unchanged: still gated on a real editor ctx.
   assert.deepEqual(commandRegistry.availableOn("slash", { editor: {} }).map((c) => c.id), ["editor.link"]);
+});
+
+// ── matchesCommand (moved into the registry so palette+colon stop reaching
+// around it into v4/commands.ts) ───────────────────────────────────────────
+
+test("matchesCommand: empty query matches everything", () => {
+  const cmd = { id: "x", label: "X", glyph: "x", category: "navigate", keywords: [], run: () => {} };
+  assert.equal(matchesCommand(cmd, ""), true);
+});
+
+test("matchesCommand: matches label, verb, or keywords case-insensitively", () => {
+  const cmd = {
+    id: "daily", verb: "daily", label: "Today's daily note", glyph: "☀",
+    category: "navigate", keywords: ["journal"], run: () => {},
+  };
+  assert.equal(matchesCommand(cmd, "DAILY"), true);
+  assert.equal(matchesCommand(cmd, "journal"), true);
+  assert.equal(matchesCommand(cmd, "today"), true);
+  assert.equal(matchesCommand(cmd, "nope"), false);
 });

@@ -748,17 +748,13 @@ export function buildV4Commands(): V4Command[] {
   return commands;
 }
 
-export function matchesV4Command(cmd: V4Command, query: string): boolean {
-  if (!query) return true;
-  const q = query.toLowerCase();
-  if (cmd.label.toLowerCase().includes(q)) return true;
-  if (cmd.verb && cmd.verb.toLowerCase().includes(q)) return true;
-  return cmd.keywords.some((kw) => kw.includes(q));
+/**
+ * Explicit bootstrap: registers the built-in V4 command set into the shared
+ * commandRegistry. Idempotent (buildV4Commands guards against
+ * double-registration) — safe to call more than once. Call this exactly
+ * once, from the root layout, rather than relying on importing this module
+ * for its former import-time side effect.
+ */
+export function registerBuiltinCommands(): void {
+  buildV4Commands();
 }
-
-export function findCommandByVerb(verb: string): V4Command | undefined {
-  return commandRegistry.findByVerb(verb) as V4Command | undefined;
-}
-
-// Register the V4 command set into the unified registry on module load.
-buildV4Commands();

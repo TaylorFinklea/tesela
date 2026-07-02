@@ -54,13 +54,27 @@ export type Command = {
 
 export type RegisteredCommand = Command & { registeredAt: number };
 
+/**
+ * True outside a Vite production build. `import.meta.env.DEV` is statically
+ * `false` only in a real production build; every other context (Vite dev
+ * server, SSR, and plain `node --test` where `import.meta.env` doesn't exist
+ * at all) is treated as dev so a duplicate-id bug fails loud in tests too.
+ */
+function isDevEnv(): boolean {
+  return (import.meta as { env?: { DEV?: boolean } }).env?.DEV !== false;
+}
+
 class CommandRegistry {
   private commands = new Map<string, RegisteredCommand>();
   private registrationOrder: string[] = [];
 
   register(cmd: Command): void {
     if (this.commands.has(cmd.id)) {
-      console.warn(`command-registry: command "${cmd.id}" registered twice`);
+      const msg = `command-registry: command "${cmd.id}" registered twice`;
+      if (isDevEnv()) {
+        throw new Error(msg);
+      }
+      console.warn(msg);
       return;
     }
     const registered: RegisteredCommand = {
@@ -109,6 +123,20 @@ class CommandRegistry {
 }
 
 export const commandRegistry = new CommandRegistry();
+
+/**
+ * True when `query` matches a command's label, verb/id, or keywords
+ * (case-insensitive substring). Powers palette + colon suggestion filtering
+ * — the single matcher both surfaces share instead of each reaching around
+ * the registry for their own copy.
+ */
+export function matchesCommand(cmd: Command | RegisteredCommand, query: string): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  if (cmd.label.toLowerCase().includes(q)) return true;
+  if (cmd.verb && cmd.verb.toLowerCase().includes(q)) return true;
+  return cmd.keywords.some((kw) => kw.includes(q));
+}
 
 /**
  * Per-surface visibility for a command. When `cmd.surfaces` is set it is

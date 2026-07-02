@@ -6,9 +6,9 @@
    * Station palette tab (deleted with the v4 chrome) exactly:
    *   - open/close state from the station store (isStationOpen / closeStation
    *     / getStationInitialQuery / getStationPriorPaneId)
-   *   - the command rows are buildV4Commands() (the same V4Command set the
-   *     real ⌘K runs), filtered with matchesV4Command + ranked with
-   *     scoreFuzzy from $lib/fuzzy
+   *   - the command rows are commandRegistry.availableOn('palette', ctx) (the
+   *     same registered command set the real ⌘K runs), filtered with
+   *     matchesCommand + ranked with scoreFuzzy from $lib/fuzzy
    *   - notes are fetched + ranked the same way the Station does (createQuery
    *     + scoreFuzzy on title/id), interleaved by score
    *   - exec restores prior pane focus FIRST, prompts for argPrompt verbs,
@@ -32,11 +32,11 @@
   import {
     commandRegistry,
     effectiveShortcut,
+    matchesCommand,
     type Command,
     type CommandContext,
   } from '$lib/command-registry.svelte';
   import * as keybindings from '$lib/stores/keybindings.svelte';
-  import { matchesV4Command } from '$lib/v4/commands';
   import { scoreFuzzy, highlightRuns } from '$lib/fuzzy';
 
   interface Props {
@@ -91,7 +91,7 @@
     const cmdRows: CmdRow[] = !q
       ? allCommands.map((c) => ({ kind: 'cmd' as const, key: `c:${c.id}`, cmd: c, score: 0 }))
       : allCommands
-          .filter((c) => matchesV4Command(c, q))
+          .filter((c) => matchesCommand(c, q))
           .map((c) => ({
             kind: 'cmd' as const,
             key: `c:${c.id}`,

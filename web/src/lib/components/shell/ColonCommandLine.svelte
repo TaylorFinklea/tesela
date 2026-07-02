@@ -17,11 +17,11 @@
   import {
     commandRegistry,
     effectiveShortcut,
+    matchesCommand,
     type Command,
     type CommandContext,
   } from "$lib/command-registry.svelte";
   import * as keybindings from "$lib/stores/keybindings.svelte";
-  import { findCommandByVerb, matchesV4Command } from "$lib/v4/commands";
   import { focusLeaf } from "$lib/buffer/state.svelte";
   import type { LeafId } from "$lib/buffer/types";
   // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
@@ -63,7 +63,7 @@
     const overrides = keybindings.snapshot();
     for (const cmd of allCommands) {
       if (!cmd.verb) continue;
-      if (matchesV4Command(cmd, q)) {
+      if (matchesCommand(cmd, q)) {
         rows.push({
           verb: cmd.verb,
           label: cmd.label,
@@ -101,7 +101,7 @@
   }
 
   async function runVerb(verb: string, arg?: string) {
-    const cmd = findCommandByVerb(verb);
+    const cmd = commandRegistry.findByVerb(verb);
     if (!cmd) {
       error = `unknown verb: :${verb}`;
       return;
@@ -132,7 +132,7 @@
     // prefer the highlighted suggestion.
     const [typedVerb, ...rest] = raw.split(/\s+/);
     const arg = rest.join(" ").trim() || undefined;
-    const exact = findCommandByVerb(typedVerb);
+    const exact = commandRegistry.findByVerb(typedVerb);
     if (exact) {
       await runVerb(typedVerb, arg);
       return;
