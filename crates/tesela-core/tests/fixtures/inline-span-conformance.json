@@ -1,0 +1,296 @@
+{
+  "_contract": [
+    "Shared inline-span rendering conformance fixture (tesela-pfix.6) — the ONE",
+    "source of truth for how a block's prose text renders into a flat, ordered",
+    "list of inline spans, across web (parseInlineSpans in",
+    "web/src/lib/block-parser.ts, mirrored from the unfocused-block markdown pass",
+    "in web/src/lib/cm-decorations.ts's buildDecorations) and iOS",
+    "(BlockText.parseInlineSpans in",
+    "app/Tesela-iOS/Sources/Components/BlockText.swift). No Rust implementation",
+    "exists — Rust never renders UI — so this fixture has exactly two consumers,",
+    "not three; there is no 'Rust is the source of truth' rule here. Each engine",
+    "runs its REAL production span parser (the one BlockText / cm-decorations",
+    "actually render with) against every case. Web is the reference precedence",
+    "order (cm-decorations.ts is more capable and CodeMirror-coupled — atomic",
+    "ranges, marker-hide widgets, always-on vs. focus-gated passes — so this",
+    "fixture intentionally targets the smaller, portable RENDERING contract",
+    "block-parser.ts's parseInlineSpans captures, not those CodeMirror internals).",
+    "",
+    "SCOPE — deliberately narrow to the flat, non-nesting inline surface both",
+    "platforms can realistically share:",
+    "  * Covered kinds: bold (`**x**` / `__x__`), italic (`*x*`), inline code",
+    "    (`` `x` ``), strikethrough (`~~x~~`), markdown link (`[x](url)`), and",
+    "    wiki-link (`[[x]]`). All six are FLAT and MUTUALLY EXCLUSIVE — a span's",
+    "    inner text is never re-scanned for other markers (matches how both",
+    "    engines implement this: one linear left-to-right scan, no recursion).",
+    "  * Fixture text is always SINGLE-LINE prose (never spans a code fence or",
+    "    contains '\\n') — multi-line span-crossing is out of scope for both",
+    "    engines' inline pass.",
+    "  * `[[target|display]]` pipe-display wikilinks are OUT of scope — iOS's",
+    "    existing (pre-tesela-pfix.6) wikilink handling keeps the bracket",
+    "    interior verbatim (no pipe-splitting), so cases here never include a",
+    "    `|` inside `[[...]]`. Fixing that is separate, un-scoped work.",
+    "  * Block-level constructs (fenced code, images, ==highlight==, `>`",
+    "    blockquote lines, `---` horizontal rules, `[!type]` callouts, ATX",
+    "    headings) are OUT of scope — they are not inline spans in either",
+    "    engine (fences are a pre-existing BLOCK-level segment in",
+    "    BlockText.parseSegments, already at parity; the rest are TRIAGED in",
+    "    the tesela-pfix.6 design notes as defer-or-do, not fixture-covered).",
+    "",
+    "Case shape: { name, text, expected: [{ kind, text }] }",
+    "  text     — raw single-line prose fed verbatim to the parser.",
+    "  expected — the ordered, FLAT list of rendered spans. `kind: \"plain\"`",
+    "             spans carry through unstyled runs (including any unterminated",
+    "             marker, which is never treated as a span — see below).",
+    "             `text` is always the DISPLAY text with delimiters stripped",
+    "             (a link/wikilink span's `text` is its display text; the",
+    "             URL/target is dropped — this is a rendering-only contract,",
+    "             not a click-through target check).",
+    "  kind     — one of: plain | bold | italic | code | strike | link | wikilink.",
+    "",
+    "Precedence pinned by these cases (mirrors the priority order both",
+    "parseInlineSpans implementations must apply when multiple marker syntaxes",
+    "could start at the same character): code > bold > italic > strike >",
+    "wikilink > link. In practice these only compete via shared PREFIX",
+    "characters (`**` starts with `*`, so bold must be tried before italic);",
+    "the other marker syntaxes have disjoint leading characters so relative",
+    "order rarely matters, but is pinned anyway for determinism.",
+    "  * Inline code content is fully literal — markers of any other kind",
+    "    inside `` `...` `` never fire (the code match consumes them first).",
+    "  * An unterminated marker (an opening delimiter with no matching close",
+    "    on the same line) falls through as plain text, delimiter included.",
+    "  * A lone unpaired `*` or a single `_` inside an identifier never forms",
+    "    italic/bold — both require a real closing pair."
+  ],
+  "cases": [
+    {
+      "name": "plain_text_no_markup",
+      "text": "Buy milk and eggs",
+      "expected": [{ "kind": "plain", "text": "Buy milk and eggs" }]
+    },
+    {
+      "name": "empty_text_yields_no_spans",
+      "text": "",
+      "expected": []
+    },
+    {
+      "name": "bold_basic",
+      "text": "This is **bold** text",
+      "expected": [
+        { "kind": "plain", "text": "This is " },
+        { "kind": "bold", "text": "bold" },
+        { "kind": "plain", "text": " text" }
+      ]
+    },
+    {
+      "name": "bold_double_underscore",
+      "text": "This is __bold__ too",
+      "expected": [
+        { "kind": "plain", "text": "This is " },
+        { "kind": "bold", "text": "bold" },
+        { "kind": "plain", "text": " too" }
+      ]
+    },
+    {
+      "name": "italic_basic",
+      "text": "This is *italic* text",
+      "expected": [
+        { "kind": "plain", "text": "This is " },
+        { "kind": "italic", "text": "italic" },
+        { "kind": "plain", "text": " text" }
+      ]
+    },
+    {
+      "name": "bold_and_italic_adjacent_on_one_line",
+      "text": "**bold** and *italic*",
+      "expected": [
+        { "kind": "bold", "text": "bold" },
+        { "kind": "plain", "text": " and " },
+        { "kind": "italic", "text": "italic" }
+      ]
+    },
+    {
+      "name": "bold_unterminated_stays_plain",
+      "text": "This is **not closed",
+      "expected": [{ "kind": "plain", "text": "This is **not closed" }]
+    },
+    {
+      "name": "italic_unterminated_stays_plain",
+      "text": "This is *not closed",
+      "expected": [{ "kind": "plain", "text": "This is *not closed" }]
+    },
+    {
+      "name": "code_basic",
+      "text": "Run `npm test` now",
+      "expected": [
+        { "kind": "plain", "text": "Run " },
+        { "kind": "code", "text": "npm test" },
+        { "kind": "plain", "text": " now" }
+      ]
+    },
+    {
+      "name": "code_content_is_literal_asterisks_not_bold",
+      "text": "Use `a**b**c` literally",
+      "expected": [
+        { "kind": "plain", "text": "Use " },
+        { "kind": "code", "text": "a**b**c" },
+        { "kind": "plain", "text": " literally" }
+      ]
+    },
+    {
+      "name": "code_span_containing_bracket_syntax_is_literal",
+      "text": "Type `[[not a link]]` verbatim",
+      "expected": [
+        { "kind": "plain", "text": "Type " },
+        { "kind": "code", "text": "[[not a link]]" },
+        { "kind": "plain", "text": " verbatim" }
+      ]
+    },
+    {
+      "name": "strike_basic",
+      "text": "This was ~~wrong~~ right",
+      "expected": [
+        { "kind": "plain", "text": "This was " },
+        { "kind": "strike", "text": "wrong" },
+        { "kind": "plain", "text": " right" }
+      ]
+    },
+    {
+      "name": "strike_unterminated_stays_plain",
+      "text": "This was ~~not closed",
+      "expected": [{ "kind": "plain", "text": "This was ~~not closed" }]
+    },
+    {
+      "name": "link_basic",
+      "text": "See [the docs](https://example.com/docs) here",
+      "expected": [
+        { "kind": "plain", "text": "See " },
+        { "kind": "link", "text": "the docs" },
+        { "kind": "plain", "text": " here" }
+      ]
+    },
+    {
+      "name": "link_relative_path",
+      "text": "See [notes](./notes.md) here",
+      "expected": [
+        { "kind": "plain", "text": "See " },
+        { "kind": "link", "text": "notes" },
+        { "kind": "plain", "text": " here" }
+      ]
+    },
+    {
+      "name": "wikilink_basic",
+      "text": "See [[Project Plan]] for details",
+      "expected": [
+        { "kind": "plain", "text": "See " },
+        { "kind": "wikilink", "text": "Project Plan" },
+        { "kind": "plain", "text": " for details" }
+      ]
+    },
+    {
+      "name": "wikilink_and_link_do_not_collide",
+      "text": "[[Home]] vs [external](https://x.com)",
+      "expected": [
+        { "kind": "wikilink", "text": "Home" },
+        { "kind": "plain", "text": " vs " },
+        { "kind": "link", "text": "external" }
+      ]
+    },
+    {
+      "name": "wikilink_before_parens_is_not_read_as_a_link",
+      "text": "[[Real Page]] versus [[fake]](ignored)",
+      "expected": [
+        { "kind": "wikilink", "text": "Real Page" },
+        { "kind": "plain", "text": " versus " },
+        { "kind": "wikilink", "text": "fake" },
+        { "kind": "plain", "text": "(ignored)" }
+      ]
+    },
+    {
+      "name": "multiple_bold_spans_same_line",
+      "text": "**one** and **two**",
+      "expected": [
+        { "kind": "bold", "text": "one" },
+        { "kind": "plain", "text": " and " },
+        { "kind": "bold", "text": "two" }
+      ]
+    },
+    {
+      "name": "multiple_code_spans_same_line",
+      "text": "`a` then `b`",
+      "expected": [
+        { "kind": "code", "text": "a" },
+        { "kind": "plain", "text": " then " },
+        { "kind": "code", "text": "b" }
+      ]
+    },
+    {
+      "name": "mixed_paragraph_all_required_kinds",
+      "text": "Check **status**, run `build`, see [[Notes]], visit [site](https://x.com), and note ~~old~~ *new* info",
+      "expected": [
+        { "kind": "plain", "text": "Check " },
+        { "kind": "bold", "text": "status" },
+        { "kind": "plain", "text": ", run " },
+        { "kind": "code", "text": "build" },
+        { "kind": "plain", "text": ", see " },
+        { "kind": "wikilink", "text": "Notes" },
+        { "kind": "plain", "text": ", visit " },
+        { "kind": "link", "text": "site" },
+        { "kind": "plain", "text": ", and note " },
+        { "kind": "strike", "text": "old" },
+        { "kind": "plain", "text": " " },
+        { "kind": "italic", "text": "new" },
+        { "kind": "plain", "text": " info" }
+      ]
+    },
+    {
+      "name": "leading_span_no_preceding_text",
+      "text": "**bold** at start",
+      "expected": [
+        { "kind": "bold", "text": "bold" },
+        { "kind": "plain", "text": " at start" }
+      ]
+    },
+    {
+      "name": "trailing_span_no_following_text",
+      "text": "ends with *italic*",
+      "expected": [
+        { "kind": "plain", "text": "ends with " },
+        { "kind": "italic", "text": "italic" }
+      ]
+    },
+    {
+      "name": "whole_text_is_a_single_code_span",
+      "text": "`entire line is code`",
+      "expected": [{ "kind": "code", "text": "entire line is code" }]
+    },
+    {
+      "name": "bold_content_with_numbers_and_punctuation",
+      "text": "Price is **$42.50** today",
+      "expected": [
+        { "kind": "plain", "text": "Price is " },
+        { "kind": "bold", "text": "$42.50" },
+        { "kind": "plain", "text": " today" }
+      ]
+    },
+    {
+      "name": "wikilink_immediately_followed_by_letter",
+      "text": "the [[Tag]]s are great",
+      "expected": [
+        { "kind": "plain", "text": "the " },
+        { "kind": "wikilink", "text": "Tag" },
+        { "kind": "plain", "text": "s are great" }
+      ]
+    },
+    {
+      "name": "lone_asterisk_arithmetic_stays_plain",
+      "text": "5 * 3 = 15",
+      "expected": [{ "kind": "plain", "text": "5 * 3 = 15" }]
+    },
+    {
+      "name": "single_underscores_in_identifier_not_bold",
+      "text": "the snake_case_name variable",
+      "expected": [{ "kind": "plain", "text": "the snake_case_name variable" }]
+    }
+  ]
+}

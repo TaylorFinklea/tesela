@@ -324,3 +324,55 @@ export function blockDisplayText(block: Pick<ParsedBlock, "text" | "raw_text">):
   }
   return kept.join("\n").trimEnd();
 }
+
+// ── Inline-span rendering contract (tesela-pfix.6) ──────────────────────────
+//
+// The shared fixture is crates/tesela-core/tests/fixtures/inline-span-conformance.json
+// (consumed here and by app/Tesela-iOS/Sources/Components/BlockText.swift's
+// `BlockText.parseInlineSpans`). See the fixture's `_contract` header for the
+// full scope/precedence rules. This is a DELIBERATELY narrower, portable mirror
+// of the unfocused-block markdown pass in cm-decorations.ts's buildDecorations
+// — flat, non-nesting, single-line only — not a replacement for it.
+
+export type InlineSpanKind = "plain" | "bold" | "italic" | "code" | "strike" | "link" | "wikilink";
+export type InlineSpan = { kind: InlineSpanKind; text: string };
+
+// Alternation order = precedence at a shared starting position: code > bold >
+// italic > strike > wikilink > link. Groups: 1 code, 2/3 bold (**/__), 4
+// italic, 5 strike, 6 wikilink, 7 link-text (8 link-url, unused — display-only
+// contract).
+const INLINE_SPAN_RE =
+  /`([^`\n]+?)`|\*\*([^*\n]+?)\*\*|__([^_\n]+?)__|\*([^*\n]+?)\*|~~([^~\n]+?)~~|\[\[([^\]\n]+?)\]\]|\[([^\]\n]+?)\]\(([^)\n]+?)\)/g;
+
+/** Parse single-line prose into the flat, ordered inline-span list both web
+ *  and iOS render — the REAL production parser BlockText and (indirectly)
+ *  cm-decorations.ts style prose with. See the fixture contract for scope. */
+export function parseInlineSpans(text: string): InlineSpan[] {
+  const spans: InlineSpan[] = [];
+  let cursor = 0;
+  INLINE_SPAN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_SPAN_RE.exec(text)) !== null) {
+    if (m.index > cursor) {
+      spans.push({ kind: "plain", text: text.slice(cursor, m.index) });
+    }
+    if (m[1] !== undefined) {
+      spans.push({ kind: "code", text: m[1] });
+    } else if (m[2] !== undefined || m[3] !== undefined) {
+      spans.push({ kind: "bold", text: (m[2] ?? m[3])! });
+    } else if (m[4] !== undefined) {
+      spans.push({ kind: "italic", text: m[4] });
+    } else if (m[5] !== undefined) {
+      spans.push({ kind: "strike", text: m[5] });
+    } else if (m[6] !== undefined) {
+      spans.push({ kind: "wikilink", text: m[6] });
+    } else if (m[7] !== undefined) {
+      spans.push({ kind: "link", text: m[7] });
+    }
+    cursor = m.index + m[0].length;
+  }
+  if (cursor < text.length) {
+    spans.push({ kind: "plain", text: text.slice(cursor) });
+  }
+  return spans;
+}

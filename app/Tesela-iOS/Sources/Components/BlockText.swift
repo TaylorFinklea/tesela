@@ -1,13 +1,17 @@
 import SwiftUI
 
 /// Renders a block's body. Plain prose gets inline `[[wiki-link]]`,
-/// `**bold**`, and `*italic*` styling; leading ATX headings get sized up.
-/// Fenced ```` ``` ```` spans are lifted out and drawn
-/// as a monospaced, themed code surface. Wiki-links are encoded as
-/// tappable `tesela://page/<title>` links via `AttributedString`, so
-/// callers can intercept them through
-/// `.environment(\.openURL, OpenURLAction { ... })` and push the
-/// linked page onto a NavigationStack.
+/// `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, and `[text](url)`
+/// link styling (see `parseInlineSpans` — the shared rendering-contract
+/// fixture at crates/tesela-core/tests/fixtures/inline-span-conformance.json);
+/// leading ATX headings get sized up. Fenced ```` ``` ```` spans are lifted
+/// out and drawn as a monospaced, themed code surface. Wiki-links are
+/// encoded as tappable `tesela://page/<title>` links via `AttributedString`,
+/// so callers can intercept them through
+/// `.environment(\.openURL, OpenURLAction { ... })` and push the linked page
+/// onto a NavigationStack. Markdown links carry their real URL and fall
+/// through to `.systemAction` (opens in the default browser) at every
+/// existing `OpenURLAction` call site.
 ///
 /// A block with no code fence renders as a single `Text` — exactly as
 /// before — so the common case keeps its lightweight layout.
@@ -167,51 +171,128 @@ struct BlockText: View {
         return nil
     }
 
+    // MARK: - Inline-span rendering contract (tesela-pfix.6)
+    //
+    // The shared fixture is crates/tesela-core/tests/fixtures/inline-span-conformance.json
+    // (consumed here and by web/src/lib/block-parser.ts's `parseInlineSpans`).
+    // See the fixture's `_contract` header for the full scope/precedence
+    // rules. Flat, non-nesting, single-line-prose only — a span's inner text
+    // is never re-scanned for other markers.
+
+    /// One flat inline span. `href` is NOT part of the shared fixture
+    /// contract (display-text-only, rendering-only) — it's populated for
+    /// `.link` spans so `buildAttributed` can make markdown links tappable.
+    enum InlineSpanKind: String, Equatable {
+        case plain, bold, italic, code, strike, link, wikilink
+    }
+    struct InlineSpan: Equatable {
+        let kind: InlineSpanKind
+        let text: String
+        var href: String?
+
+        init(kind: InlineSpanKind, text: String, href: String? = nil) {
+            self.kind = kind
+            self.text = text
+            self.href = href
+        }
+    }
+
+    /// Parse single-line prose into the flat, ordered inline-span list this
+    /// view renders — the REAL production parser `buildAttributed` styles
+    /// with. Precedence: code > bold > italic > strike > wikilink > link
+    /// (mirrors the shared fixture and web `parseInlineSpans`).
+    static func parseInlineSpans(_ source: String) -> [InlineSpan] {
+        let pattern = #"`([^`\n]+?)`|\*\*([^*\n]+?)\*\*|__([^_\n]+?)__|\*([^*\n]+?)\*|~~([^~\n]+?)~~|\[\[([^\]\n]+?)\]\]|\[([^\]\n]+?)\]\(([^)\n]+?)\)"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else {
+            return source.isEmpty ? [] : [InlineSpan(kind: .plain, text: source)]
+        }
+        let ns = source as NSString
+        let matches = re.matches(in: source, range: NSRange(location: 0, length: ns.length))
+        var spans: [InlineSpan] = []
+        var cursor = 0
+
+        func group(_ m: NSTextCheckingResult, _ index: Int) -> String? {
+            let r = m.range(at: index)
+            guard r.location != NSNotFound else { return nil }
+            return ns.substring(with: r)
+        }
+
+        for m in matches {
+            if m.range.location > cursor {
+                spans.append(InlineSpan(
+                    kind: .plain,
+                    text: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor))
+                ))
+            }
+            if let code = group(m, 1) {
+                spans.append(InlineSpan(kind: .code, text: code))
+            } else if let bold = group(m, 2) ?? group(m, 3) {
+                spans.append(InlineSpan(kind: .bold, text: bold))
+            } else if let italic = group(m, 4) {
+                spans.append(InlineSpan(kind: .italic, text: italic))
+            } else if let strike = group(m, 5) {
+                spans.append(InlineSpan(kind: .strike, text: strike))
+            } else if let wiki = group(m, 6) {
+                spans.append(InlineSpan(kind: .wikilink, text: wiki))
+            } else if let linkText = group(m, 7) {
+                spans.append(InlineSpan(kind: .link, text: linkText, href: group(m, 8)))
+            }
+            cursor = m.range.location + m.range.length
+        }
+        if cursor < ns.length {
+            spans.append(InlineSpan(kind: .plain, text: ns.substring(from: cursor)))
+        }
+        return spans
+    }
+
     private func buildAttributed(_ text: String, allowHeading: Bool = true) -> AttributedString {
         let heading = allowHeading ? headingStyle(for: text) : nil
         let source = heading.map { String(text.dropFirst($0.prefix.count)) } ?? text
 
         var attributed = AttributedString()
-        let pattern = try? NSRegularExpression(pattern: #"(\[\[[^\]]+\]\]|\*\*[^*]+\*\*|\*[^*]+\*)"#)
-        guard let re = pattern else {
-            var fallback = AttributedString(source)
-            fallback.font = heading?.font
-            return fallback
-        }
-        let ns = source as NSString
-        let matches = re.matches(in: source, range: NSRange(location: 0, length: ns.length))
-        var cursor = 0
 
         func appendPlain(_ plain: String) {
+            guard !plain.isEmpty else { return }
             var span = AttributedString(plain)
             span.font = heading?.font
             attributed += span
         }
 
-        for m in matches {
-            if m.range.location > cursor {
-                let plain = ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor))
-                appendPlain(plain)
-            }
-            let raw = ns.substring(with: m.range)
-            if raw.hasPrefix("[[") {
-                let title = String(raw.dropFirst(2).dropLast(2))
-                attributed += wikiAttributed(title: title, font: heading?.font)
-            } else if raw.hasPrefix("**") {
-                let inner = String(raw.dropFirst(2).dropLast(2))
-                var boldSpan = AttributedString(inner)
+        for span in Self.parseInlineSpans(source) {
+            switch span.kind {
+            case .plain:
+                appendPlain(span.text)
+            case .wikilink:
+                attributed += wikiAttributed(title: span.text, font: heading?.font)
+            case .bold:
+                var boldSpan = AttributedString(span.text)
                 boldSpan.font = heading?.boldFont ?? .system(size: 15, weight: .semibold)
                 attributed += boldSpan
-            } else {
-                let inner = String(raw.dropFirst().dropLast())
-                var italicSpan = AttributedString(inner)
+            case .italic:
+                var italicSpan = AttributedString(span.text)
                 italicSpan.font = heading?.italicFont ?? .system(size: 15).italic()
                 attributed += italicSpan
+            case .code:
+                var codeSpan = AttributedString(span.text)
+                codeSpan.font = .system(size: 13, design: .monospaced)
+                codeSpan.foregroundColor = theme.fgDefault
+                attributed += codeSpan
+            case .strike:
+                var strikeSpan = AttributedString(span.text)
+                strikeSpan.font = heading?.font
+                strikeSpan.foregroundColor = theme.fgFaint
+                strikeSpan.strikethroughStyle = .single
+                attributed += strikeSpan
+            case .link:
+                var linkSpan = AttributedString(span.text)
+                linkSpan.font = heading?.font
+                linkSpan.foregroundColor = theme.accentPrimary
+                linkSpan.underlineStyle = .single
+                if let href = span.href, let url = URL(string: href) {
+                    linkSpan.link = url
+                }
+                attributed += linkSpan
             }
-            cursor = m.range.location + m.range.length
-        }
-        if cursor < ns.length {
-            appendPlain(ns.substring(from: cursor))
         }
         return attributed
     }
