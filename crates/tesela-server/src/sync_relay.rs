@@ -53,22 +53,56 @@ pub struct RelayState {
     /// failure (audit A4).
     #[serde(default)]
     pub catchup_notes: Vec<String>,
+    /// For each hex note id currently in `catchup_notes`, the relay-seq at
+    /// (or just below) which it became undeposited — used by the periodic
+    /// gated-compaction deposit to bound `covers_seq` STRICTLY below the
+    /// earliest such seq, so the relay's group-wide
+    /// `DELETE relay_ops WHERE seq <= covers_seq` GC can never claim
+    /// coverage of ops belonging to a note we don't yet hold genuinely
+    /// (tesela-sclr.4). Two flavors of entry:
+    ///   - Apply-failure / pending (causal-gap) notes: the seq of the
+    ///     envelope that triggered it — its raw op may be the ONLY path to
+    ///     recover the note if no peer has independently deposited it yet,
+    ///     so it must be protected from GC.
+    ///   - Snapshot-bootstrap partial failures: `i64::MAX` (no bound
+    ///     needed) — bootstrap only queues a note here when the relay's
+    ///     compaction watermark is ALREADY ahead of our cursor, i.e. its
+    ///     raw ops are already gone; there is nothing left to protect, and
+    ///     bounding covers_seq for it would only block GC pointlessly.
+    /// A catch-up note with NO entry here (state predates this field, or a
+    /// hand-edited state file) defaults to the maximally conservative
+    /// bound of seq 0 — i.e. fully blocks compaction, same as before this
+    /// feature, rather than risk destroying an unprotected note's ops.
+    /// Persisted alongside `catchup_notes` so a restart doesn't forget the
+    /// bound and unsafely widen it.
+    #[serde(default)]
+    pub catchup_since_seq: HashMap<String, i64>,
     /// Per-seq apply-retry attempts for envelopes whose per-note apply
     /// failed. In-memory only — a restart restarts the budget, which is
     /// fine (the retry bound exists to unstick the cursor, not to be a
     /// durable counter).
     #[serde(skip)]
     pub apply_retries: HashMap<i64, u32>,
-    /// Per-note hash of the LAST heal-snapshot we deposited on broadcast, so
-    /// an identical re-broadcast (same `export_doc_update` bytes) skips a
-    /// redundant deposit. Throttles ONLY identical churn — any new/changed
-    /// content hashes differently and ALWAYS deposits immediately (never
-    /// re-strands a diverged peer). Per-content, NOT per-cadence: gating the
-    /// heal on the compaction cadence / catch-up / inbound_cursor caused the
+    /// Per-note hash of the LAST snapshot we deposited to the relay —
+    /// shared by BOTH the broadcast heal-deposit and the periodic gated-
+    /// compaction deposit — so an identical re-export (same
+    /// `export_doc_update` bytes) skips a redundant upload from EITHER
+    /// path. Throttles ONLY identical churn — any new/changed content
+    /// hashes differently and ALWAYS deposits immediately (never re-strands
+    /// a diverged peer, never lets a stale periodic pass skip a real
+    /// change). Per-content, NOT per-cadence or per-watermark: the relay's
+    /// compaction watermark (`relay_group_meta.compaction_seq`) is a
+    /// SEPARATE group-scalar decoupled from each note's `relay_snapshots`
+    /// row, so an already-deposited, still-byte-identical row stays valid
+    /// no matter how far the watermark later advances — watermark movement
+    /// alone is never a reason to re-deposit an unchanged note (see the
+    /// hash-skip in `deposit_snapshots` for the checkpoint-only path that
+    /// still advances the watermark with zero re-uploads). Gating the heal
+    /// on the compaction cadence / catch-up / inbound_cursor caused the
     /// past-day-stuck bug. In-memory only — a restart re-deposits once per
     /// note, which is harmless (idempotent upsert).
     #[serde(skip)]
-    pub heal_deposit_hashes: HashMap<[u8; 16], u64>,
+    pub deposit_hashes: HashMap<[u8; 16], u64>,
     /// Relay URL the cursors were earned against. Together with
     /// `group_id_hex` this scopes the persisted state to ONE
     /// (relay, group) identity: relay seqs are a per-relay, per-group
@@ -346,6 +380,10 @@ pub async fn tick(
                         // base arrives (audit A4).
                         for doc in &report.pending {
                             let hex_id = hex::encode(doc);
+                            // This envelope's raw op may be the note's ONLY
+                            // recovery path — bound future compaction below it
+                            // (tesela-sclr.4).
+                            state.catchup_since_seq.entry(hex_id.clone()).or_insert(seq);
                             if !state.catchup_notes.contains(&hex_id) {
                                 state.catchup_notes.push(hex_id);
                             }
@@ -384,6 +422,10 @@ pub async fn tick(
                                 );
                                 for (doc, _) in &report.failed {
                                     let hex_id = hex::encode(doc);
+                                    // Same rationale as the pending case above —
+                                    // this envelope's raw op is the recovery
+                                    // path of last resort (tesela-sclr.4).
+                                    state.catchup_since_seq.entry(hex_id.clone()).or_insert(seq);
                                     if !state.catchup_notes.contains(&hex_id) {
                                         state.catchup_notes.push(hex_id);
                                     }
@@ -493,6 +535,7 @@ pub async fn tick(
         if !healed.is_empty() {
             state.catchup_notes.retain(|h| !healed.contains(h));
             for h in &healed {
+                state.catchup_since_seq.remove(h);
                 if let Some(id) = parse_hex_note_id(h) {
                     if !applied_note_ids.contains(&id) {
                         applied_note_ids.push(id);
@@ -592,7 +635,7 @@ pub async fn tick(
                 // was already deposited (identical re-broadcast churn). Any
                 // new/changed content hashes differently and deposits now.
                 let h = export_snapshot_hash(&bytes);
-                if state.heal_deposit_hashes.get(id) == Some(&h) {
+                if state.deposit_hashes.get(id) == Some(&h) {
                     continue;
                 }
                 deposited_hashes.push((*id, h));
@@ -608,7 +651,7 @@ pub async fn tick(
                 Ok(_) => {
                     // Record only on success — a failed deposit must re-try.
                     for (id, h) in deposited_hashes {
-                        state.heal_deposit_hashes.insert(id, h);
+                        state.deposit_hashes.insert(id, h);
                     }
                 }
                 Err(e) => {
@@ -619,61 +662,122 @@ pub async fn tick(
     }
 
     // ─── Snapshot-gated compaction cadence ───────────────────────────
-    // Periodically deposit a full per-note snapshot set covering everything
-    // we've applied (`inbound_cursor`), so the relay can GC the encrypted op
-    // log it retains (it stays a durable backup via the snapshots). This is
-    // the live wiring of the Phase-1 mechanism; one depositor (this server)
-    // is enough — deposits are idempotent. Gated by a (test-tunable) interval
+    // Periodically deposit a per-note snapshot set covering everything
+    // we've SAFELY applied, so the relay can GC the encrypted op log it
+    // retains (it stays a durable backup via the snapshots). This is the
+    // live wiring of the Phase-1 mechanism; one depositor (this server) is
+    // enough — deposits are idempotent. Gated by a (test-tunable) interval
     // so a busy tick loop doesn't re-upload every note's snapshot constantly.
+    //
+    // Per-note compaction scoping (tesela-sclr.4): a stuck note (queued in
+    // `catchup_notes`) must NEVER let `covers_seq` claim coverage of ops it
+    // needs — the relay's GC (`DELETE relay_ops WHERE seq <= covers_seq`)
+    // is group-wide, note-blind (see `deposit_snapshots` doc), so the only
+    // lever available here is bounding the numeric watermark itself STRICTLY
+    // below the earliest still-undeposited note's seq (`catchup_since_seq`).
+    // This still lets compaction advance — and GC — everything OLDER than
+    // that boundary (e.g. another note's earlier, already-healthy edits),
+    // instead of the previous all-or-nothing gate that froze compaction for
+    // the WHOLE group the moment any one note got stuck.
     let now = now_secs_i64();
     let due = state
         .last_snapshot_at
         .is_none_or(|t| now - t >= snapshot_interval_secs());
-    if due && state.inbound_cursor > 0 && !state.catchup_notes.is_empty() {
-        // Don't deposit (→ relay GC) while notes we failed to integrate are
-        // still queued: covers_seq = our cursor, and the deposited snapshots
-        // would LACK those notes' content — the GC would destroy their ops
-        // group-wide. Conservative: the op log grows until the catch-up
-        // heals the queue (loud in the log either way).
-        tracing::warn!(
-            "relay: snapshot deposit SKIPPED — {} note(s) awaiting catch-up: {:?}",
-            state.catchup_notes.len(),
-            state.catchup_notes
-        );
-    }
-    if due && state.inbound_cursor > 0 && state.catchup_notes.is_empty() {
-        match deposit_snapshots(engine, &handle.client, state.inbound_cursor).await {
-            Ok(report) => {
-                // Stamp the cadence even on a partial (skipped-notes)
-                // deposit: retrying every tick can't shrink an oversize
-                // snapshot, it would just re-upload the mosaic in a loop.
-                state.last_snapshot_at = Some(now);
-                if report.complete() {
-                    if report.gc > 0 {
-                        tracing::debug!(
-                            "relay snapshot deposit: covers seq {} in {} chunk(s), relay GC'd {} ops",
-                            state.inbound_cursor,
-                            report.chunks_sent,
-                            report.gc
+    if due {
+        let earliest_stuck_seq: Option<i64> = if state.catchup_notes.is_empty() {
+            None
+        } else {
+            Some(
+                state
+                    .catchup_notes
+                    .iter()
+                    .map(|h| state.catchup_since_seq.get(h).copied().unwrap_or(0))
+                    .min()
+                    .unwrap_or(0),
+            )
+        };
+        let safe_covers_seq = match earliest_stuck_seq {
+            None => state.inbound_cursor,
+            Some(s) => state.inbound_cursor.min(s.saturating_sub(1)),
+        };
+        if !state.catchup_notes.is_empty() {
+            if safe_covers_seq > 0 {
+                tracing::warn!(
+                    "relay: snapshot deposit SCOPED to seq {} — {} note(s) awaiting \
+                     catch-up excluded + their ops protected from GC: {:?}",
+                    safe_covers_seq,
+                    state.catchup_notes.len(),
+                    state.catchup_notes
+                );
+            } else {
+                // The earliest stuck note sits at (or near) the very start of
+                // the still-live op log — no boundary exists that both
+                // protects it and advances anything. Conservative: the op
+                // log grows until catch-up heals the queue (loud either way).
+                tracing::warn!(
+                    "relay: snapshot deposit SKIPPED — {} note(s) awaiting catch-up \
+                     block compaction entirely: {:?}",
+                    state.catchup_notes.len(),
+                    state.catchup_notes
+                );
+            }
+        }
+        if safe_covers_seq > 0 {
+            // Exclude the same two sets the heal-deposit excludes: notes
+            // already given up on (`catchup_notes`) AND notes whose apply
+            // is still mid-retry THIS tick (`not_genuine_this_tick`) — a
+            // note isn't safely deposit-able the instant it fails, only
+            // once it heals; the retry window is real and the periodic
+            // path must not deposit a vivified/partial doc for it just
+            // because it hasn't been officially queued for catch-up yet.
+            let mut excluded = state.catchup_notes.clone();
+            for id in &not_genuine_this_tick {
+                let h = hex::encode(id);
+                if !excluded.contains(&h) {
+                    excluded.push(h);
+                }
+            }
+            match deposit_snapshots(
+                engine,
+                &handle.client,
+                safe_covers_seq,
+                &excluded,
+                &mut state.deposit_hashes,
+            )
+            .await
+            {
+                Ok(report) => {
+                    // Stamp the cadence even on a partial (skipped-notes)
+                    // deposit: retrying every tick can't shrink an oversize
+                    // snapshot, it would just re-upload the mosaic in a loop.
+                    state.last_snapshot_at = Some(now);
+                    if report.complete() {
+                        if report.gc > 0 {
+                            tracing::debug!(
+                                "relay snapshot deposit: covers seq {} in {} chunk(s), relay GC'd {} ops",
+                                safe_covers_seq,
+                                report.chunks_sent,
+                                report.gc
+                            );
+                        }
+                    } else {
+                        let skipped: Vec<String> =
+                            report.skipped_streams.iter().map(hex::encode).collect();
+                        let msg = format!(
+                            "relay snapshot deposit: {} note snapshot(s) exceed the relay body cap \
+                             and were SKIPPED ({:?}) — compaction watermark NOT advanced",
+                            skipped.len(),
+                            skipped
                         );
+                        tracing::warn!("{msg}");
+                        state.last_error = Some(msg);
                     }
-                } else {
-                    let skipped: Vec<String> =
-                        report.skipped_streams.iter().map(hex::encode).collect();
-                    let msg = format!(
-                        "relay snapshot deposit: {} note snapshot(s) exceed the relay body cap \
-                         and were SKIPPED ({:?}) — compaction watermark NOT advanced",
-                        skipped.len(),
-                        skipped
-                    );
+                }
+                Err(e) => {
+                    let msg = format!("relay snapshot deposit: {e}");
                     tracing::warn!("{msg}");
                     state.last_error = Some(msg);
                 }
-            }
-            Err(e) => {
-                let msg = format!("relay snapshot deposit: {e}");
-                tracing::warn!("{msg}");
-                state.last_error = Some(msg);
             }
         }
     }
@@ -690,36 +794,109 @@ pub async fn tick(
     })
 }
 
-/// Deposit a full per-note snapshot set covering relay-seq `covers_seq`
-/// (every tracked note's full Loro snapshot, keyed by note_id = stream_id).
-/// Idempotent.
+/// Deposit a per-note snapshot set covering relay-seq `covers_seq`, so the
+/// relay can GC the encrypted op log it retains. Idempotent.
 ///
-/// Chunked under [`deposit_chunk_budget_bytes`] so a whole-mosaic deposit
-/// (hundreds of notes) can't 413 against the relay's request-body cap as
-/// one giant PUT. Only the FINAL chunk carries the real `covers_seq` (=
-/// relay GC + watermark advance); intermediate chunks deposit with
-/// `covers_seq = 0`, which both relay impls treat as inert, so a crash
-/// mid-deposit leaves the op log intact and the next deposit heals it.
+/// Change-driven (2026-07-02): only notes whose full export hashes
+/// DIFFERENT from `deposit_hashes`' last-recorded value are actually
+/// re-uploaded — an idle mosaic's cadence tick uploads ~zero bytes instead
+/// of re-exporting + re-sealing every tracked note every interval. This is
+/// safe because the relay decouples the two things a deposit does:
+///   1. Per-stream `relay_snapshots` rows (upserted only for streams present
+///      in THIS request's body).
+///   2. The group-scalar `relay_group_meta.compaction_seq` watermark + the
+///      `DELETE relay_ops WHERE seq <= covers_seq` GC, which applies to
+///      EVERY stream regardless of which ones this request's body touched
+///      (`crates/tesela-relay/src/store.rs` `deposit_snapshot_batch`).
+/// So watermark movement alone is NEVER a reason to re-deposit an unchanged
+/// note — the note's existing row (from a prior periodic OR heal deposit)
+/// stays byte-valid at any later, higher `covers_seq`. What DOES require a
+/// re-deposit is content change: even a content-neutral edit (e.g. an
+/// edit immediately reverted) advances the note's underlying Loro oplog, so
+/// its exported snapshot bytes — and hash — differ from the last deposit,
+/// and it is included again. A note with NO recorded hash (never deposited
+/// by either path) always deposits, so first-time coverage is never skipped.
+///
+/// Because relay-side GC is watermark-only (not conditioned on the request
+/// body), the watermark must still advance even when every note is
+/// unchanged — otherwise an otherwise-idle mosaic would never let the relay
+/// GC ops it has already fully applied (e.g. other peers' envelopes). When
+/// nothing needs re-upload this deposits a zero-entry checkpoint PUT
+/// (`covers_seq` with an empty snapshot list) instead of skipping the
+/// relay call entirely.
+///
+/// Chunked (non-empty case) under [`deposit_chunk_budget_bytes`] so a
+/// whole-mosaic deposit (hundreds of notes) can't 413 against the relay's
+/// request-body cap as one giant PUT. Only the FINAL chunk carries the real
+/// `covers_seq` (= relay GC + watermark advance); intermediate chunks
+/// deposit with `covers_seq = 0`, which both relay impls treat as inert, so
+/// a crash mid-deposit leaves the op log intact and the next deposit heals
+/// it.
+///
+/// `excluded_notes` (hex note ids — notes queued for catch-up AND notes
+/// still mid-retry this tick) are EXCLUDED from the upload entirely — same
+/// clobber guard as the broadcast heal-deposit: a note we don't genuinely
+/// hold must never overwrite the relay's `relay_snapshots` row with
+/// vivified/partial content. The caller is responsible for bounding
+/// `covers_seq` so it never claims coverage of ops those excluded notes
+/// still need (tesela-sclr.4).
 async fn deposit_snapshots(
     engine: &dyn tesela_sync::SyncEngine,
     client: &RelayClient,
     covers_seq: i64,
+    excluded_notes: &[String],
+    deposit_hashes: &mut HashMap<[u8; 16], u64>,
 ) -> Result<tesela_sync::transport::relay::SnapshotDepositReport, String> {
     let note_ids = engine.tracked_note_ids().await;
+    if note_ids.is_empty() {
+        return Ok(Default::default());
+    }
     let mut snapshots: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(note_ids.len());
+    // (note_id, content hash) pairs to record AFTER a successful deposit —
+    // mirrors the heal-deposit's crash-safety pattern (a failed PUT must
+    // re-try, not be silently marked as covered).
+    let mut pending_hashes: Vec<([u8; 16], u64)> = Vec::new();
     for id in note_ids {
+        if excluded_notes.contains(&hex::encode(id)) {
+            continue; // clobber guard — content not genuinely held
+        }
         // `export_doc_update(id, None)` = the note's full compact snapshot.
         if let Some(bytes) = engine.export_doc_update(id, None).await {
+            let h = export_snapshot_hash(&bytes);
+            if deposit_hashes.get(&id) == Some(&h) {
+                continue; // unchanged since the last deposit (either path)
+            }
+            pending_hashes.push((id, h));
             snapshots.push((id.to_vec(), bytes));
         }
     }
     if snapshots.is_empty() {
-        return Ok(Default::default());
+        // Every genuinely-held tracked note already has a valid relay-side
+        // row — just checkpoint the watermark so GC can still run.
+        return client
+            .put_snapshots(covers_seq, Vec::new())
+            .await
+            .map(|gc| tesela_sync::transport::relay::SnapshotDepositReport {
+                gc,
+                chunks_sent: 1,
+                skipped_streams: Vec::new(),
+            })
+            .map_err(|e| e.to_string());
     }
-    client
+    let report = client
         .put_snapshots_chunked(covers_seq, snapshots, deposit_chunk_budget_bytes())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Record a hash only for notes the relay actually accepted — an
+    // oversize single-entry SKIP (see `SnapshotDepositReport::skipped_streams`)
+    // never landed, so it must stay eligible for re-attempt next cadence
+    // rather than being marked as covered.
+    for (id, h) in pending_hashes {
+        if !report.skipped_streams.iter().any(|s| s.as_slice() == id) {
+            deposit_hashes.insert(id, h);
+        }
+    }
+    Ok(report)
 }
 
 /// Bootstrap a fresh / long-offline device from the relay's compacted
@@ -782,6 +959,14 @@ pub async fn bootstrap_from_snapshots(engine: &dyn tesela_sync::SyncEngine, hand
             failed
         );
         for hex_id in failed {
+            // The relay's compaction watermark is ALREADY ahead of our
+            // cursor (that's why we bootstrapped) — this note's raw ops are
+            // already gone, so there's nothing left to protect: no seq
+            // bound needed (tesela-sclr.4).
+            state
+                .catchup_since_seq
+                .entry(hex_id.clone())
+                .or_insert(i64::MAX);
             if !state.catchup_notes.contains(&hex_id) {
                 state.catchup_notes.push(hex_id);
             }
@@ -1083,6 +1268,136 @@ mod tests {
         );
     }
 
+    /// tesela-sclr.3: the periodic gated-compaction deposit must be
+    /// change-driven, not a blind full re-upload every cadence tick. An
+    /// unchanged note's relay-side snapshot row must stay byte-identical
+    /// (proving it was never re-sealed/re-sent — AEAD sealing is randomized,
+    /// so any re-upload would produce different ciphertext even for the
+    /// same plaintext) while a changed note's edit lands within one
+    /// interval AND the compaction watermark still advances (GC'ing the new
+    /// op) even though the unchanged note contributed zero upload bytes.
+    #[tokio::test]
+    async fn periodic_deposit_skips_unchanged_notes_but_still_compacts() {
+        std::env::set_var("TESELA_RELAY_SNAPSHOT_INTERVAL_SECS", "0");
+
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_A: [u8; 16] = [0x0d; 16];
+        const NID_B: [u8; 16] = [0x0e; 16];
+
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa3; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        for (nid, slug, body) in [
+            (NID_A, "delta", "- hello delta\n"),
+            (NID_B, "epsilon", "- hello epsilon\n"),
+        ] {
+            engine_a
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: nid,
+                    display_alias: Some(slug.into()),
+                    title: slug.into(),
+                    content: body.into(),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+        }
+
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+
+        // Tick 1 PUTs the ops; tick 2 polls the echo + deposits + compacts.
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let probe = RelayClient::new(
+            base_url.clone(),
+            group,
+            DeviceId::from_bytes([0xcd; 16]),
+            key.clone(),
+        );
+        let (comp_seq_1, snaps_1) = probe.fetch_snapshots().await.unwrap();
+        assert!(comp_seq_1 > 0, "first periodic deposit compacted");
+        assert!(
+            probe.poll(0).await.unwrap().rows.is_empty(),
+            "op log compacted after the first deposit"
+        );
+        let baseline_b_payload = snaps_1
+            .iter()
+            .find(|(id, _, _)| id == &NID_B.to_vec())
+            .map(|(_, _, p)| p.clone())
+            .expect("B deposited in the first pass");
+
+        // Edit ONLY note A.
+        engine_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_A,
+                display_alias: Some("delta".into()),
+                title: "delta".into(),
+                content: "- hello delta EDITED\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+
+        // Tick 3 broadcasts + heal-deposits A's edit (covers_seq=0, inert);
+        // tick 4 polls A's own echo (advancing inbound_cursor past it) and
+        // the periodic pass checkpoints the NEW covers_seq — B never
+        // re-uploads (already covered), yet the relay still compacts A's
+        // fresh edit envelope out of the op log.
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let (comp_seq_2, snaps_2) = probe.fetch_snapshots().await.unwrap();
+        assert!(
+            comp_seq_2 > comp_seq_1,
+            "compaction watermark advanced again in one more interval \
+             (before {comp_seq_1}, after {comp_seq_2})"
+        );
+        assert!(
+            probe.poll(0).await.unwrap().rows.is_empty(),
+            "op log compacted again despite B contributing zero re-upload bytes"
+        );
+
+        let a_payload = snaps_2
+            .iter()
+            .find(|(id, _, _)| id == &NID_A.to_vec())
+            .map(|(_, _, p)| p.clone())
+            .expect("A re-deposited after its edit");
+        assert_ne!(
+            a_payload,
+            snaps_1
+                .iter()
+                .find(|(id, _, _)| id == &NID_A.to_vec())
+                .map(|(_, _, p)| p.clone())
+                .unwrap(),
+            "A's edit landed on the relay within one interval"
+        );
+
+        let b_payload_2 = snaps_2
+            .iter()
+            .find(|(id, _, _)| id == &NID_B.to_vec())
+            .map(|(_, _, p)| p.clone())
+            .expect("B's row still present (never re-uploaded, not dropped)");
+        assert_eq!(
+            b_payload_2, baseline_b_payload,
+            "unchanged B was never re-sealed/re-sent — byte-identical AEAD ciphertext \
+             proves the periodic deposit skipped it (a re-upload would randomize the nonce)"
+        );
+    }
+
     /// Past-day convergence (Taylor 2026-06-28): editing a note must promptly
     /// deposit its heal-snapshot to the relay (not wait out the 5-min compaction
     /// cadence), so a peer whose copy diverged can catch it up. A genuinely-held
@@ -1295,6 +1610,157 @@ mod tests {
             state.catchup_notes.contains(&hex::encode(NID_POISON)),
             "the poisoned note is queued for snapshot catch-up: {:?}",
             state.catchup_notes
+        );
+    }
+
+    /// tesela-sclr.4: one permanently-stuck note must not block whole-group
+    /// GC forever. Note B's earlier, healthy edit predates note A's
+    /// poisoning — once A gives up (queued for catch-up), the scoped
+    /// periodic deposit must still compact B's op (seq below A's), while
+    /// STRICTLY retaining A's own op (the relay's GC is seq-only, group-wide,
+    /// so the only lever is bounding `covers_seq` below A's seq).
+    #[tokio::test]
+    async fn periodic_deposit_scopes_covers_seq_below_stuck_note() {
+        // NOTE: deliberately does NOT touch `TESELA_RELAY_SNAPSHOT_INTERVAL_SECS`
+        // — it's process-global and shared with sibling tests that force it
+        // to "0" (always due), so mutating it to a different value here would
+        // race across parallel test threads. Instead the cadence is kept off
+        // during setup by priming `last_snapshot_at` directly below (works
+        // regardless of whatever interval a concurrent thread has set), and
+        // forced due for the one tick under test the SAME way every other
+        // test in this module already does (interval "0", the only value any
+        // test here ever sets, so no cross-test conflict).
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_GOOD: [u8; 16] = [0x2a; 16]; // "B" — healthy, edits BEFORE A gets stuck
+        const NID_POISON: [u8; 16] = [0x2f; 16]; // "A" — permanently stuck
+
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb4; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        engine_b
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_GOOD,
+                display_alias: Some("goodb".into()),
+                title: "goodb".into(),
+                content: "- hello goodb\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let good_snap = engine_b.export_doc_update(NID_GOOD, None).await.unwrap();
+        let client_b = RelayClient::new(base_url.clone(), group, dev_b, key.clone());
+        client_b.register_or_recover().await.expect("b register");
+
+        // GOOD arrives FIRST (lower seq) — POISON arrives SECOND (higher
+        // seq) and is the one that gets stuck.
+        let good_seq = put_loro_envelope(&client_b, dev_b, group, &[(NID_GOOD, good_snap)]).await;
+        let poison_seq = put_loro_envelope(
+            &client_b,
+            dev_b,
+            group,
+            &[(NID_POISON, b"definitely not a loro update".to_vec())],
+        )
+        .await;
+        assert!(poison_seq > good_seq);
+
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa4; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+        // `due` treats a never-deposited `last_snapshot_at` as due
+        // immediately regardless of the interval — prime it so the cadence
+        // stays off while POISON gets stuck (a stray early deposit of GOOD,
+        // e.g. from a concurrent test racing the shared interval env var to
+        // "0", would be harmless — it can never touch POISON's seq either
+        // way — so this is a best-effort quieting, not a correctness
+        // requirement of the assertions below).
+        handle_a.state.write().await.last_snapshot_at = Some(now_secs_i64());
+
+        // Drive ticks until POISON exhausts its retry budget and is queued
+        // for catch-up (mirrors `tick_holds_cursor_at_failed_apply_then_gives_up_after_bound`).
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+        for _ in 1..MAX_APPLY_RETRIES {
+            tick(&engine_a, &ident, &handle_a).await.unwrap();
+        }
+        {
+            let state = handle_a.state.read().await;
+            assert!(
+                state.catchup_notes.contains(&hex::encode(NID_POISON)),
+                "poison note queued for catch-up: {:?}",
+                state.catchup_notes
+            );
+            assert_eq!(
+                state.catchup_since_seq.get(&hex::encode(NID_POISON)).copied(),
+                Some(poison_seq),
+                "the poisoned envelope's own seq is tracked as the protection bound"
+            );
+        }
+
+        let probe = RelayClient::new(
+            base_url.clone(),
+            group,
+            DeviceId::from_bytes([0xce; 16]),
+            key.clone(),
+        );
+
+        // Force the cadence due (same env var value "0" every test in this
+        // module already uses — no new conflicting value) and run one more
+        // tick: the SCOPED deposit must compact B's earlier op while
+        // retaining A's, regardless of whether an earlier tick already
+        // happened to deposit GOOD.
+        std::env::set_var("TESELA_RELAY_SNAPSHOT_INTERVAL_SECS", "0");
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let (comp_seq_after, snaps_after) = probe.fetch_snapshots().await.unwrap();
+        assert!(
+            comp_seq_after > 0 && comp_seq_after < poison_seq,
+            "watermark advanced but stayed STRICTLY below the poisoned note's seq \
+             (watermark {comp_seq_after}, poison seq {poison_seq})"
+        );
+        assert!(
+            snaps_after
+                .iter()
+                .any(|(id, _, _)| id == &NID_GOOD.to_vec()),
+            "B's healthy content was deposited"
+        );
+        assert!(
+            !snaps_after
+                .iter()
+                .any(|(id, _, _)| id == &NID_POISON.to_vec()),
+            "A's garbage content was never deposited (clobber guard)"
+        );
+
+        let raw_after = probe.poll(0).await.unwrap();
+        assert!(
+            !raw_after.rows.iter().any(|(seq, _)| *seq == good_seq),
+            "B's op was GC'd — one stuck note no longer blocks whole-group GC"
+        );
+        assert!(
+            raw_after.rows.iter().any(|(seq, _)| *seq == poison_seq),
+            "A's op is RETAINED — covers_seq never claimed coverage of it"
+        );
+
+        assert!(
+            handle_a
+                .state
+                .read()
+                .await
+                .catchup_notes
+                .contains(&hex::encode(NID_POISON)),
+            "A stays queued for catch-up (still genuinely stuck)"
         );
     }
 
