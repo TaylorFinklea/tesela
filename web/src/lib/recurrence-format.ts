@@ -27,13 +27,25 @@ export function formatRecurrence(value: string): string {
   return freq === null ? value : freq + endText;
 }
 
+const OTHER_UNIT_LABEL: Record<string, string> = {
+  day: "day", days: "day",
+  week: "week", weeks: "week",
+  month: "month", months: "month",
+  year: "year", years: "year",
+};
+
 function formatFreq(base: string): string | null {
   switch (base) {
     case "daily": return "Daily";
     case "weekly": return "Weekly";
     case "monthly": return "Monthly";
     case "yearly": return "Yearly";
+    // Single-word cadences (Rust recurrence.rs, added 2026-06-20).
+    case "biweekly": return "Biweekly";
+    case "fortnightly": return "Fortnightly";
+    case "quarterly": return "Quarterly";
     case "weekdays": return "Weekdays";
+    case "every weekday": case "every weekdays": return "Weekdays";
     case "weekends": return "Weekends";
   }
   if (base.startsWith("every ")) {
@@ -41,6 +53,12 @@ function formatFreq(base: string): string | null {
     const tokens = rest.split(",").map((t) => t.trim());
     if (rest && tokens.every((t) => DAY_LABEL[t] !== undefined)) {
       return tokens.map((t) => DAY_LABEL[t]).join(", ");
+    }
+    // "every other <unit>" → interval 2 (added 2026-06-20).
+    if (rest.startsWith("other ")) {
+      const unit = rest.slice(6);
+      const label = OTHER_UNIT_LABEL[unit];
+      return label ? `Every other ${label}` : null;
     }
     const m = rest.match(/^(\d+) (days?|weeks?|months?|years?)$/);
     if (m) return `Every ${m[1]} ${m[2]}`;

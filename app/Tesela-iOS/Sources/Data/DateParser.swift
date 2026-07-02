@@ -63,7 +63,7 @@ private let TRAILING_RECUR_RE: NSRegularExpression = {
     let bydayToken = "(?:mon(?:day)?|tues?(?:day)?|wed(?:nesday)?|thu(?:rs?(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)"
     let bydaySet = "every\\s+\(bydayToken)(?:\\s*,\\s*\(bydayToken))*"
     let endClause = "(?:\\s+until\\s+\\d{4}-\\d{2}-\\d{2}|\\s+count\\s+\\d+)?"
-    let pattern = "\\s+((?:daily|weekly|monthly|yearly|annually|weekdays|weekends|every\\s+\\d+\\s+(?:days?|weeks?|months?|years?)|every\\s+(?:day|week|month|year)|\(bydaySet))\(endClause))$"
+    let pattern = "\\s+((?:daily|weekly|monthly|yearly|annually|biweekly|fortnightly|quarterly|weekdays|weekends|every\\s+other\\s+(?:days?|weeks?|months?|years?)|every\\s+\\d+\\s+(?:days?|weeks?|months?|years?)|every\\s+weekdays?|every\\s+(?:day|week|month|year)|\(bydaySet))\(endClause))$"
     return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
 }()
 
@@ -200,7 +200,12 @@ private func parseRecurrenceFreq(_ base: String) -> String? {
     case "weekly",  "every week":  return "weekly"
     case "monthly", "every month": return "monthly"
     case "yearly",  "annually",    "every year": return "yearly"
+    // Single-word cadences (Rust recurrence.rs, added 2026-06-20).
+    case "biweekly": return "biweekly"
+    case "fortnightly": return "fortnightly"
+    case "quarterly": return "quarterly"
     case "weekdays": return "weekdays"
+    case "every weekday", "every weekdays": return "weekdays"
     case "weekends": return "weekends"
     default: break
     }
@@ -215,6 +220,15 @@ private func parseRecurrenceFreq(_ base: String) -> String? {
         let canonicals: [String] = tokens.compactMap { WEEKDAY_TOKENS[$0] }.filter { seen.updateValue(true, forKey: $0) == nil }
         let sorted = canonicals.sorted { (WEEKDAY_ORDER.firstIndex(of: $0) ?? 99) < (WEEKDAY_ORDER.firstIndex(of: $1) ?? 99) }
         return "every \(sorted.joined(separator: ", "))"
+    }
+
+    // "every other <unit>" → interval 2 (added 2026-06-20).
+    if rest.hasPrefix("other ") {
+        let unit = String(rest.dropFirst(6))
+        let known: Set<String> = ["day", "days", "week", "weeks", "month", "months", "year", "years"]
+        guard known.contains(unit) else { return nil }
+        let plural = unit.hasSuffix("s") ? unit : unit + "s"
+        return "every other \(plural)"
     }
 
     // "every N <unit>"

@@ -65,6 +65,13 @@ enum RecurrenceFormat {
         "fri": "Fri", "sat": "Sat", "sun": "Sun",
     ]
 
+    private static let otherUnitLabel: [String: String] = [
+        "day": "day", "days": "day",
+        "week": "week", "weeks": "week",
+        "month": "month", "months": "month",
+        "year": "year", "years": "year",
+    ]
+
     /// Maps a normalized frequency `base` string to a human label,
     /// or returns `nil` for unrecognized input.
     private static func formatFreq(_ base: String) -> String? {
@@ -73,7 +80,12 @@ enum RecurrenceFormat {
         case "weekly":   return "Weekly"
         case "monthly":  return "Monthly"
         case "yearly":   return "Yearly"
+        // Single-word cadences (Rust recurrence.rs, added 2026-06-20).
+        case "biweekly": return "Biweekly"
+        case "fortnightly": return "Fortnightly"
+        case "quarterly": return "Quarterly"
         case "weekdays": return "Weekdays"
+        case "every weekday", "every weekdays": return "Weekdays"
         case "weekends": return "Weekends"
         default: break
         }
@@ -85,6 +97,13 @@ enum RecurrenceFormat {
         let tokens = rest.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         if !tokens.isEmpty && tokens.allSatisfy({ dayLabel[$0] != nil }) {
             return tokens.compactMap { dayLabel[$0] }.joined(separator: ", ")
+        }
+
+        // `every other <unit>` → interval 2 (added 2026-06-20).
+        if rest.hasPrefix("other ") {
+            let unit = String(rest.dropFirst(6))
+            guard let label = otherUnitLabel[unit] else { return nil }
+            return "Every other \(label)"
         }
 
         // `every N days|weeks|months|years`

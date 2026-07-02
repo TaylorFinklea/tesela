@@ -127,7 +127,12 @@ function parseRecurrenceFreq(base: string): string | null {
     case "weekly":  case "every week":  return "weekly";
     case "monthly": case "every month": return "monthly";
     case "yearly":  case "annually":    case "every year": return "yearly";
+    // Single-word cadences (Rust recurrence.rs, added 2026-06-20).
+    case "biweekly": return "biweekly";
+    case "fortnightly": return "fortnightly";
+    case "quarterly": return "quarterly";
     case "weekdays": return "weekdays";
+    case "every weekday": case "every weekdays": return "weekdays";
     case "weekends": return "weekends";
   }
 
@@ -140,6 +145,16 @@ function parseRecurrenceFreq(base: string): string | null {
       const days = [...new Set(tokens.map((t) => WEEKDAY_TOKENS[t]))]
         .sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
       return `every ${days.join(", ")}`;
+    }
+
+    // "every other <unit>" → interval 2 (added 2026-06-20).
+    if (rest.startsWith("other ")) {
+      const unit = rest.slice(6);
+      if (!["day", "days", "week", "weeks", "month", "months", "year", "years"].includes(unit)) {
+        return null;
+      }
+      const plural = unit.endsWith("s") ? unit : `${unit}s`;
+      return `every other ${plural}`;
     }
 
     // "every N <unit>" — only when the rest contains a space (not matched as BYDAY above).
@@ -172,15 +187,18 @@ function parseRecurrenceFreq(base: string): string | null {
 // extractRecurrence can pass it directly to parseRecurrenceInput.
 //
 // Supported base forms:
-//   - simple keywords: daily, weekly, monthly, yearly, annually, weekdays, weekends
+//   - simple keywords: daily, weekly, monthly, yearly, annually, biweekly,
+//     fortnightly, quarterly, weekdays, weekends
 //   - "every N <unit>": every 2 weeks, every 3 days, etc.
+//   - "every other <unit>": every other week, every other day, etc.
 //   - "every <day|week|month|year>": aliases for interval-1 forms
+//   - "every weekday(s)": alias for weekdays
 //   - BYDAY day-sets: "every mon, wed, fri" (one or more comma-separated weekday tokens)
 const _BYDAY_TOKEN = "(?:mon(?:day)?|tues?(?:day)?|wed(?:nesday)?|thu(?:rs?(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)";
 const _BYDAY_SET = `every\\s+${_BYDAY_TOKEN}(?:\\s*,\\s*${_BYDAY_TOKEN})*`;
 const _END_CLAUSE = "(?:\\s+until\\s+\\d{4}-\\d{2}-\\d{2}|\\s+count\\s+\\d+)?";
 const TRAILING_RECUR_RE = new RegExp(
-  `\\s+((?:daily|weekly|monthly|yearly|annually|weekdays|weekends|every\\s+\\d+\\s+(?:days?|weeks?|months?|years?)|every\\s+(?:day|week|month|year)|${_BYDAY_SET})${_END_CLAUSE})$`,
+  `\\s+((?:daily|weekly|monthly|yearly|annually|biweekly|fortnightly|quarterly|weekdays|weekends|every\\s+other\\s+(?:days?|weeks?|months?|years?)|every\\s+\\d+\\s+(?:days?|weeks?|months?|years?)|every\\s+weekdays?|every\\s+(?:day|week|month|year)|${_BYDAY_SET})${_END_CLAUSE})$`,
   "i",
 );
 function extractRecurrence(s: string): { recurrence: string | null; rest: string } {
