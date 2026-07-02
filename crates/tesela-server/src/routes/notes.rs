@@ -1644,10 +1644,124 @@ pub async fn get_forward_links(
     Ok(Json(links))
 }
 
-/// GET `/notes/:id/unlinked` — pages that mention this page's title in
-/// plain text without `[[...]]` wrapping. Logseq-style. Useful for
-/// discovering implicit references the user hasn't yet promoted to a
-/// real wiki link.
+/// Minimum needle length (title/alias) considered for unlinked-mention
+/// scanning — guards against matching short common words (e.g. "a", "on").
+const UNLINKED_MIN_NEEDLE_LEN: usize = 4;
+
+/// Pure scan of a single source note's `content` for plain-text mentions of
+/// any of `needles` (already lowercased). Skips matches inside fenced code
+/// blocks (` ``` `) and lines that already carry a `[[wiki-link]]` to one of
+/// the needles.
+///
+/// Extracted from `get_unlinked` so the matching logic is unit-testable
+/// without spinning up an `AppState`.
+fn find_unlinked_mentions(content: &str, source_id: &str, needles: &[String]) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    let body = content.to_lowercase();
+    let fence_ranges = code_fence_ranges(content);
+
+    for needle in needles {
+        if needle.len() < UNLINKED_MIN_NEEDLE_LEN {
+            continue;
+        }
+        let mut search_from = 0usize;
+        while let Some(found) = body[search_from..].find(needle.as_str()) {
+            let pos = search_from + found;
+            search_from = pos + needle.len();
+
+            if fence_ranges.iter().any(|r| r.contains(&pos)) {
+                continue; // inside a fenced code block — skip
+            }
+
+            // Word boundary: char before+after must NOT be ascii-alphanumeric
+            // (covers most real cases without dragging in a regex crate).
+            let before_ok = pos == 0
+                || !body
+                    .as_bytes()
+                    .get(pos - 1)
+                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                    .unwrap_or(false);
+            let after = pos + needle.len();
+            let after_ok = after >= body.len()
+                || !body
+                    .as_bytes()
+                    .get(after)
+                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                    .unwrap_or(false);
+            if !before_ok || !after_ok {
+                continue;
+            }
+            // Extract the line containing the match.
+            let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = content[pos..]
+                .find('\n')
+                .map(|i| pos + i)
+                .unwrap_or(content.len());
+            let line = &content[line_start..line_end];
+            // Skip if the line already has a [[needle]] wiki link to the
+            // focused note (any title/alias) — that's a regular backlink,
+            // not unlinked.
+            let line_lc = line.to_lowercase();
+            let wiki_marker = format!("[[{}]]", needle);
+            if line_lc.contains(&wiki_marker) {
+                continue;
+            }
+            // Dedup against an already-recorded match at the same position
+            // (a title and an alias could both match overlapping text).
+            if out
+                .iter()
+                .any(|l| l.target == source_id && l.position == pos)
+            {
+                continue;
+            }
+            out.push(Link {
+                link_type: LinkType::Internal,
+                target: source_id.to_string(),
+                text: line.trim().to_string(),
+                position: pos,
+            });
+            // Loop continues to find additional matches in the SAME source
+            // note on different lines, which is what we want.
+        }
+    }
+    out.sort_by_key(|l| l.position);
+    out
+}
+
+/// Byte ranges (in `content`) covered by fenced code blocks (` ``` `...` ``` `).
+/// A dangling opening fence with no closer runs to the end of the content.
+fn code_fence_ranges(content: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut fence_start: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            match fence_start {
+                None => fence_start = Some(offset),
+                Some(start) => {
+                    ranges.push(start..offset + line.len());
+                    fence_start = None;
+                }
+            }
+        }
+        offset += line.len();
+    }
+    if let Some(start) = fence_start {
+        ranges.push(start..content.len());
+    }
+    ranges
+}
+
+/// GET `/notes/:id/unlinked` — pages that mention this page's title or any
+/// of its aliases in plain text without `[[...]]` wrapping. Logseq-style.
+/// Useful for discovering implicit references the user hasn't yet promoted
+/// to a real wiki link.
+///
+/// Matching is case-insensitive, requires needles of at least
+/// `UNLINKED_MIN_NEEDLE_LEN` chars, skips the focused page itself, skips
+/// matches inside fenced code blocks, and skips lines that already carry a
+/// `[[wiki-link]]` to the focused page.
 ///
 /// Returns `Link[]` where `target` is the SOURCE note's id (matching the
 /// `get_backlinks` shape so the frontend can reuse its row renderer),
@@ -1668,7 +1782,19 @@ pub async fn get_unlinked(
         .title
         .clone()
         .unwrap_or_else(|| focused.id.as_str().to_string());
-    if title.trim().is_empty() {
+
+    // Build the needle set: title + aliases, lowercased, deduped, filtered
+    // by the minimum-length guard.
+    let mut needles: Vec<String> = Vec::new();
+    for candidate in
+        std::iter::once(title.as_str()).chain(focused.metadata.aliases.iter().map(|a| a.as_str()))
+    {
+        let lc = candidate.trim().to_lowercase();
+        if lc.len() >= UNLINKED_MIN_NEEDLE_LEN && !needles.contains(&lc) {
+            needles.push(lc);
+        }
+    }
+    if needles.is_empty() {
         return Ok(Json(Vec::new()));
     }
 
@@ -1676,60 +1802,12 @@ pub async fn get_unlinked(
     // notes list). We linear-scan because the link index doesn't track
     // unlinked mentions; a real index lives behind a TODO.
     let all = s.store.list(None, 5000, 0).await?;
-    let needle = title.to_lowercase();
     let mut out: Vec<Link> = Vec::new();
     for n in &all {
         if n.id.as_str() == note_id.as_str() {
             continue; // skip the page itself
         }
-        let body = n.content.to_lowercase();
-        // Build a small set of byte offsets where the title appears.
-        let mut search_from = 0usize;
-        while let Some(found) = body[search_from..].find(&needle) {
-            let pos = search_from + found;
-            search_from = pos + needle.len();
-            // Word boundary: char before+after must NOT be ascii-alphanumeric
-            // (covers most real cases without dragging in a regex crate).
-            let before_ok = pos == 0
-                || !body
-                    .as_bytes()
-                    .get(pos - 1)
-                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                    .unwrap_or(false);
-            let after = pos + needle.len();
-            let after_ok = after >= body.len()
-                || !body
-                    .as_bytes()
-                    .get(after)
-                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
-                    .unwrap_or(false);
-            if !before_ok || !after_ok {
-                continue;
-            }
-            // Extract the line containing the match.
-            let line_start = n.content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let line_end = n.content[pos..]
-                .find('\n')
-                .map(|i| pos + i)
-                .unwrap_or(n.content.len());
-            let line = &n.content[line_start..line_end];
-            // Skip if the line already has a [[title]] wiki link to the
-            // focused note — that's a regular backlink, not unlinked.
-            let line_lc = line.to_lowercase();
-            let wiki_marker = format!("[[{}]]", needle);
-            if line_lc.contains(&wiki_marker) {
-                continue;
-            }
-            out.push(Link {
-                link_type: LinkType::Internal,
-                target: n.id.as_str().to_string(),
-                text: line.trim().to_string(),
-                position: pos,
-            });
-            // Only one row per source note + position; loop continues to
-            // find additional matches in the SAME source note on different
-            // lines, which is what we want.
-        }
+        out.extend(find_unlinked_mentions(&n.content, n.id.as_str(), &needles));
     }
     Ok(Json(out))
 }
@@ -2856,6 +2934,88 @@ mod tests {
                 "the container write must be attempted before any prose strip"
             );
         }
+    }
+
+    /// Unlinked-reference scanning (tesela-qy4): a plain-text mention of the
+    /// title, case-insensitively, is surfaced as an unlinked reference.
+    #[test]
+    fn find_unlinked_mentions_matches_title_case_insensitively() {
+        let content = "- Talked to Alice about Loro Migration today.\n";
+        let needles = vec!["loro migration".to_string()];
+        let found = find_unlinked_mentions(content, "daily-2026-06-01", &needles);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target, "daily-2026-06-01");
+        assert!(found[0].text.contains("Loro Migration"));
+    }
+
+    /// Aliases are scanned in addition to the title.
+    #[test]
+    fn find_unlinked_mentions_matches_alias() {
+        let content = "- Filed a bug against sync-engine yesterday.\n";
+        let needles = vec!["loro migration".to_string(), "sync-engine".to_string()];
+        let found = find_unlinked_mentions(content, "note-a", &needles);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].text.contains("sync-engine"));
+    }
+
+    /// A line already carrying a `[[wiki-link]]` to the same needle is a
+    /// real backlink, not an unlinked mention — must be excluded.
+    #[test]
+    fn find_unlinked_mentions_skips_already_linked_line() {
+        let content = "- See [[Loro Migration]] for details.\n- Loro Migration is slow.\n";
+        let needles = vec!["loro migration".to_string()];
+        let found = find_unlinked_mentions(content, "note-a", &needles);
+        assert_eq!(found.len(), 1, "only the unlinked line should be surfaced");
+        assert!(found[0].text.contains("Loro Migration is slow"));
+    }
+
+    /// Needles shorter than the minimum length guard are ignored entirely
+    /// (avoids matching short common words like "on").
+    #[test]
+    fn find_unlinked_mentions_applies_min_length_guard() {
+        let content = "- Turn the light on before you leave.\n";
+        let needles = vec!["on".to_string()];
+        let found = find_unlinked_mentions(content, "note-a", &needles);
+        assert!(
+            found.is_empty(),
+            "needles shorter than UNLINKED_MIN_NEEDLE_LEN must be skipped"
+        );
+    }
+
+    /// Matches inside fenced code blocks are not real prose mentions and
+    /// must be skipped.
+    #[test]
+    fn find_unlinked_mentions_skips_code_fences() {
+        let content =
+            "- prose mention: Loro Migration is done\n```\nlet x = \"Loro Migration\";\n```\n";
+        let needles = vec!["loro migration".to_string()];
+        let found = find_unlinked_mentions(content, "note-a", &needles);
+        assert_eq!(found.len(), 1, "the fenced match must be excluded");
+        assert!(found[0].text.starts_with("- prose mention"));
+    }
+
+    /// Word-boundary check still applies: a needle embedded inside a larger
+    /// word is not a real mention.
+    #[test]
+    fn find_unlinked_mentions_requires_word_boundary() {
+        let content = "- Superloro Migrations happen weekly.\n";
+        let needles = vec!["loro migration".to_string()];
+        let found = find_unlinked_mentions(content, "note-a", &needles);
+        assert!(found.is_empty());
+    }
+
+    /// `code_fence_ranges` covers a closed fence and treats a dangling
+    /// opening fence as extending to the end of the content.
+    #[test]
+    fn code_fence_ranges_covers_closed_and_dangling_fences() {
+        let content = "before\n```\ncode\n```\nafter\n```\ndangling\n";
+        let ranges = code_fence_ranges(content);
+        assert_eq!(ranges.len(), 2);
+        let fence_body = &content[ranges[0].clone()];
+        assert!(fence_body.contains("code"));
+        let dangling_body = &content[ranges[1].clone()];
+        assert!(dangling_body.contains("dangling"));
+        assert_eq!(ranges[1].end, content.len());
     }
 }
 

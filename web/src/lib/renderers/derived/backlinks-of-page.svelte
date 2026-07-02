@@ -48,48 +48,39 @@
   const forwardLinks = $derived((forwardLinksQuery.data ?? []) as Link[]);
   const unlinked = $derived((unlinkedQuery.data ?? []) as Link[]);
 
-  /** Promote one unlinked reference to a real `[[wiki-link]]`. Reads the
-   *  source note, finds the first plain-text occurrence of the focused
-   *  page's title on the row's line, wraps it with `[[ ]]`, writes back.
-   *  After save, refetch backlinks + unlinked so the UI shifts the row
-   *  from "unlinked" to "backlinks". */
+  /** Promote one unlinked reference to a real `[[wiki-link]]`. The backend
+   *  match may be on the focused page's title OR one of its aliases (see
+   *  `get_unlinked` / `find_unlinked_mentions` in tesela-server), so we
+   *  can't assume `pageId` is the literal matched text. Instead, reload the
+   *  focused page's title+aliases, rebuild the same needle set the backend
+   *  used, and use the row's exact `position` (byte offset into the SOURCE
+   *  note's `content`) to identify which needle matched there — then wrap
+   *  exactly that span with `[[ ]]`. After save, refetch backlinks +
+   *  unlinked so the UI shifts the row from "unlinked" to "backlinks". */
   async function promoteToLink(row: Link): Promise<void> {
     if (!pageId) return;
     const sourceId = row.target;
-    const src = await api.getNote(sourceId);
-    const needle = pageId;
-    // Use the row's line text as the anchor — same line in the source.
-    // The case-insensitive backend match means the title in the source
-    // may differ in case; we wrap whatever literally appears.
-    const lines = src.content.split("\n");
-    let replaced = false;
-    const next = lines
-      .map((line) => {
-        if (replaced) return line;
-        // Skip lines already containing a wiki-link to this page.
-        if (line.toLowerCase().includes(`[[${needle.toLowerCase()}]]`)) {
-          return line;
-        }
-        // Find first standalone occurrence (word-boundary-ish).
-        const lower = line.toLowerCase();
-        const at = lower.indexOf(needle.toLowerCase());
-        if (at < 0) return line;
-        const before = at === 0 ? "" : line[at - 1];
-        const after = line[at + needle.length] ?? "";
-        const beforeOk = !/[A-Za-z0-9_]/.test(before);
-        const afterOk = !/[A-Za-z0-9_]/.test(after);
-        if (!beforeOk || !afterOk) return line;
-        replaced = true;
-        return (
-          line.slice(0, at) +
-          "[[" +
-          line.slice(at, at + needle.length) +
-          "]]" +
-          line.slice(at + needle.length)
-        );
-      })
-      .join("\n");
-    if (!replaced) return;
+    const [src, page] = await Promise.all([
+      api.getNote(sourceId),
+      api.getNote(pageId),
+    ]);
+    const needles = Array.from(
+      new Set(
+        [page.title ?? pageId, ...(page.metadata.aliases ?? [])]
+          .map((s) => s.trim().toLowerCase())
+          .filter((s) => s.length >= 4),
+      ),
+    );
+    const lower = src.content.toLowerCase();
+    const pos = row.position;
+    const needle = needles.find((n) => lower.startsWith(n, pos));
+    if (needle == null) return;
+    const next =
+      src.content.slice(0, pos) +
+      "[[" +
+      src.content.slice(pos, pos + needle.length) +
+      "]]" +
+      src.content.slice(pos + needle.length);
     await api.updateNote(sourceId, next);
     queryClient.invalidateQueries({ queryKey: ["backlinks", pageId] });
     queryClient.invalidateQueries({ queryKey: ["unlinked", pageId] });

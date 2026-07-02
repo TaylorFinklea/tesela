@@ -920,7 +920,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
 
 ### Unlinked references (Logseq-style)
 
-- [ ] **Surface "unlinked references" in the v5 backlinks-of-page derived buffer** — placeholder already in the UI under the "Unlinked references" section. Backend changes: add `/api/notes/:id/unlinked` returning notes whose body contains the focused page's `title` OR any of its `aliases` as a plain-text substring without `[[...]]` wrapping. Skip the focused page itself, skip blocks already containing a `[[wiki-link]]` to the focused page on the same line. Frontend changes: TanStack-query the endpoint inside `web/src/lib/renderers/derived/backlinks-of-page.svelte`, render rows that mirror the Backlinks section but with a "Link" inline-action button per row that wraps the mention in `[[...]]` (one-click promote to a real link). Open questions: case-sensitivity (probably case-insensitive); minimum match length (avoid matching short common words — maybe require ≥4 chars); whether to also scan code fences (probably skip).
+- [x] **Surface "unlinked references" in the v5 backlinks-of-page derived buffer** (tesela-qy4, 2026-07-02) — `GET /notes/:id/unlinked` scans title OR aliases (case-insensitive, ≥4 chars via `UNLINKED_MIN_NEEDLE_LEN`), skips self, same-line `[[wiki-link]]`s, and fenced code blocks (`find_unlinked_mentions`/`code_fence_ranges` in `crates/tesela-server/src/routes/notes.rs`). `backlinks-of-page.svelte`'s promote button now resolves the exact matched needle (title or alias) via the row's byte `position` instead of assuming the page slug is the literal match, so alias-matched rows promote correctly too.
 
 ### Cross-cutting (needs Opus to scope)
 
