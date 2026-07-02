@@ -40,13 +40,6 @@ use loro::{
     ExportMode, LoroDoc, LoroText, LoroTree, TreeID, TreeParentId, UpdateOptions, VersionVector,
 };
 use loro::cursor::{Cursor, Side};
-use loro_internal::awareness::EphemeralStore;
-
-/// How long a peer's presence (cursor/selection) lingers without a refresh
-/// before [`EphemeralStore::remove_outdated`] purges it. Presence is ephemeral:
-/// a peer that goes quiet for this long is treated as gone. Loro does NOT
-/// expire entries on its own in Rust — a tick must call `remove_outdated`.
-const PRESENCE_TIMEOUT_MS: i64 = 30_000;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -316,19 +309,6 @@ struct Inner {
     /// `key:: value` lines regardless (from `FlatBlock.properties`), so an old
     /// reader still SEES the property as text.
     migrate_in_text: bool,
-    /// Ephemeral PRESENCE store (Phase 1 multi-device): last-write-wins,
-    /// timeout'd per-peer state (cursor/selection/online) that lives OUTSIDE
-    /// the Loro docs — never persisted to any oplog or snapshot. One store per
-    /// engine carries every connected peer's presence. Cloneable + Send+Sync
-    /// (Arc<Mutex> internally), so it sits in `Inner` without an extra lock.
-    presence: EphemeralStore,
-    /// Wall-clock ms of the last local presence set. EphemeralStore stamps
-    /// wall-clock ms and a peer's apply DROPS timestamp ties (loro-internal
-    /// awareness.rs: `peer_info.timestamp >= timestamp` keeps the existing
-    /// entry), so a same-millisecond re-set of the same key would never win
-    /// LWW remotely. `set_local_presence` holds until the clock strictly
-    /// advances past this watermark. (tesela-sz8)
-    presence_last_set_ms: std::sync::atomic::AtomicI64,
 }
 
 /// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
@@ -397,8 +377,6 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
-                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
-                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         }
     }
@@ -420,8 +398,6 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: true,
-                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
-                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         }
     }
@@ -512,8 +488,6 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
-                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
-                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         };
         if needs_rebuild {
@@ -1125,69 +1099,6 @@ impl LoroEngine {
         let cursor = Cursor::decode(cursor_bytes).ok()?;
         let pos = doc.get_cursor_pos(&cursor).ok()?;
         Some(pos.current.pos as u32)
-    }
-
-    /// Set THIS peer's presence under `key` (e.g. the device id) to opaque
-    /// `value` bytes (the caller's encoded cursor+metadata), and return the
-    /// encoded delta to broadcast to peers. Presence is ephemeral — never
-    /// persisted to a doc. (Phase 1 presence foundation.)
-    pub fn set_local_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
-        // Hold until the wall clock strictly advances past the last local set:
-        // EphemeralStore stamps wall-clock ms and remote apply drops timestamp
-        // TIES (keeps the existing entry), so a same-ms re-set would silently
-        // lose LWW at every peer. Presence is human-cadence (clients throttle
-        // ~100ms), so this waits at most ~1ms and only under burst. (tesela-sz8)
-        use std::sync::atomic::Ordering;
-        loop {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
-            let last = self.inner.presence_last_set_ms.load(Ordering::Acquire);
-            if now_ms > last {
-                if self
-                    .inner
-                    .presence_last_set_ms
-                    .compare_exchange(last, now_ms, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    break;
-                }
-            } else {
-                std::thread::sleep(std::time::Duration::from_micros(200));
-            }
-        }
-        self.inner
-            .presence
-            .set(&key, loro::LoroValue::Binary(value.into()));
-        // The encoded delta for just this key — what a peer applies.
-        self.inner.presence.encode(&key)
-    }
-
-    /// Merge a peer's presence delta (from their [`set_local_presence`]).
-    /// Last-write-wins. Returns whether it applied cleanly.
-    pub fn apply_presence(&self, bytes: &[u8]) -> bool {
-        self.inner.presence.apply(bytes).is_ok()
-    }
-
-    /// All currently-live peers' presence as `(key, value bytes)`, skipping
-    /// expired entries (and any non-binary value we didn't write).
-    pub fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
-        self.inner
-            .presence
-            .get_all_states()
-            .into_iter()
-            .filter_map(|(k, v)| match v {
-                loro::LoroValue::Binary(b) => Some((k, b.to_vec())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Purge presence entries older than [`PRESENCE_TIMEOUT_MS`]. Must be
-    /// called on a timer (loro doesn't auto-expire in Rust).
-    pub fn presence_remove_outdated(&self) {
-        self.inner.presence.remove_outdated();
     }
 
     /// Compute the per-note Loro updates to broadcast on a relay tick:
@@ -4001,22 +3912,6 @@ impl SyncEngine for LoroEngine {
 
     async fn resolve_block_cursor(&self, note_id: [u8; 16], cursor_bytes: &[u8]) -> Option<u32> {
         LoroEngine::resolve_block_cursor(self, note_id, cursor_bytes).await
-    }
-
-    fn set_local_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
-        LoroEngine::set_local_presence(self, key, value)
-    }
-
-    fn apply_presence(&self, bytes: &[u8]) -> bool {
-        LoroEngine::apply_presence(self, bytes)
-    }
-
-    fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
-        LoroEngine::presence_peers(self)
-    }
-
-    fn presence_remove_outdated(&self) {
-        LoroEngine::presence_remove_outdated(self)
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
@@ -10391,5 +10286,116 @@ mod tests {
              on-disk snapshot at all is a genuine ghost (got {entries:?})"
         );
         assert_eq!(entries[0].title, "Evicted");
+    }
+
+    /// STEP 1 of tesela-engc.4: measure `probe_import_poison`'s real cost
+    /// shape on mosaic-realistic docs before deciding whether a skip is
+    /// worth adding. Doc sizes are derived from the live
+    /// `~/Library/Application Support/tesela/logseq/.tesela/loro` mosaic
+    /// (305 note snapshots: mean 7.1KB, median 3KB, p90 16.8KB, max 83KB).
+    /// Simulates a genuine two-device inbound DELTA (device 2 imports
+    /// device 1's snapshot, adds one block, exports `updates(&vv1)` — the
+    /// same shape a relay tick actually ships) alongside a full-snapshot
+    /// catch-up frame, and times the probe's three sub-steps against a
+    /// plain `doc.import` of the same bytes.
+    ///
+    /// `#[ignore]`d — a manual perf probe (numbers land in the bead close
+    /// note / decisions.md), not a CI-gated timing assertion. Run with:
+    /// `cargo test -p tesela-sync --lib poison_probe_cost_measurement -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "manual perf measurement (tesela-engc.4), not a CI timing gate"]
+    async fn poison_probe_cost_measurement() {
+        use std::time::{Duration, Instant};
+
+        async fn build_note(
+            device: [u8; 16],
+            note_id: [u8; 16],
+            block_count: usize,
+            text_len: usize,
+        ) -> LoroEngine {
+            let hlc = Arc::new(Hlc::new(DeviceId::from_bytes(device)));
+            let engine = LoroEngine::new(DeviceId::from_bytes(device), hlc);
+            let filler: String = "lorem ipsum dolor sit amet consectetur "
+                .repeat(text_len / 40 + 1)
+                .chars()
+                .take(text_len)
+                .collect();
+            for i in 0..block_count {
+                let mut bid = [0u8; 16];
+                bid[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                bid[15] = 1;
+                upsert_block(&engine, note_id, bid, &filler, None).await;
+            }
+            engine
+        }
+
+        fn time_it<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+            let start = Instant::now();
+            let out = f();
+            (out, start.elapsed())
+        }
+
+        // (label, block_count, text_len) shaped to hit the mosaic's mean /
+        // median / p90 / max snapshot sizes.
+        let shapes: [(&str, usize, usize); 4] = [
+            ("median (~3KB)", 8, 250),
+            ("mean (~7KB)", 20, 250),
+            ("p90 (~17KB)", 45, 250),
+            ("max (~83KB)", 220, 250),
+        ];
+
+        eprintln!(
+            "\nlabel            snapshot_B  delta_B   probe(delta)_us  raw_import(delta)_us  probe(snapshot)_us  raw_import(snapshot)_us"
+        );
+        for (label, block_count, text_len) in shapes {
+            let note_id = [5u8; 16];
+            let engine1 = build_note([1u8; 16], note_id, block_count, text_len).await;
+            let doc1 = engine1.doc_for_note_mut(note_id).await;
+            let vv1 = doc1.oplog_vv();
+            let snapshot_bytes = doc1.export(ExportMode::Snapshot).unwrap();
+
+            // A genuine inbound DELTA: device 2 imports device 1's snapshot,
+            // adds ONE block (a peer edit), exports only what device 1 lacks.
+            let hlc2 = Arc::new(Hlc::new(DeviceId::from_bytes([2u8; 16])));
+            let engine2 = LoroEngine::new(DeviceId::from_bytes([2u8; 16]), hlc2);
+            engine2
+                .import_authoritative_snapshot(note_id, &snapshot_bytes)
+                .await
+                .unwrap();
+            let mut peer_bid = [0u8; 16];
+            peer_bid[15] = 2;
+            upsert_block(&engine2, note_id, peer_bid, "peer edit block text", None).await;
+            let doc2 = engine2.doc_for_note_mut(note_id).await;
+            let delta_bytes = doc2.export(ExportMode::updates(&vv1)).unwrap();
+
+            const N: u32 = 50;
+            let mut probe_delta_total = Duration::ZERO;
+            let mut raw_delta_total = Duration::ZERO;
+            let mut probe_snap_total = Duration::ZERO;
+            let mut raw_snap_total = Duration::ZERO;
+            for _ in 0..N {
+                let (_, d) = time_it(|| probe_import_poison(&doc1, &delta_bytes));
+                probe_delta_total += d;
+                let fork = LoroDoc::new();
+                fork.import(&snapshot_bytes).unwrap();
+                let (_, d) = time_it(|| fork.import(&delta_bytes));
+                raw_delta_total += d;
+
+                let (_, d) = time_it(|| probe_import_poison(&doc1, &snapshot_bytes));
+                probe_snap_total += d;
+                let fork2 = LoroDoc::new();
+                let (_, d) = time_it(|| fork2.import(&snapshot_bytes));
+                raw_snap_total += d;
+            }
+            eprintln!(
+                "{label:<16} {:>9}B {:>7}B {:>15}us {:>19}us {:>17}us {:>21}us",
+                snapshot_bytes.len(),
+                delta_bytes.len(),
+                (probe_delta_total / N).as_micros(),
+                (raw_delta_total / N).as_micros(),
+                (probe_snap_total / N).as_micros(),
+                (raw_snap_total / N).as_micros(),
+            );
+        }
     }
 }

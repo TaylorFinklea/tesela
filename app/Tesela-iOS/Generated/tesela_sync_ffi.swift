@@ -1375,11 +1375,6 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func applyDeltaFrame(frame: Data) async throws  -> DeltaApplyOutcome
     
     /**
-     * Merge a peer's presence delta (last-write-wins). `true` if it applied.
-     */
-    func applyPresence(bytes: Data)  -> Bool
-    
-    /**
      * Remove a property from a block — the on-device mirror of the server's
      * `POST /blocks/clear-property` route (P1.10,
      * `tesela-server::routes::notes::clear_block_property`). Emits
@@ -1471,17 +1466,6 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * [`Self::produce_note_delta`].
      */
     func noteVersion(slug: String) async  -> Data?
-    
-    /**
-     * All currently-live peers' presence (cursor payloads), skipping expired.
-     */
-    func presencePeers()  -> [PresencePeer]
-    
-    /**
-     * Purge presence entries past the timeout. Call on a ~10s timer (loro
-     * doesn't auto-expire presence in Rust).
-     */
-    func presenceRemoveOutdated() 
     
     /**
      * Produce the live Loro delta for a just-changed note, framed as a
@@ -1634,14 +1618,6 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * silently no-opping in the apply arm.
      */
     func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String) async throws  -> UInt32
-    
-    /**
-     * Publish THIS device's ephemeral presence under `key` (the device id),
-     * `value` being the caller's encoded cursor+metadata. Returns the broadcast
-     * delta to send to peers (over the WS / relay presence channel). Never
-     * persisted to a doc. (Phase 1 presence.)
-     */
-    func setPresence(key: String, value: Data)  -> Data
     
     /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -1824,18 +1800,6 @@ open func applyDeltaFrame(frame: Data)async throws  -> DeltaApplyOutcome  {
             liftFunc: FfiConverterTypeDeltaApplyOutcome_lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
-}
-    
-    /**
-     * Merge a peer's presence delta (last-write-wins). `true` if it applied.
-     */
-open func applyPresence(bytes: Data) -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_tesela_sync_ffi_fn_method_syncenginehandle_apply_presence(
-            self.uniffiCloneHandle(),
-        FfiConverterData.lower(bytes),$0
-    )
-})
 }
     
     /**
@@ -2058,28 +2022,6 @@ open func noteVersion(slug: String)async  -> Data?  {
             errorHandler: nil
             
         )
-}
-    
-    /**
-     * All currently-live peers' presence (cursor payloads), skipping expired.
-     */
-open func presencePeers() -> [PresencePeer]  {
-    return try!  FfiConverterSequenceTypePresencePeer.lift(try! rustCall() {
-    uniffi_tesela_sync_ffi_fn_method_syncenginehandle_presence_peers(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
-     * Purge presence entries past the timeout. Call on a ~10s timer (loro
-     * doesn't auto-expire presence in Rust).
-     */
-open func presenceRemoveOutdated()  {try! rustCall() {
-    uniffi_tesela_sync_ffi_fn_method_syncenginehandle_presence_remove_outdated(
-            self.uniffiCloneHandle(),$0
-    )
-}
 }
     
     /**
@@ -2337,22 +2279,6 @@ open func setBlockProperty(slug: String, blockIdHex: String, key: String, value:
             liftFunc: FfiConverterUInt32.lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
-}
-    
-    /**
-     * Publish THIS device's ephemeral presence under `key` (the device id),
-     * `value` being the caller's encoded cursor+metadata. Returns the broadcast
-     * delta to send to peers (over the WS / relay presence channel). Never
-     * persisted to a doc. (Phase 1 presence.)
-     */
-open func setPresence(key: String, value: Data) -> Data  {
-    return try!  FfiConverterData.lift(try! rustCall() {
-    uniffi_tesela_sync_ffi_fn_method_syncenginehandle_set_presence(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(key),
-        FfiConverterData.lower(value),$0
-    )
-})
 }
     
     /**
@@ -3099,66 +3025,6 @@ public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> Po
 #endif
 public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
     return FfiConverterTypePollProbeRecord.lower(value)
-}
-
-
-/**
- * One peer's live ephemeral PRESENCE (Phase 1 multi-device): `key` is the
- * peer's id (the value the device set under), `value` is its opaque encoded
- * payload (cursor + metadata — the FFI caller owns the encoding). Returned by
- * [`SyncEngineHandle::presence_peers`].
- */
-public struct PresencePeer: Equatable, Hashable {
-    public var key: String
-    public var value: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(key: String, value: Data) {
-        self.key = key
-        self.value = value
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension PresencePeer: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypePresencePeer: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PresencePeer {
-        return
-            try PresencePeer(
-                key: FfiConverterString.read(from: &buf), 
-                value: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: PresencePeer, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.key, into: &buf)
-        FfiConverterData.write(value.value, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePresencePeer_lift(_ buf: RustBuffer) throws -> PresencePeer {
-    return try FfiConverterTypePresencePeer.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePresencePeer_lower(_ value: PresencePeer) -> RustBuffer {
-    return FfiConverterTypePresencePeer.lower(value)
 }
 
 
@@ -4169,31 +4035,6 @@ fileprivate struct FfiConverterSequenceTypeNoteSnapshotRecord: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypePresencePeer: FfiConverterRustBuffer {
-    typealias SwiftType = [PresencePeer]
-
-    public static func write(_ value: [PresencePeer], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypePresencePeer.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PresencePeer] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [PresencePeer]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypePresencePeer.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRustBuffer {
     typealias SwiftType = [RelaySnapshotRecord]
 
@@ -4602,9 +4443,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 47838) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_presence() != 39847) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_clear_block_property() != 24678) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4632,12 +4470,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_presence_peers() != 41073) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_presence_remove_outdated() != 28080) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_produce_note_delta() != 37163) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4657,9 +4489,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property() != 18420) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_presence() != 21685) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {

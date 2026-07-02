@@ -232,25 +232,6 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
-    /// Set THIS peer's ephemeral presence under `key`, returning the broadcast
-    /// delta. Default no-op (empty); LoroEngine overrides.
-    fn set_local_presence(&self, _key: String, _value: Vec<u8>) -> Vec<u8> {
-        Vec::new()
-    }
-
-    /// Merge a peer's presence delta (last-write-wins). Default `false`.
-    fn apply_presence(&self, _bytes: &[u8]) -> bool {
-        false
-    }
-
-    /// All live peers' presence as `(key, value)`. Default empty.
-    fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
-        Vec::new()
-    }
-
-    /// Purge presence entries past the timeout (call on a timer). Default no-op.
-    fn presence_remove_outdated(&self) {}
-
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be

@@ -128,16 +128,6 @@ pub struct DeltaApplyOutcome {
     pub note_ids_hex: Vec<String>,
 }
 
-/// One peer's live ephemeral PRESENCE (Phase 1 multi-device): `key` is the
-/// peer's id (the value the device set under), `value` is its opaque encoded
-/// payload (cursor + metadata — the FFI caller owns the encoding). Returned by
-/// [`SyncEngineHandle::presence_peers`].
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct PresencePeer {
-    pub key: String,
-    pub value: Vec<u8>,
-}
-
 /// The opaque relay-presence wire payload (Option-B iOS presence). Mirrors
 /// `tesela-server::presence_relay::OuterPayload` EXACTLY — same field order +
 /// types — so the postcard bytes `presence_seal` emits are byte-identical to
@@ -1025,34 +1015,6 @@ impl SyncEngineHandle {
     ) -> Result<Option<u32>, FfiSyncError> {
         let note_id = stable_uuid_from_slug(&slug);
         Ok(self.inner.resolve_block_cursor(note_id, &cursor_bytes).await)
-    }
-
-    /// Publish THIS device's ephemeral presence under `key` (the device id),
-    /// `value` being the caller's encoded cursor+metadata. Returns the broadcast
-    /// delta to send to peers (over the WS / relay presence channel). Never
-    /// persisted to a doc. (Phase 1 presence.)
-    pub fn set_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
-        self.inner.set_local_presence(key, value)
-    }
-
-    /// Merge a peer's presence delta (last-write-wins). `true` if it applied.
-    pub fn apply_presence(&self, bytes: Vec<u8>) -> bool {
-        self.inner.apply_presence(&bytes)
-    }
-
-    /// All currently-live peers' presence (cursor payloads), skipping expired.
-    pub fn presence_peers(&self) -> Vec<PresencePeer> {
-        self.inner
-            .presence_peers()
-            .into_iter()
-            .map(|(key, value)| PresencePeer { key, value })
-            .collect()
-    }
-
-    /// Purge presence entries past the timeout. Call on a ~10s timer (loro
-    /// doesn't auto-expire presence in Rust).
-    pub fn presence_remove_outdated(&self) {
-        self.inner.presence_remove_outdated()
     }
 
     /// Set ONE property on a block through the engine's typed
@@ -2221,19 +2183,19 @@ mod tests {
             .expect("open_loro")
     }
 
-    /// Phase 1 presence: the full cross-device caret flow through the FFI —
-    /// A mints a cursor + publishes presence, B (sharing A's note lineage)
-    /// applies it, reads the peer back, and resolves A's cursor to the right
-    /// offset in B's own copy. Exercises mint_cursor/set_presence/apply_presence/
-    /// presence_peers/resolve_cursor end to end.
+    /// Phase 1 cursors: the cross-device caret flow through the FFI — A mints
+    /// a cursor on a block, B (sharing A's note lineage) resolves the SAME
+    /// encoded bytes to the right offset in its own copy. Exercises
+    /// mint_cursor/resolve_cursor end to end. (Presence transport itself is
+    /// CF-DO-WS, not this engine surface — deleted per ADR-8, tesela-engc.7.)
     #[tokio::test]
-    async fn ffi_cursor_and_presence_round_trip() {
+    async fn ffi_cursor_round_trip_across_devices() {
         let dir_a = tempfile::tempdir().expect("tempdir a");
         let dir_b = tempfile::tempdir().expect("tempdir b");
         let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
         let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
 
-        let slug = "presence-note".to_string();
+        let slug = "cursor-note".to_string();
         let bid_hex = "02020202-0202-0202-0202-020202020202".to_string();
         a.record_note_upsert_by_slug(
             slug.clone(),
@@ -2252,24 +2214,16 @@ mod tests {
             .expect("bootstrap frame");
         b.apply_delta_frame(boot).await.unwrap();
 
-        // A's caret at offset 6 ("world"), published as opaque presence bytes.
+        // A's caret at offset 6 ("world"), as opaque encoded cursor bytes.
         let cur = a
             .mint_cursor(slug.clone(), bid_hex, 6)
             .await
             .unwrap()
             .expect("A mints a cursor on the block");
-        let delta = a.set_presence("device-a".into(), cur);
-        assert!(!delta.is_empty(), "set_presence returns a broadcast delta");
 
-        // B applies A's presence + reads the peer back.
-        assert!(b.apply_presence(delta), "B applies A's presence");
-        let peers = b.presence_peers();
-        assert_eq!(peers.len(), 1, "B sees exactly one peer");
-        assert_eq!(peers[0].key, "device-a");
-
-        // B resolves A's cursor (the payload bytes) to offset 6 in its copy.
+        // B resolves A's cursor bytes to offset 6 in its own copy.
         assert_eq!(
-            b.resolve_cursor(slug, peers[0].value.clone()).await.unwrap(),
+            b.resolve_cursor(slug, cur).await.unwrap(),
             Some(6),
             "A's cursor resolves to the right offset on B"
         );

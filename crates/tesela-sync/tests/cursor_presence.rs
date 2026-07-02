@@ -1,10 +1,14 @@
-//! Phase 1 (multi-device presence foundation): stable cursors + EphemeralStore
-//! presence, the primitives the FFI will expose. TDD:
+//! Phase 1 (multi-device presence foundation): stable cursors, the primitive
+//! the FFI exposes for placing a remote caret. TDD:
 //!   - a loro `Cursor` minted on a block's text is OP-ANCHORED — it survives a
 //!     concurrent insert BEFORE it (shifts to the new offset, not the stale
 //!     index). This is what lets a remote caret stay correct through the
 //!     other peer's typing.
-//!   - presence (EphemeralStore) round-trips between two engines and expires.
+//!
+//! The engine's EphemeralStore-backed presence surface (set/apply/peers) was
+//! deleted per ADR-8 (decisions.md 2026-07-01, tesela-engc.7) — no production
+//! caller on any platform; presence transport is CF-DO-WS
+//! (`presence_relay.rs` / iOS `PresenceRelaySocket`).
 
 use std::sync::Arc;
 
@@ -96,64 +100,5 @@ async fn cursor_resolves_across_engines_on_shared_doc() {
         b.resolve_block_cursor(note, &cur).await,
         Some(6),
         "A's encoded cursor resolves to the same offset on B's shared-lineage copy"
-    );
-}
-
-#[tokio::test]
-async fn presence_round_trips_between_engines() {
-    let a = engine(0x0a);
-    let b = engine(0x0b);
-
-    // A publishes its presence (opaque bytes — the FFI's encoded cursor+meta).
-    let payload = b"a@block5".to_vec();
-    let delta = a.set_local_presence("device-a".into(), payload.clone());
-    assert!(
-        !delta.is_empty(),
-        "set_local_presence returns a non-empty broadcast delta"
-    );
-
-    // Before applying, B sees no peers.
-    assert!(b.presence_peers().is_empty(), "B starts with no peer presence");
-
-    // B applies A's presence delta → B now sees A's cursor.
-    assert!(b.apply_presence(&delta), "B applies A's presence delta");
-    assert_eq!(
-        b.presence_peers(),
-        vec![("device-a".to_string(), payload)],
-        "B reads A's exact presence value under A's key"
-    );
-}
-
-#[tokio::test]
-async fn presence_aggregates_multiple_peers_and_lww_updates() {
-    let hub = engine(0x01);
-    let a = engine(0x0a);
-    let c = engine(0x0c);
-
-    hub.apply_presence(&a.set_local_presence("a".into(), b"a1".to_vec()));
-    hub.apply_presence(&c.set_local_presence("c".into(), b"c1".to_vec()));
-
-    let mut peers = hub.presence_peers();
-    peers.sort();
-    assert_eq!(
-        peers,
-        vec![
-            ("a".to_string(), b"a1".to_vec()),
-            ("c".to_string(), b"c1".to_vec())
-        ],
-        "the hub aggregates presence from both peers"
-    );
-
-    // A moves its cursor → last write wins for A's key, C untouched.
-    hub.apply_presence(&a.set_local_presence("a".into(), b"a2".to_vec()));
-    let mut peers = hub.presence_peers();
-    peers.sort();
-    assert_eq!(
-        peers,
-        vec![
-            ("a".to_string(), b"a2".to_vec()),
-            ("c".to_string(), b"c1".to_vec())
-        ],
-        "A's presence updates in place (LWW); C's stays"
     );
 }
