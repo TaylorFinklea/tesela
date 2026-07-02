@@ -200,29 +200,72 @@ final class EditorAutocomplete: ObservableObject {
 /// The built-in `/` slash verbs — text-insert / opener verbs (actions like
 /// indent/status stay on the toolbar). `link`/`tag` insert just the opener
 /// so the respective autocomplete chains open.
+///
+/// Base-verb-set unification (tesela-cmdd.5): `manifestVerbs` ids trace 1:1
+/// to `web/src/lib/command-manifest.json`'s `editor` category entries whose
+/// `surfaces` include `slash` — the SAME set web's `BlockEditor.getSlashTree`
+/// builds from `commandRegistry.availableOn('slash', …)` (mirrors
+/// `slash-tree.ts`'s doc comment: "the 8 insertion verbs"). Two manifest
+/// entries are structurally excluded, matching web exactly:
+/// `editor.property` (invoked from the `/p` submenu leaf, never a top-level
+/// verb — no `slashKey` on web either) and `editor.widget` (leader-only,
+/// dropped from slash). `editor.template` is an EXPLICIT opt-out
+/// (`ManifestOptOuts.noHandlerYet`): iOS has no template-picker UI, so it's
+/// deliberately absent rather than silently missing — see
+/// `ManifestSlashVerbsTests`, which asserts every OTHER manifest slash verb
+/// has a corresponding id here. `platformOnlyVerbs` are the intentional
+/// non-manifest additions (Subheading/Quote/Divider have no web command at
+/// all) — kept separate so they read as a deliberate platform capability,
+/// not scope creep into the traced set.
 enum SlashVerbs {
+    /// Manifest ids with no MCP/iOS handler yet — tracked here (not just a
+    /// comment) so `ManifestSlashVerbsTests` can assert the gap is
+    /// intentional rather than a forgotten command.
+    enum ManifestOptOuts {
+        static let noHandlerYet: Set<String> = ["editor.template"]
+    }
+
     static func matching(_ query: String) -> [Suggestion] {
-        let items = base + [todayDate()]
+        let items = base
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return items }
         return items.filter { $0.label.lowercased().contains(q) || $0.id.lowercased().contains(q) }
     }
 
-    private static let base: [Suggestion] = [
-        Suggestion(id: "slash:link", label: "Link [[…]]", insert: "[["),
-        Suggestion(id: "slash:tag", label: "Tag #…", insert: "#"),
-        Suggestion(id: "slash:h1", label: "Heading", insert: "# "),
-        Suggestion(id: "slash:h2", label: "Subheading", insert: "## "),
-        Suggestion(id: "slash:quote", label: "Quote", insert: "> "),
-        Suggestion(id: "slash:divider", label: "Divider", insert: "---"),
+    /// `todayDate()` is recomputed per call (embeds today's date), so `base`
+    /// is a computed property rather than a static array.
+    static var base: [Suggestion] { manifestVerbs + [todayDate()] + platformOnlyVerbs }
+
+    /// Manifest-traced verbs — id == the `web/src/lib/command-manifest.json`
+    /// entry it corresponds to.
+    private static let manifestVerbs: [Suggestion] = [
+        Suggestion(id: "editor.link", label: "Link [[…]]", insert: "[["),
+        Suggestion(id: "editor.tag", label: "Tag #…", insert: "#"),
+        Suggestion(id: "editor.heading", label: "Heading", insert: "# "),
+        Suggestion(id: "editor.task", label: "Task", insert: "tags:: Task"),
+        Suggestion(id: "editor.collection", label: "Collection", insert: "\ncollection:: []\nview:: cards"),
+        Suggestion(id: "editor.query", label: "Query", insert: "\nquery:: type = \nview:: table"),
     ]
 
+    /// Intentional non-manifest additions — no web command exists for these
+    /// (tesela-cmdd.5's "explicit platform flag", not a forgotten edit).
+    private static let platformOnlyVerbs: [Suggestion] = [
+        Suggestion(id: "ios.subheading", label: "Subheading", insert: "## "),
+        Suggestion(id: "ios.quote", label: "Quote", insert: "> "),
+        Suggestion(id: "ios.divider", label: "Divider", insert: "---"),
+    ]
+
+    /// Also manifest-traced (`editor.date`); execution differs deliberately
+    /// from web (which opens a date picker) — iOS inserts a `[[today]]` link,
+    /// an existing, working, lower-friction affordance for the same
+    /// "insert today" intent. The id ties it to the manifest for
+    /// traceability even though the mechanism diverges.
     private static func todayDate() -> Suggestion {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")
         let today = f.string(from: Date())
-        return Suggestion(id: "slash:date", label: "Today's date", insert: "[[\(today)]]")
+        return Suggestion(id: "editor.date", label: "Today's date", insert: "[[\(today)]]")
     }
 
     /// Registry-derived slash verbs for the block being edited (P5.4). Each
@@ -296,7 +339,7 @@ enum SlashVerbs {
     /// the full list in original order. This is the single source the `.slash`
     /// provider returns.
     static func matchingWithRegistry(_ query: String, tags: [String], registry: PropertyRegistry) -> [Suggestion] {
-        let items = base + [todayDate()] + registryVerbs(tags: tags, registry: registry)
+        let items = base + registryVerbs(tags: tags, registry: registry)
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return items }
         // Explicit element type so the chained map/filter/sorted/map doesn't blow
