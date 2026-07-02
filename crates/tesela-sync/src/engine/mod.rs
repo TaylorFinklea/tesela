@@ -181,12 +181,14 @@ pub trait SyncEngine: Send + Sync {
     }
 
     /// Apply the server's FULL snapshot as an AUTHORITATIVE re-base: a
-    /// disjoint device adopts the server's lineage by tombstoning its own
-    /// same-bid twin nodes and keeping the snapshot-origin ones, so later
-    /// concurrent edits MERGE instead of forking new twins. Unlike
-    /// [`import_doc_update`](Self::import_doc_update)'s min-`TreeID` dedup, this
-    /// resolves twins SERVER-WINS. The iOS catch-up path routes here. Default
-    /// forwards to `import_doc_update`; LoroEngine overrides with the re-base.
+    /// disjoint device adopts the server's lineage by unioning it in and then
+    /// resolving each same-bid twin with the SAME deterministic keep-winner
+    /// rule as [`import_doc_update`](Self::import_doc_update) (max-`TreeID`
+    /// among non-stale tips — NOT server-wins), so the catch-up path and the WS
+    /// path always pick the IDENTICAL survivor and later concurrent edits MERGE
+    /// instead of forking new twins (tesela-y11, decisions.md 2026-07-01). The
+    /// iOS catch-up path routes here. Default forwards to `import_doc_update`;
+    /// LoroEngine overrides with the re-base.
     async fn import_authoritative_snapshot(
         &self,
         note_id: [u8; 16],

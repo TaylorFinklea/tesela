@@ -336,6 +336,45 @@ fn migrate_in_text_from_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Which apply path is driving [`LoroEngine::apply_import`]. The three public
+/// entry points (`import_doc_update`, `apply_doc_update_status`,
+/// `import_authoritative_snapshot`) hand-copied the same ~9-step apply body and
+/// differed ONLY in how they gate the disjoint-twin heal plan and in the noun
+/// used when a poison frame is skipped — captured here so that body lives once
+/// (ADR-1, decisions.md 2026-07-01).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportMode {
+    /// Live WS delta. The heal plan is gated on the note being ALREADY resident
+    /// before this apply (the tesela-qql landmine): a not-yet-resident note has
+    /// no local twin to protect, so it raw-imports without a per-block plan. A
+    /// discriminator error logs a warning (the frame still raw-imports).
+    Delta,
+    /// Authoritative catch-up snapshot. The plan is computed whenever the note
+    /// isn't the views registry doc — residency is NOT consulted (a disjoint
+    /// device catching up may not have the note resident yet, but its own
+    /// authored twins still need the keep-winner resolve). A discriminator error
+    /// is silently ignored (no warning).
+    Authoritative,
+}
+
+impl ImportMode {
+    /// The noun used in the poison-skip log + error ("inbound frame" vs
+    /// "authoritative snapshot") — preserves each path's original message.
+    fn skip_noun(self) -> &'static str {
+        match self {
+            ImportMode::Delta => "inbound frame",
+            ImportMode::Authoritative => "authoritative snapshot",
+        }
+    }
+}
+
+/// Result of [`LoroEngine::apply_import`]. Carries the only per-path-variable
+/// output: whether Loro left ops PENDING after the import (a causal gap
+/// surfaced by `apply_doc_update_status`; discarded by the other two publics).
+struct ImportOutcome {
+    pending: bool,
+}
+
 impl LoroEngine {
     /// Construct a new in-memory Loro engine with the given device id +
     /// HLC. The `hlc` argument is `Arc<Hlc>` precisely to support
@@ -557,6 +596,126 @@ impl LoroEngine {
         }
     }
 
+    /// The single apply orchestrator (ADR-1, decisions.md 2026-07-01) behind
+    /// `import_doc_update`, `apply_doc_update_status`, and
+    /// `import_authoritative_snapshot`. Runs the shared ~9-step sequence:
+    /// poison-probe → heal plan ([`peer_genuine_block_changes`]) → `doc.import`
+    /// → keep-winner twin tombstone ([`tombstone_twins_to_winners`] +
+    /// [`tombstone_duplicate_twins`]) → prop re-assert → derived refresh →
+    /// snapshot persist → materialize. `mode` selects ONLY the heal-plan
+    /// residency gate + the poison-skip noun; the body is otherwise identical
+    /// across the three public wrappers (see each for the per-path rationale).
+    async fn apply_import(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+        mode: ImportMode,
+    ) -> SyncResult<ImportOutcome> {
+        // Residency must be sampled BEFORE `doc_for_note_mut` (which CREATES the
+        // doc on a miss). Only the Delta path gates its heal plan on it (the
+        // tesela-qql landmine); the authoritative path never consults residency,
+        // so it doesn't even acquire the read lock.
+        let already_resident = match mode {
+            ImportMode::Delta => self.inner.docs.read().await.contains_key(&note_id),
+            ImportMode::Authoritative => false,
+        };
+        let doc = self.doc_for_note_mut(note_id).await;
+        let is_views = Self::is_views_doc(&note_id);
+
+        // POISON GUARD (2026-06-26): loro 1.12 can PANIC *inside* its richtext
+        // apply (`insert_elem_at_entity_index` index-out-of-bounds) on certain
+        // concurrent / disjoint-lineage frames. An unguarded `import` aborts the
+        // whole process. Probe on a throwaway snapshot round-trip into a FRESH
+        // doc (`doc.fork()` does NOT isolate — it shares the poisoned mutex): a
+        // frame that panics (or errors) is SKIPPED (returned as an error so the
+        // tick counts it failed + bounded-retries), never applied. A clean probe
+        // here guarantees the real `import` below won't panic either.
+        if let Err(reason) = probe_import_poison(&doc, bytes) {
+            tracing::error!(
+                "tesela-sync/loro: SKIPPING {} for {} — {reason}",
+                mode.skip_noun(),
+                hex_id(&note_id)
+            );
+            return Err(SyncError::Storage(format!(
+                "{} skipped for {}: {reason}",
+                mode.skip_noun(),
+                hex_id(&note_id)
+            )));
+        }
+
+        // Compute the disjoint-twin protection plan BEFORE mutating the doc: the
+        // RESOLVED target text/props every twin block's surviving node must hold
+        // after the raw merge. Skipped for the VIEWS registry doc (no "blocks"
+        // tree — the raw import IS the merge) and, on the Delta path, for a
+        // not-yet-resident note (nothing local to protect). A discriminator
+        // failure is graceful — raw-import without per-block protection, never
+        // panic — but the Delta path additionally warns.
+        let plan_gate = match mode {
+            ImportMode::Delta => already_resident && !is_views,
+            ImportMode::Authoritative => !is_views,
+        };
+        let plan = if plan_gate {
+            match peer_genuine_block_changes(&doc, bytes) {
+                Ok(changes) => Some(changes),
+                Err(e) => {
+                    if matches!(mode, ImportMode::Delta) {
+                        tracing::warn!(
+                            "tesela-sync/loro: WS-apply discriminator failed for {} ({e}); \
+                             raw-importing without per-block protection",
+                            hex_id(&note_id)
+                        );
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Raw-import the frame. Genuinely-new blocks arrive with Loro's native,
+        // convergent ordering (the multi-engine relay path relies on it) and
+        // shared-lineage text merges; the clobber it can cause on EXISTING
+        // disjoint-twin blocks is healed below. Surface Loro's PENDING status (a
+        // causal gap) for the `apply_doc_update_status` caller; the other two
+        // publics discard it.
+        let status = doc
+            .import(bytes)
+            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
+        let pending = status
+            .pending
+            .as_ref()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false);
+
+        // ── Disjoint-twin heal ───────────────────────────────────────────────
+        // Keep the discriminator's DETERMINISTIC winner NODE per twin bid (so
+        // every replica converges on ONE lineage/text in ONE round with no
+        // doubling force-write), then min-`TreeID`-dedup any leftover twins.
+        // Shared-lineage blocks need no heal (their splices already merged).
+        if !is_views {
+            if let Some(changes) = &plan {
+                tombstone_twins_to_winners(&doc, changes);
+            }
+            tombstone_duplicate_twins(&doc, note_id);
+        }
+        // Props half of the heal: re-assert each tombstoned twin's resolved props
+        // onto the surviving winner (per-key, idempotency-guarded). record_local
+        // re-acquires the docs lock + re-fetches the doc.
+        if let Some(changes) = &plan {
+            self.reassert_prop_heals(note_id, changes).await?;
+        }
+
+        self.refresh_note_derived(note_id, &doc).await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, note_id).await;
+        }
+        // Authoritative-writer mode: a peer's edit must land on disk too.
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note(note_id).await;
+        }
+        Ok(ImportOutcome { pending })
+    }
+
     /// Apply a peer's Loro update bytes into the addressed note's doc —
     /// **the protected WS-apply path** (2026-06-02; LoroText era).
     ///
@@ -599,97 +758,9 @@ impl LoroEngine {
     /// already at its target → no heal. A decode/fork failure logs + falls back
     /// to a plain raw import (never panics).
     pub async fn import_doc_update(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<()> {
-        let already_resident = self.inner.docs.read().await.contains_key(&note_id);
-        let doc = self.doc_for_note_mut(note_id).await;
-
-        // POISON GUARD (2026-06-26): see `apply_doc_update_status`. A frame that
-        // panics Loro's richtext apply is skipped, never applied, so it can't
-        // abort the process.
-        if let Err(reason) = probe_import_poison(&doc, bytes) {
-            tracing::error!(
-                "tesela-sync/loro: SKIPPING inbound frame for {} — {reason}",
-                hex_id(&note_id)
-            );
-            return Err(SyncError::Storage(format!(
-                "inbound frame skipped for {}: {reason}",
-                hex_id(&note_id)
-            )));
-        }
-
-        // Compute the protection plan BEFORE mutating the auth doc: the
-        // RESOLVED target text for every disjoint-twin block (the value its
-        // surviving node must hold after the raw merge + dedup). Skipped on
-        // bootstrap (nothing to protect) and on a decode/fork failure
-        // (graceful: raw-import, never panic). Also skipped for the VIEWS
-        // registry doc: it has no "blocks" tree to heal — its state is a
-        // map of LWW registers, where the raw Loro import IS the merge.
-        let plan = if already_resident && !Self::is_views_doc(&note_id) {
-            match peer_genuine_block_changes(&doc, bytes) {
-                Ok(changes) => Some(changes),
-                Err(e) => {
-                    tracing::warn!(
-                        "tesela-sync/loro: WS-apply discriminator failed for {} ({e}); \
-                         raw-importing without per-block protection",
-                        hex_id(&note_id)
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Raw-import the frame. This brings in genuinely-new blocks with their
-        // native, convergent ordering (the multi-engine relay path relies on
-        // Loro's own concurrent-insert merge — re-emitting new blocks under
-        // the server's peer would diverge across devices). The clobber it can
-        // cause on EXISTING blocks is healed below.
-        doc.import(bytes)
-            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
-
-        // ── Disjoint-twin heal (the protection) ──────────────────────────
-        // A peer's snapshot can union same-bid twins minted on a disjoint
-        // history (see `dedup_twins_by_block_id`). Resolve them now — before
-        // deriving the index/markdown — so the persisted doc carries exactly one
-        // node per bid and later block-diff saves can't update a ghost.
-        //
-        // SHARED-lineage blocks need no heal: the peer's frame carries only its
-        // own LoroText splices, which MERGE with the server's — raw-import is
-        // final there. The DISJOINT-twin case is what survives: two twins hold
-        // two INDEPENDENT LoroTexts Loro can't merge. `plan` (the discriminator)
-        // chose a DETERMINISTIC winner NODE per twin bid — a pure function of the
-        // merged twin set, so every replica keeps the SAME surviving lineage with
-        // the SAME text and converges in ONE round. Keep those winners; the
-        // min-`TreeID` dedup then cleans up any twin the plan didn't cover (or the
-        // whole set when there is no plan — the fresh/bootstrap case, which can't
-        // have a local twin). We do NOT force-write text: the winner node already
-        // holds the resolved value, and two replicas each splicing it onto a
-        // min-`TreeID` survivor would DOUBLE it (concurrent identical splices).
-        // Idempotent: a re-import finds one node per bid and nothing to drop.
-        if !Self::is_views_doc(&note_id) {
-            if let Some(changes) = &plan {
-                tombstone_twins_to_winners(&doc, changes);
-            }
-            tombstone_duplicate_twins(&doc, note_id);
-        }
-        // Props half of the heal: re-assert each tombstoned twin's resolved props
-        // (captured from the fork before the tombstone) onto the surviving winner
-        // — one BlockPropertySet per key, idempotency-guarded (list union / scalar
-        // LWW), so it converges across replicas. record_local re-acquires the
-        // docs lock + re-fetches the doc.
-        if let Some(changes) = &plan {
-            self.reassert_prop_heals(note_id, changes).await?;
-        }
-
-        self.refresh_note_derived(note_id, &doc).await;
-        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
-            self.save_snapshot(dir, note_id).await;
-        }
-        // Authoritative-writer mode: a peer's edit must land on disk too.
-        if self.inner.materialize_dir.is_some() {
-            self.materialize_note(note_id).await;
-        }
-        Ok(())
+        self.apply_import(note_id, bytes, ImportMode::Delta)
+            .await
+            .map(|_| ())
     }
 
     /// Apply the server's FULL snapshot as a catch-up re-base — the
@@ -717,58 +788,9 @@ impl LoroEngine {
         note_id: [u8; 16],
         bytes: &[u8],
     ) -> SyncResult<()> {
-        let doc = self.doc_for_note_mut(note_id).await;
-
-        // Poison guard (parity with the WS paths): the discriminator below forks
-        // + imports the frame, which loro 1.12 can panic on for certain frames.
-        if let Err(reason) = probe_import_poison(&doc, bytes) {
-            tracing::error!(
-                "tesela-sync/loro: SKIPPING authoritative snapshot for {} — {reason}",
-                hex_id(&note_id)
-            );
-            return Err(SyncError::Storage(format!(
-                "authoritative snapshot skipped for {}: {reason}",
-                hex_id(&note_id)
-            )));
-        }
-
-        // Resolve disjoint twins with the SAME deterministic keep-winner rule as
-        // `import_doc_update` (max-`TreeID` among non-stale tips). This UNIFIES
-        // the catch-up path with the WS path: a device catching up here and a
-        // peer resolving the SAME twin via the WS path now pick the IDENTICAL
-        // survivor. Formerly this kept the snapshot-origin (server-lineage) node
-        // — a DIFFERENT axis than the WS path's — so when the server's peer
-        // outranked the device's, the two paths tombstoned DIFFERENT survivors
-        // and the block was LOST entirely (tesela-y11, adversarial repro #2).
-        let plan = if !Self::is_views_doc(&note_id) {
-            peer_genuine_block_changes(&doc, bytes).ok()
-        } else {
-            None
-        };
-
-        // Raw-import the server snapshot. This unions the disjoint lineages into
-        // same-bid twins; the keep-winner resolve below collapses each.
-        doc.import(bytes)
-            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
-
-        if !Self::is_views_doc(&note_id) {
-            if let Some(changes) = &plan {
-                tombstone_twins_to_winners(&doc, changes);
-            }
-            tombstone_duplicate_twins(&doc, note_id);
-        }
-        if let Some(changes) = &plan {
-            self.reassert_prop_heals(note_id, changes).await?;
-        }
-
-        self.refresh_note_derived(note_id, &doc).await;
-        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
-            self.save_snapshot(dir, note_id).await;
-        }
-        if self.inner.materialize_dir.is_some() {
-            self.materialize_note(note_id).await;
-        }
-        Ok(())
+        self.apply_import(note_id, bytes, ImportMode::Authoritative)
+            .await
+            .map(|_| ())
     }
 
     /// One-shot LOCAL repair scan (tesela-49d): report every note's DISJOINT
@@ -868,80 +890,9 @@ impl LoroEngine {
         note_id: [u8; 16],
         bytes: &[u8],
     ) -> SyncResult<bool> {
-        let already_resident = self.inner.docs.read().await.contains_key(&note_id);
-        let doc = self.doc_for_note_mut(note_id).await;
-
-        // POISON GUARD (2026-06-26): loro 1.12 can PANIC *inside* its richtext
-        // apply (`insert_elem_at_entity_index` index-out-of-bounds) on certain
-        // concurrent / disjoint-lineage frames. An unguarded `import` aborts the
-        // whole process — one such frame crash-looped the desktop on every relay
-        // tick. Probe the import on a throwaway fork under `catch_unwind`: a
-        // frame that panics (or errors) is SKIPPED (returned as an error so the
-        // tick counts it failed + bounded-retries), never applied, so a single
-        // poison frame can't take down the device or the fleet. A clean fork
-        // import here guarantees the real `import` below won't panic either.
-        if let Err(reason) = probe_import_poison(&doc, bytes) {
-            tracing::error!(
-                "tesela-sync/loro: SKIPPING inbound frame for {} — {reason}",
-                hex_id(&note_id)
-            );
-            return Err(SyncError::Storage(format!(
-                "inbound frame skipped for {}: {reason}",
-                hex_id(&note_id)
-            )));
-        }
-
-        // Views registry doc: no "blocks" tree → no twin plan/heal (see
-        // `import_doc_update`); the raw import below IS the merge.
-        let plan = if already_resident && !Self::is_views_doc(&note_id) {
-            match peer_genuine_block_changes(&doc, bytes) {
-                Ok(changes) => Some(changes),
-                Err(e) => {
-                    tracing::warn!(
-                        "tesela-sync/loro: WS-apply discriminator failed for {} ({e}); \
-                         raw-importing without per-block protection",
-                        hex_id(&note_id)
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let status = doc
-            .import(bytes)
-            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
-        let pending = status
-            .pending
-            .as_ref()
-            .map(|p| !p.is_empty())
-            .unwrap_or(false);
-
-        // Disjoint-twin heal — see `import_doc_update` for the full rationale:
-        // keep the discriminator's DETERMINISTIC winner NODE per twin bid (so all
-        // replicas converge on ONE lineage/text in ONE round with no doubling
-        // force-write), then min-`TreeID`-dedup any leftover twins.
-        if !Self::is_views_doc(&note_id) {
-            if let Some(changes) = &plan {
-                tombstone_twins_to_winners(&doc, changes);
-            }
-            tombstone_duplicate_twins(&doc, note_id);
-        }
-        // Props half of the heal: re-assert each tombstoned twin's resolved props
-        // onto the surviving winner (per-key, idempotency-guarded).
-        if let Some(changes) = &plan {
-            self.reassert_prop_heals(note_id, changes).await?;
-        }
-
-        self.refresh_note_derived(note_id, &doc).await;
-        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
-            self.save_snapshot(dir, note_id).await;
-        }
-        if self.inner.materialize_dir.is_some() {
-            self.materialize_note(note_id).await;
-        }
-        Ok(pending)
+        self.apply_import(note_id, bytes, ImportMode::Delta)
+            .await
+            .map(|o| o.pending)
     }
 
     /// Re-assert the disjoint-twin heal's RESOLVED props (captured from the fork
