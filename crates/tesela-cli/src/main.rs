@@ -14,12 +14,18 @@ mod repair_daily_tags;
 mod repair_garbled_blocks;
 use tesela_core::{
     config::Config,
+    daily,
     daily::DailyNoteConfig,
     db::SqliteIndex,
     export::{export_note, ExportFormat},
     note::NoteId,
     storage::filesystem::FsNoteStore,
+    storage::markdown::{generate_frontmatter, sanitize_filename},
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
+};
+
+use mosaic_notes::{
+    ensure_bulleted_body, hydrate_note, open_locked_engine, stable_uuid_from_slug, stamp_block_ids,
 };
 
 #[derive(Parser)]
@@ -259,6 +265,7 @@ enum Commands {
 }
 
 struct Ctx {
+    mosaic: PathBuf,
     store: Arc<FsNoteStore>,
     index: Arc<SqliteIndex>,
     registry: PluginRegistry,
@@ -277,6 +284,7 @@ impl Ctx {
         let registry = tesela_plugins::load_all_plugins(&mosaic);
 
         Ok(Self {
+            mosaic,
             store,
             index,
             registry,
@@ -391,13 +399,42 @@ async fn cmd_new(
         .as_deref()
         .map(|t| t.split(',').map(str::trim).collect())
         .unwrap_or_default();
-
     let body = content.as_deref().unwrap_or("");
-    let note = ctx
-        .store
-        .create(&title, body, &tag_list)
+
+    // Engine-only-writes (2026-06-09): lock the mosaic and open the Loro
+    // engine BEFORE writing — a local-only `FsNoteStore` write never syncs
+    // and gets reverted by the engine's next materialize. Fails loudly
+    // (rather than bypassing the lock) if tesela-server/the desktop is
+    // running on this mosaic.
+    let (_lock, engine) = open_locked_engine(&ctx.mosaic).await?;
+
+    let slug = sanitize_filename(&title);
+    let path = ctx.mosaic.join("notes").join(format!("{slug}.md"));
+    if path.exists() {
+        anyhow::bail!("Note '{}' already exists", title);
+    }
+
+    let now = chrono::Utc::now();
+    let full_content = if body.trim_start().starts_with("---") {
+        // Content already has frontmatter — use as-is (e.g. Property/Tag pages)
+        body.to_string()
+    } else {
+        let frontmatter = generate_frontmatter(&title, &tag_list, now, &Default::default());
+        format!("{}\n{}", frontmatter, ensure_bulleted_body(body))
+    };
+    let stamped = stamp_block_ids(&full_content);
+
+    hydrate_note(&engine, stable_uuid_from_slug(&slug), &slug, &stamped)
         .await
         .context("Failed to create note")?;
+    drop(engine);
+
+    let note = ctx
+        .store
+        .get(&NoteId::new(&slug))
+        .await
+        .context("Failed to re-read created note")?
+        .ok_or_else(|| anyhow::anyhow!("note '{}' not found after create", title))?;
     ctx.index
         .upsert_note(&note)
         .await
@@ -460,6 +497,12 @@ async fn cmd_cat(ctx: &Ctx, query: String) -> Result<()> {
 async fn cmd_edit(ctx: &Ctx, query: String) -> Result<()> {
     let note = resolve_note(ctx, &query).await?;
 
+    // Engine-only-writes (2026-06-09): lock the mosaic and open the Loro
+    // engine BEFORE launching the editor, so a server/desktop already
+    // holding the mosaic fails loudly up front instead of after the user
+    // has already made edits.
+    let (_lock, engine) = open_locked_engine(&ctx.mosaic).await?;
+
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -470,6 +513,24 @@ async fn cmd_edit(ctx: &Ctx, query: String) -> Result<()> {
         .arg(&full_path)
         .status()
         .with_context(|| format!("Failed to launch editor: {}", editor))?;
+
+    // The external editor wrote the file directly (outside the engine's
+    // control); record the new content through the engine as a
+    // non-destructive per-bid reconcile NoteUpsert — the same op every
+    // other save path uses — so the edit actually syncs instead of being
+    // silently reverted by the engine's next materialize.
+    let edited_content = std::fs::read_to_string(&full_path)
+        .with_context(|| format!("Failed to re-read edited note: {}", full_path.display()))?;
+    let stamped = stamp_block_ids(&edited_content);
+    hydrate_note(
+        &engine,
+        stable_uuid_from_slug(note.id.as_str()),
+        note.id.as_str(),
+        &stamped,
+    )
+    .await
+    .context("Failed to record edit")?;
+    drop(engine);
 
     // Re-read and reindex
     if let Some(updated) = ctx
@@ -499,11 +560,34 @@ async fn cmd_daily(ctx: &Ctx, date: Option<String>) -> Result<()> {
         .transpose()?;
 
     let daily_config = DailyNoteConfig::default();
-    let note = ctx
-        .store
-        .daily_note(parsed_date, &daily_config)
-        .await
-        .context("Failed to create daily note")?;
+    let resolved_date = parsed_date.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let filename = daily::daily_note_filename(resolved_date, &daily_config);
+    let path = ctx.mosaic.join("notes").join(&filename);
+
+    let note = if path.exists() {
+        // Already materialized — a pure read, no lock/engine needed.
+        ctx.store
+            .daily_note(parsed_date, &daily_config)
+            .await
+            .context("Failed to read daily note")?
+    } else {
+        // First-ever create of this daily — engine-only-writes (2026-06-09):
+        // lock the mosaic and route the create through the engine instead of
+        // a direct FsNoteStore write.
+        let (_lock, engine) = open_locked_engine(&ctx.mosaic).await?;
+        let slug = daily::daily_note_title(resolved_date, &daily_config);
+        let content = daily::daily_note_content(resolved_date, &daily_config);
+        hydrate_note(&engine, stable_uuid_from_slug(&slug), &slug, &content)
+            .await
+            .context("Failed to create daily note")?;
+        drop(engine);
+
+        ctx.store
+            .get(&NoteId::new(&slug))
+            .await
+            .context("Failed to re-read daily note")?
+            .ok_or_else(|| anyhow::anyhow!("daily note '{}' not found after create", slug))?
+    };
     println!("{}", note.path.display());
     Ok(())
 }

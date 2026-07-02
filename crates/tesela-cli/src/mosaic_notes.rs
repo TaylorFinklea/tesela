@@ -18,9 +18,10 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tesela_sync::{LoroEngine, OpPayload, SyncEngine};
+use std::sync::Arc;
+use tesela_sync::{Hlc, LoroEngine, OpPayload, SyncEngine};
 
-use crate::backfill_task::hex16;
+use crate::backfill_task::{acquire_mosaic_lock, hex16, load_device_id};
 
 /// One Loro-resident note: stable id, slug (display alias, falling back to
 /// the hex id), and the engine's full render — the authority for residents.
@@ -133,4 +134,79 @@ pub(crate) async fn hydrate_note(
         .await
         .map_err(|e| anyhow::anyhow!("hydrate note {slug}: {e}"))?;
     Ok(())
+}
+
+/// Parse `content`, stamp persistent block ids onto any unstamped bullets,
+/// and return the canonical serialized form. Mirrors the server's
+/// `stamp_block_ids` (routes/notes.rs `create_note`/`update_note`) — an
+/// unstamped block parsed independently by a direct disk write and by the
+/// engine's `NoteUpsert` apply would each mint a different id, so stamping
+/// up front keeps the id embedded in the content consistent with whatever
+/// the engine's own tree assigns. Returns `content` unchanged if every
+/// bullet already has a bid.
+pub(crate) fn stamp_block_ids(content: &str) -> String {
+    let tree = tesela_core::note_tree::parse_note(content);
+    if !tree.stamped_any {
+        return content.to_string();
+    }
+    tesela_core::note_tree::serialize_note(&tree)
+}
+
+/// Turn a plain-text `--content` body into the bullet form the block-model
+/// round trip actually preserves. Per the `note_tree` module docs, "Non-
+/// bullet body content does NOT survive the round trip" — a heading or bare
+/// prose paragraph is silently dropped by `parse_note`, so hydrating it
+/// through the engine (which parses into blocks, then materializes FROM the
+/// tree) would erase it. Mirrors the fix already applied to
+/// `daily::daily_note_content` (seeding `- ` not `# {title}`): an empty body
+/// becomes a single blank bullet, a body with no bullet lines gets each
+/// non-blank line turned into its own top-level bullet, and a body that
+/// already contains at least one bullet line is assumed outliner-shaped and
+/// returned unchanged.
+pub(crate) fn ensure_bulleted_body(body: &str) -> String {
+    if body.is_empty() || body.lines().any(|l| l.trim_start().starts_with("- ")) {
+        return if body.is_empty() {
+            "- \n".to_string()
+        } else {
+            body.to_string()
+        };
+    }
+    let mut out = String::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        out.push_str("- ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    if out.is_empty() {
+        out.push_str("- \n");
+    }
+    out
+}
+
+/// Lock the mosaic (refuse while `tesela-server`/the desktop holds it) and
+/// open the Loro engine over its snapshots + materialized notes dir — the
+/// same LoroEngine-open pattern `repair_garbled_blocks` and `backfill_task`
+/// use for their one-shot data tools, extended here to the CLI's day-to-day
+/// `new`/`edit`/`daily` writes so they go through the engine instead of a
+/// direct `FsNoteStore` write (engine-only-writes rule, 2026-06-09 — a
+/// local-only write never syncs and gets reverted by the engine's next
+/// materialize). The returned `File` guard must stay alive for the duration
+/// of the write; dropping it releases the flock.
+pub(crate) async fn open_locked_engine(mosaic: &Path) -> Result<(std::fs::File, LoroEngine)> {
+    let lock = acquire_mosaic_lock(mosaic).context(
+        "could not lock the mosaic — is tesela-server (or the desktop app) running on it? \
+         Stop it before writing via the CLI, or make the change through the running server/app \
+         instead (single-writer; the CLI refuses to bypass the lock).",
+    )?;
+    let device = load_device_id(mosaic);
+    let snapshot_dir = mosaic.join(".tesela").join("loro");
+    let notes_dir = mosaic.join("notes");
+    let hlc = Arc::new(Hlc::new(device));
+    let engine = LoroEngine::with_dirs(device, hlc, snapshot_dir, Some(notes_dir))
+        .await
+        .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
+    Ok((lock, engine))
 }
