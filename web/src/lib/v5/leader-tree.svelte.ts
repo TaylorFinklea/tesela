@@ -160,10 +160,18 @@ function buildChordTree(
 /** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
   const overrides = keybindings.snapshot();
+  // The with-ctx branch goes through `availableOn`, which already filters
+  // by surface AND by `isHiddenOn(cmd, 'leader', overrides)`. The no-ctx
+  // branch goes through `all()`, which doesn't — so we apply the per-surface
+  // hidden filter here unconditionally. With-ctx it's a defensive no-op
+  // (re-checks a filter `availableOn` already ran); no-ctx it's the actual
+  // gate. Keeping the check unconditional means a future change to
+  // `availableOn`'s contract can't silently let a hidden command into the
+  // tree (qwen review finding on tesela-cmdd.4).
   const commands = (
     ctx ? commandRegistry.availableOn('leader', ctx, overrides) : commandRegistry.all()
   ).filter((cmd) => {
-    if (!ctx && isHiddenOn(cmd, 'leader', overrides)) return false;
+    if (isHiddenOn(cmd, 'leader', overrides)) return false;
     const chord = effectiveChord(cmd, overrides);
     return chord && chord.length > 0;
   });

@@ -259,3 +259,38 @@ test("a command hidden on the leader surface (no ctx) is excluded from the tree"
   assert.deepEqual(leaves, ["g"]); // graph's leaf key within the g bucket
   keybindings.resetAll();
 });
+
+test("a command hidden on the leader surface (with ctx) is excluded from the tree; non-hidden still renders", () => {
+  // Regression for the qwen review finding on tesela-cmdd.4: the per-surface
+  // hidden[] config must filter the leader tree regardless of whether a
+  // CommandContext is provided. The production caller (GrLeaderOverlay) always
+  // passes a ctx, so this path is the one the user actually sees. The fix
+  // makes the explicit `isHiddenOn` filter in getLeaderTree unconditional
+  // (it was previously gated on `!ctx`, relying on `availableOn` to filter
+  // implicitly in the with-ctx branch — fragile, easy to silently regress).
+  commandRegistry._reset();
+  keybindings.resetAll();
+  reg("daily", ["g", "d"], "Today's daily note");
+  reg("graph", ["g", "g"], "Fullscreen graph");
+  keybindings.setHidden("daily", ["leader"]);
+  // Walk the whole tree and collect every leaf key, so the assertion
+  // is independent of the single-child-bucket collapse that simplifies
+  // the no-ctx test above.
+  const leaves = [];
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      if (n.action) leaves.push(n.key);
+      if (n.children) walk(n.children);
+    }
+  };
+  walk(getLeaderTree({}));
+  assert.ok(
+    !leaves.includes("d"),
+    `hidden command "daily" (leaf key "d") must NOT appear in the tree; got ${JSON.stringify(leaves)}`,
+  );
+  assert.ok(
+    leaves.includes("g"),
+    `non-hidden command "graph" (leaf key "g") must still appear in the tree; got ${JSON.stringify(leaves)}`,
+  );
+  keybindings.resetAll();
+});
