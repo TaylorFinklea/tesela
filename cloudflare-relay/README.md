@@ -140,17 +140,37 @@ written against either relay works against both, because the MAC
 canonical-request format, body-hash, status codes, and JSON shapes are
 verified identical by the Rust client driving both servers.
 
-## Storage limits
+## Storage limits & headroom
 
-Durable Object SQLite storage is currently 1 GB per DO. The relay is a
-**durable encrypted replica** — it RETAINS the full encrypted op log
-(it's the off-site backup + the fresh-device bootstrap source), so the
-log is bounded by **snapshot-gated compaction**, not by acks: when a
-device deposits a per-note snapshot batch via `PUT /snapshot` covering
-relay-seq N, the relay GCs ops with `seq <= N` (the snapshot supersedes
-them). A fresh/wiped device restores the whole mosaic from
-`GET /snapshots` + the `GET /ops?since=N` tail. Steady-state storage is
-~one compacted snapshot per note plus the un-compacted tail.
+Durable Object SQLite storage on the **free tier is 1 GB per DO** (paid
+tiers offer higher limits). The relay is a **durable encrypted replica**
+— it RETAINS the full encrypted op log (it's the off-site backup + the
+fresh-device bootstrap source), so the log is bounded by **snapshot-
+gated compaction**, not by acks: when a device deposits a per-note
+snapshot batch via `PUT /snapshot` covering relay-seq N, the relay GCs
+ops with `seq <= N` (the snapshot supersedes them). A fresh/wiped device
+restores the whole mosaic from `GET /snapshots` + the `GET /ops?since=N`
+tail. Steady-state storage is ~one compacted snapshot per note plus the
+un-compacted tail.
+
+### Projected headroom at 5,000 notes
+
+For a 5,000-note mosaic (10× a typical personal library):
+
+| Component | Size | Notes |
+|-----------|------|-------|
+| Snapshots (5k notes × 3 KB avg) | 15 MB | Loro snapshots vary: sparse ~500B, typical ~3KB, large ~50KB |
+| Ops tail (post-compaction) | 200 KB | ~500 recent ops × 350B |
+| Device tracking | 3 KB | ~20 devices per group |
+| SQLite overhead (10%) | 1.5 MB | |
+| **Total** | **17 MB** | |
+| Free tier cap | 1 GB | |
+| **Headroom remaining** | **1,007 MB (98.3% free)** | |
+
+**Conclusion:** The free tier provides 60× headroom at 5k notes. Even
+scaling to 50k notes (extreme case), projected usage is ~170 MB,
+leaving 85% free. The CF DO-SQLite free tier is **not a constraint** for
+personal Tesela use.
 
 ## What this Worker does NOT do
 

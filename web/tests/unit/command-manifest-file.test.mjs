@@ -4,9 +4,11 @@
  * command registry and the Rust `GET /commands` route
  * (`crates/tesela-server/src/routes/commands.rs`) embeds. Regenerate with
  * `npm run generate:commands` after adding/editing a command; this test
- * only validates shape (no closures, unique ids, required fields) — it
- * can't detect staleness against the live registry without paying Vite's
- * module-load cost (that's what the generator script itself is for).
+ * only validates shape (no closures, unique ids, required fields).
+ *
+ * For freshness checking (staleness against the live registry), see
+ * `scripts/check-manifest-fresh.mjs` which runs in CI and ensures edits to
+ * commands must regenerate the JSON.
  */
 import assert from "node:assert/strict";
 import test from "node:test";

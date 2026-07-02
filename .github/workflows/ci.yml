@@ -109,6 +109,11 @@ jobs:
       - name: svelte-check
         run: pnpm --dir web check
 
+      # Blocking: the command-manifest.json must match the live registry.
+      # Edits to commands require `npm run generate:commands` to refresh.
+      - name: Command manifest freshness check
+        run: pnpm --dir web check:manifest
+
       # Blocking: 16 of the 17 node:test unit suites (190 tests).
       # cm-decorations.test.mjs is excluded — cm-decorations.ts uses
       # extensionless bundler-style imports (./code-highlight) that node's
