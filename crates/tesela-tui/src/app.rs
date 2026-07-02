@@ -45,6 +45,14 @@ impl App {
     pub async fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>) -> Self {
         let mut state = AppState::default();
 
+        // Local-only banner (tesela-ows.3): the TUI writes via a raw
+        // `FsNoteStore` write, not through the Loro engine like the CLI
+        // (tesela-ows.2) and MCP (tesela-ows.3) now do — its edits never
+        // sync and get reverted by the engine's next materialize. Not
+        // ported yet; daily-driver is web/desktop. See README.
+        state.status_message =
+            Some("⚠ local-only: TUI writes do not sync — daily-driver is web/desktop".to_string());
+
         // Start on today's daily note
         let today = chrono::Utc::now().date_naive();
         let config = DailyNoteConfig::default();

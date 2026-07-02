@@ -1,6 +1,7 @@
 //! MCP tool definitions and handlers
 
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tesela_core::{
     daily::DailyNoteConfig,
@@ -11,11 +12,17 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
 };
 
+use crate::mosaic_engine::create_note_via_engine;
+
 pub struct ToolRegistry {
     pub store: Arc<FsNoteStore>,
     pub index: Arc<SqliteIndex>,
     pub daily_config: DailyNoteConfig,
     pub registry: Arc<PluginRegistry>,
+    /// Mosaic root — needed to lock it and open the Loro engine directly for
+    /// writes (tesela-ows.3): `create_note` must go through the engine like
+    /// the CLI's `cmd_new`, not a raw `FsNoteStore` write that never syncs.
+    pub mosaic: PathBuf,
 }
 
 /// Returns the MCP tools/list response.
@@ -100,12 +107,14 @@ impl ToolRegistry {
         store: Arc<FsNoteStore>,
         index: Arc<SqliteIndex>,
         registry: Arc<PluginRegistry>,
+        mosaic: PathBuf,
     ) -> Self {
         Self {
             store,
             index,
             daily_config: DailyNoteConfig::default(),
             registry,
+            mosaic,
         }
     }
 
@@ -190,11 +199,22 @@ impl ToolRegistry {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        let note = self
-            .store
-            .create(title, content, &tags)
+        // Engine-only-writes (tesela-ows.3, mirrors tesela-ows.2's CLI fix):
+        // a raw `FsNoteStore` write never syncs and gets reverted by the
+        // engine's next materialize — worse for MCP than the CLI since an
+        // agent invokes this invisibly. Lock the mosaic and hydrate through
+        // the Loro engine instead; fails loudly if tesela-server/the desktop
+        // already holds the lock rather than bypassing it.
+        let slug = create_note_via_engine(&self.mosaic, title, &tags, content)
             .await
             .map_err(|e| e.to_string())?;
+
+        let note = self
+            .store
+            .get(&NoteId::new(&slug))
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("note '{}' not found after create", title))?;
 
         // Index the new note
         let _ = self.index.reindex(&note).await;

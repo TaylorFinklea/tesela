@@ -40,7 +40,12 @@ async fn main() -> Result<()> {
     let indexer_handle = indexer.start().await?;
 
     let plugin_registry = Arc::new(tesela_plugins::load_all_plugins(&mosaic));
-    let registry = Arc::new(ToolRegistry::new(store, index, plugin_registry));
+    let registry = Arc::new(ToolRegistry::new(
+        store,
+        index,
+        plugin_registry,
+        mosaic.clone(),
+    ));
 
     tracing::info!("tesela-mcp server started");
 

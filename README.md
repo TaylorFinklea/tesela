@@ -21,7 +21,7 @@ Tesela is a Cargo workspace plus a Next.js web client in `web/`.
 |-------|--------|---------|
 | `tesela-core` | — | Foundation: types, traits, storage, SQLite/FTS5, indexer |
 | `tesela-cli` | `tesela` | Thin dispatcher; all subcommands via `clap` |
-| `tesela-tui` | `tesela-tui` | Elm-style TUI (ratatui/crossterm) |
+| `tesela-tui` | `tesela-tui` | Elm-style TUI (ratatui/crossterm) — **local-only, does not sync** (see below) |
 | `tesela-mcp` | `tesela-mcp` | MCP server over JSON-RPC 2.0 on stdin/stdout |
 | `tesela-server` | `tesela-server` | REST API + WebSocket on localhost:7474 |
 | `tesela-plugins` | — | Lua runtime (working) + WASM stub |
@@ -29,6 +29,13 @@ Tesela is a Cargo workspace plus a Next.js web client in `web/`.
 The web client talks to `tesela-server` at `localhost:7474` over REST and WebSocket. UI stays thin: note storage, search, links, indexing, and type resolution live in `tesela-core` and are exposed through traits such as `NoteStore`, `SearchIndex`, and `LinkGraph`.
 
 **Core principle:** database-first, files are export format.
+
+> **`tesela-tui` writes do not sync.** Every other write path (web, desktop,
+> CLI, MCP) routes through the Loro sync engine; `tesela-tui` still writes
+> directly to `FsNoteStore`, so its edits get reverted by the engine's next
+> materialize and never propagate to other devices. It shows a startup
+> banner ("local-only") for this reason. Daily-driver on web or desktop;
+> porting the TUI to the engine is a future item if it still sees use.
 
 ## Type System
 
