@@ -15,9 +15,10 @@
 //!
 //! - **T-heal** (`disjoint_merge_dedups_to_single_node_deterministically`):
 //!   dedup collapses the twins so each bid renders exactly once, and the
-//!   survivor is chosen by a deterministic rule (min-`TreeID`). This does
-//!   NOT recover the latest text of a disjoint merge — min-`TreeID` picks by
-//!   peer, not recency — so it asserts no-duplication + determinism only.
+//!   survivor is chosen by a deterministic rule (global-max `TreeID`,
+//!   tesela-fte). This does NOT recover the latest text of a disjoint merge —
+//!   max-`TreeID` picks by peer, not recency — so it asserts no-duplication +
+//!   determinism only.
 //! - **T-converge** (`shared_base_converges_with_correct_text`): when the
 //!   device imports the server's doc as a SHARED BASE before authoring, its
 //!   BlockUpserts resolve to the existing server nodes (same TreeIDs), so
@@ -127,7 +128,7 @@ fn bid_bullet_count(render: &str, bid_hex_dashed: &str) -> usize {
 /// T-heal (Part E anchor): a disjoint merge dedups to a single node per bid,
 /// deterministically. Asserts invariant 1 (exactly one bullet per bid) and
 /// invariant 2 (the survivor / render is stable across a fresh rebuild).
-/// Does NOT assert text-correctness of the disjoint merge — min-`TreeID` is
+/// Does NOT assert text-correctness of the disjoint merge — max-`TreeID` is
 /// deterministic but not recency-aware, so it may keep a stale twin's text;
 /// recovering the latest text is what the SHARED-BASE path (T-converge) is
 /// for, not dedup.

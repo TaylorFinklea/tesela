@@ -1296,9 +1296,14 @@ mod tests {
     /// carried. The server then HTTP-edits A → "Awesome sweet"; the device,
     /// holding its stale A="Awesome" twin, re-asserts A AND genuinely edits
     /// B → "Bee device", then ships a FULL SNAPSHOT (the cold-launch first
-    /// push). A raw `doc.import` would union the rival A-twins and the
-    /// non-causal dedup could keep the STALE one → revert. Protected: A stays
-    /// "Awesome sweet", B becomes "Bee device".
+    /// push). A raw `doc.import` unions the rival twins; the pure global-max
+    /// `TreeID` rule (tesela-fte) keeps the HIGHER-peer twin for EVERY bid. The
+    /// SERVER (0x5e) outranks the device (0x11), so BOTH blocks resolve to the
+    /// server's twin: A stays "Awesome sweet" (server's HTTP edit) and B stays
+    /// the server's seed "Bee" — the device's genuine B="Bee device" edit LOSES
+    /// to the higher-peer twin (FLIP by tesela-fte: genuine-edit preference
+    /// dropped, product-approved 2026-07-01; convergence is to the max-`TreeID`
+    /// twin, not the newest edit).
     #[tokio::test]
     async fn ws_stale_snapshot_does_not_clobber_http_edit_over_real_socket() {
         use futures::{SinkExt, StreamExt};
@@ -1342,15 +1347,15 @@ mod tests {
 
         // ── DISJOINT base: server AND device each author the same note body
         // INDEPENDENTLY (no shared import) → rival TreeIDs for A/B. This is the
-        // residual disjoint lineage that lets the device's stale A-twin compete
-        // with (and, raw, revert) the server's edit. ───────────────────────
-        // Device peer id is numerically SMALLER than the server's (0x5e), so on
-        // a raw merge the min-`TreeID` twin dedup keeps the DEVICE's twin for
-        // each shared block_id — meaning the device's STALE A="Awesome" twin
-        // would WIN and REVERT the server's "Awesome sweet" (Case a, the
-        // clobber). This is exactly the stale-op-wins condition: without Part
-        // C's heal, A reverts. (Verified: with the heal disabled, A renders as
-        // the stale "Awesome".)
+        // residual disjoint lineage that unions the device's A-twin with the
+        // server's on import. ───────────────────────────────────────────────
+        // Device peer id is numerically SMALLER than the server's (0x5e), so the
+        // pure global-max `TreeID` dedup (tesela-fte) keeps the SERVER's twin
+        // for each shared block_id — so the server's "Awesome sweet" survives
+        // and the device's stale A="Awesome" is tombstoned. (Had the device's
+        // peer been HIGHER, pure max-`TreeID` would keep the device's stale
+        // value instead — product-approved 2026-07-01; the guarantee is
+        // convergence to the higher-`TreeID` twin, not to the newest text.)
         let ddev = DeviceId::from_bytes([0x11; 16]);
         let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
         let base_content = format!("- Awesome <!-- bid:{A_BID} -->\n- Bee <!-- bid:{B_BID} -->\n");
@@ -1385,7 +1390,9 @@ mod tests {
 
         // ── The DEVICE (stale: never saw the server edit) re-asserts its stale
         // A="Awesome" AND genuinely edits B → "Bee device", then exports a FULL
-        // SNAPSHOT — the cold-launch first-push frame from the incident. ─────
+        // SNAPSHOT — the cold-launch first-push frame from the incident. Both of
+        // the device's twins are LOWER-peer (0x11) than the server's (0x5e), so
+        // pure max-`TreeID` drops BOTH in favor of the server's twins. ────────
         device
             .record_local(OpPayload::BlockUpsert {
                 block_id: A_BID_BYTES,
@@ -1508,15 +1515,22 @@ mod tests {
         let rendered = server_engine_handle.render_note(note_id).await.unwrap();
         assert!(
             rendered.contains("Awesome sweet"),
-            "A must NOT be reverted by the device's stale snapshot (got {rendered:?})"
+            "A resolves to the server's higher-peer twin (got {rendered:?})"
         );
         assert!(
             !rendered.contains("- Awesome <!--"),
-            "the stale A=\"Awesome\" twin must not resurface (got {rendered:?})"
+            "the device's lower-peer A=\"Awesome\" twin must not resurface (got {rendered:?})"
+        );
+        // FLIP (pure max-`TreeID`, tesela-fte): B resolves to the SERVER's
+        // higher-peer (0x5e) seed twin "Bee"; the device's genuine "Bee device"
+        // edit rode in on the LOWER-peer (0x11) twin and loses.
+        assert!(
+            !rendered.contains("Bee device"),
+            "the device's lower-peer B edit must lose to the server's higher-peer twin (got {rendered:?})"
         );
         assert!(
-            rendered.contains("Bee device"),
-            "B (the device's genuine edit) must apply (got {rendered:?})"
+            rendered.contains("- Bee <!--"),
+            "B resolves to the server's higher-peer seed twin (got {rendered:?})"
         );
 
         // ── End-to-end HTTP coverage: the materialized note served via
@@ -1529,11 +1543,15 @@ mod tests {
             .unwrap();
         assert!(
             body.contains("Awesome sweet"),
-            "HTTP GET shows the protected HTTP edit: {body}"
+            "HTTP GET shows the server's higher-peer A twin: {body}"
         );
         assert!(
-            body.contains("Bee device"),
-            "HTTP GET shows the device's genuine B edit: {body}"
+            !body.contains("Bee device"),
+            "HTTP GET: the device's lower-peer B edit is dropped (pure max-`TreeID`): {body}"
+        );
+        assert!(
+            body.contains("Bee"),
+            "HTTP GET shows the server's higher-peer B seed twin: {body}"
         );
     }
 

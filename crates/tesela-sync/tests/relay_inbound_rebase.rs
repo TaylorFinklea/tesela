@@ -86,12 +86,19 @@ async fn c1_symmetric_disjoint_converges_in_one_round_no_garble() {
     assert_eq!(a2, b2, "still converged");
 }
 
-/// C8: the "re-shipped stale value" wire incident — one device re-ships an OLD
-/// value the other lineage already superseded. The NEWER value must win in ONE
-/// round, and it must do so REGARDLESS of peer-id ordering (proving the winner
-/// is chosen by per-node history + determinism, not a peer-id accident).
+/// C8 (FLIPPED by tesela-fte — pure max-`TreeID`): the "re-shipped stale value"
+/// wire incident. One device re-ships an OLD value the other lineage already
+/// superseded. Under the PURE max-`TreeID` rule the stale-guard is dropped, so
+/// the winner is ONLY the higher-`TreeID` (higher-peer) twin's text — NOT
+/// necessarily the newer value. Both peer orderings converge in ONE round; the
+/// survivor flips with the ordering:
+///   - evolver-peer > stale-peer → evolver's "Awesome sweet" (the newer value) wins;
+///   - stale-peer  > evolver-peer → the re-shipped stale "Awesome" wins.
+/// (Pre-fte the stale-guard forced "Awesome sweet" in BOTH orderings; product-
+/// approved 2026-07-01: higher-TreeID text wins over genuine-edit preference.)
+/// Both bytes are < 0x80, so the peer-byte order equals the masked-PeerID order.
 #[tokio::test]
-async fn c8_stale_reship_loses_to_newer_both_peer_orderings() {
+async fn c8_stale_reship_resolves_to_max_treeid_twin_both_orderings() {
     for (evolver_peer, stale_peer) in [(0x5e, 0x11), (0x11, 0x5e)] {
         let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
         let note = note_id("2026-07-01-stale");
@@ -121,9 +128,14 @@ async fn c8_stale_reship_loses_to_newer_both_peer_orderings() {
         );
         eprintln!("C8 (evolver={evolver_peer:#x} stale={stale_peer:#x}): evolver={ev:?} stale={st:?}");
         assert_eq!(ev, st, "must converge in one round");
-        assert!(
-            ev.contains("Awesome sweet"),
-            "the newer value must win over the re-shipped stale one (peers evolver={evolver_peer:#x}): {ev:?}"
+        // "sweet" appears ONLY in the evolver's newer "Awesome sweet"; it
+        // survives IFF the evolver's twin is the higher-`TreeID` (higher-peer).
+        let evolver_wins = evolver_peer > stale_peer;
+        assert_eq!(
+            ev.contains("sweet"),
+            evolver_wins,
+            "pure max-`TreeID`: the higher-peer twin's text wins, stale or not \
+             (evolver={evolver_peer:#x} stale={stale_peer:#x}): {ev:?}"
         );
     }
 }
@@ -322,11 +334,18 @@ async fn c10_convergence_is_stable_no_pingpong_growth() {
     }
 }
 
-/// C11: three-way with a STALE re-ship — an evolver (v1→v2), a device that
-/// re-ships the superseded v1, and a device with a genuine third value w. The
-/// stale v1 must LOSE; all three converge to one non-stale value, no garble.
+/// C11 (FLIPPED by tesela-fte — pure max-`TreeID`): three-way with a STALE
+/// re-ship — an evolver (v1→v2), a device that re-ships the superseded v1 ON
+/// THE HIGHEST-peer lineage (0xF0), and a device with a genuine third value w.
+/// Pure max-`TreeID` drops the stale-guard, so the highest-`TreeID` twin wins
+/// UNCONDITIONALLY: the stale re-shipped v1 (peer 0xF0 > 0xC0 > 0xA0) now WINS.
+/// All three still converge to ONE value with no garble — the invariant that
+/// matters — but the survivor is the max-`TreeID` twin's text, not the newest.
+/// (Pre-fte the stale-guard excluded 0xF0's v1 and "w" won; product-approved
+/// 2026-07-01 that higher-TreeID text wins.) This is the exact case the
+/// dropped stale-guard used to protect: the flip is intentional.
 #[tokio::test]
-async fn c11_three_way_with_stale_reship_converges_non_stale() {
+async fn c11_three_way_resolves_to_max_treeid_twin() {
     let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
     let note = note_id("2026-07-01-3stale");
     let evolver = engine(0xA0);
@@ -343,7 +362,7 @@ async fn c11_three_way_with_stale_reship_converges_non_stale() {
         })
         .await
         .unwrap();
-    let stale = engine(0xF0); // HIGH peer — would win a naive max-TreeID
+    let stale = engine(0xF0); // HIGHEST peer — wins under pure max-`TreeID`
     author_disjoint(&stale, note, bid, "v1").await;
     let fresh = engine(0xC0);
     author_disjoint(&fresh, note, bid, "w").await;
@@ -362,10 +381,11 @@ async fn c11_three_way_with_stale_reship_converges_non_stale() {
     assert_eq!(ev, st, "evolver and stale must converge");
     assert_eq!(st, fr, "stale and fresh must converge");
     assert_no_garble(&ev, &["v1", "v2", "w"]);
-    // The re-shipped superseded v1 must not be the surviving value.
+    // Pure max-`TreeID`: the highest-peer twin (0xF0, holding v1) survives —
+    // the stale-guard that formerly excluded it is gone.
     assert!(
-        !(ev.contains("v1") && !ev.contains("v2")),
-        "the stale re-shipped v1 must lose to a live value: {ev:?}"
+        ev.contains("v1") && !ev.contains("v2") && !ev.contains("w"),
+        "pure max-`TreeID` keeps the highest-peer (0xF0) twin's value v1: {ev:?}"
     );
 }
 
@@ -469,8 +489,9 @@ async fn c13_ws_vs_authoritative_no_cross_tombstone() {
 /// collapsed by the normal relay apply, `scan_disjoint_twins` finds nothing and
 /// `heal_disjoint_twins` is a safe idempotent no-op — documenting that residue
 /// self-heals on sync and the repair is the offline/force path. (The collapse
-/// logic itself — `twin_winners_for` + `tombstone_twins_to_winners` — is covered
-/// by C1–C13; no public API leaves a persistent twin post-fix.)
+/// logic itself — the max-`TreeID` `tombstone_duplicate_twins` + the
+/// `twin_winners_for` prop union — is covered by C1–C13; no public API leaves a
+/// persistent twin post-fix.)
 #[tokio::test]
 async fn c14_repair_scan_heal_noop_on_healed_mosaic() {
     let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";

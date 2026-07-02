@@ -7,9 +7,10 @@
 //! This is the suspected root cause of "web edits don't reach devices / web
 //! gets clobbered" on devices that didn't cleanly bootstrap: the catch-up
 //! raw-imports the server snapshot, which UNIONS the two disjoint lineages
-//! into same-bid twins, then the deterministic min-`TreeID` dedup picks a
-//! survivor by peer id (NOT by authority/recency) — so a device whose peer id
-//! sorts below the server's keeps its OWN stale twin and never converges.
+//! into same-bid twins, then the deterministic global-max `TreeID` dedup
+//! (tesela-fte) picks a survivor by peer id (NOT by authority/recency). Here
+//! the server peer (0x5e) OUTRANKS the device (0x11), so the server's
+//! authoritative text wins and the device converges to it.
 
 use std::sync::Arc;
 
@@ -74,7 +75,8 @@ async fn disjoint_device_catches_up_to_server_lineage() {
 
     // Device authors the SAME daily INDEPENDENTLY (mock-mode style — no server
     // base imported first) → disjoint lineage D. Device peer (0x11) sorts BELOW
-    // the server peer (0x5e), so min-TreeID dedup favors the device's twin.
+    // the server peer (0x5e), so global-max `TreeID` dedup (tesela-fte) keeps
+    // the SERVER's twin — the device converges to the server's authoritative text.
     let device = engine(0x11);
     device
         .record_local(OpPayload::NoteUpsert {

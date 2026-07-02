@@ -66,7 +66,7 @@ pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
     if !apply {
         println!(
             "\nDRY-RUN — re-run with --apply to collapse each twin to the deterministic winner \
-             (max-TreeID among non-stale tips; the SAME rule the live sync uses). Back up the \
+             (global-max TreeID; the SAME rule the live sync uses). Back up the \
              mosaic first (cp -r) if you want a rollback."
         );
         return Ok(());
