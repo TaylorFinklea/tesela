@@ -10,28 +10,9 @@ pub use loro_engine::LoroEngine;
 
 use crate::device::DeviceId;
 use crate::error::SyncResult;
-use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
-use crate::oplog::parked::ParkReason;
+use crate::oplog::op::{ContentHash, OpPayload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
-/// Summary of a parked-op replay attempt.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ReplayReport {
-    /// Ops that successfully applied after replay.
-    pub applied: u32,
-    /// Ops still parked (e.g. translator chain still missing).
-    pub still_parked: u32,
-}
-
-/// Snapshot of the parked-op queue for the UI banner.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ParkedSummary {
-    /// Total number of parked ops on this device.
-    pub count: u32,
-    /// Earliest `parked_at` (wall-clock millis), if any.
-    pub oldest_parked_at_millis: Option<i64>,
-}
 
 /// Per-note outcome of one inbound relay batch apply
 /// ([`SyncEngine::apply_relay_updates`]). Replaces the old bare `usize`
@@ -88,16 +69,6 @@ pub trait SyncEngine: Send + Sync {
     /// Record that a peer has acknowledged ops up to `ack`. Drives
     /// oplog retention.
     async fn ack_peer(&self, peer: DeviceId, ack: PeerCursor) -> SyncResult<()>;
-
-    /// Park an op the local schema cannot understand. Exposed for tests
-    /// and admin tooling.
-    async fn park_op(&self, op: EncodedOp, reason: ParkReason) -> SyncResult<()>;
-
-    /// Replay parked ops after a schema upgrade.
-    async fn replay_parked(&self) -> SyncResult<ReplayReport>;
-
-    /// Snapshot the parked-op queue for the UI banner.
-    async fn parked_summary(&self) -> SyncResult<ParkedSummary>;
 
     /// Render a note's body from the engine's internal state. Returns
     /// `None` if the engine doesn't track this note (or doesn't support

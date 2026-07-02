@@ -2573,8 +2573,8 @@ mod tests {
 
         use tesela_core::{config::StorageConfig, storage::filesystem::FsNoteStore};
         use tesela_sync::{
-            ContentHash, DeviceId, EncodedOp, LocalCursor, OpPayload, ParkReason, ParkedSummary,
-            PeerCursor, ReplayReport, SyncEngine, SyncError, SyncResult,
+            ContentHash, DeviceId, LocalCursor, OpPayload, PeerCursor, SyncEngine, SyncError,
+            SyncResult,
         };
 
         /// A stub engine whose `record_local` always fails — simulates a
@@ -2599,15 +2599,6 @@ mod tests {
             }
             async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
                 Ok(())
-            }
-            async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
-                Ok(())
-            }
-            async fn replay_parked(&self) -> SyncResult<ReplayReport> {
-                Ok(ReplayReport::default())
-            }
-            async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
-                Ok(ParkedSummary::default())
             }
         }
 
@@ -2775,15 +2766,6 @@ mod tests {
             }
             async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
                 Ok(())
-            }
-            async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
-                Ok(())
-            }
-            async fn replay_parked(&self) -> SyncResult<ReplayReport> {
-                Ok(ReplayReport::default())
-            }
-            async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
-                Ok(ParkedSummary::default())
             }
         }
 

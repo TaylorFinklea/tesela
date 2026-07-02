@@ -27,8 +27,7 @@
 //! - DDL schema version: SQLite schema (managed by `tesela-core`'s
 //!   `MIGRATIONS` mechanism).
 //! - Sync op schema version: the shape of [`OpPayload`]. Stamped onto every
-//!   locally produced op. Evolves via [`OpTranslator`]. Tracked here as
-//!   [`SYNC_SCHEMA_VERSION`].
+//!   locally produced op. Tracked here as [`SYNC_SCHEMA_VERSION`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -40,9 +39,7 @@ pub mod engine;
 pub mod error;
 pub mod group;
 pub mod hlc;
-pub mod migrate;
 pub mod oplog;
-pub mod rebuild;
 pub mod recovery;
 pub mod schema;
 pub mod transport;
@@ -64,16 +61,11 @@ pub use crypto::pairing::{
 pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::loro_engine::{LoroEngine, INBOX_DEFAULT_DSL, INBOX_VIEW_ID, VIEWS_DOC_ID};
-pub use engine::{
-    AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, RelayApplyReport, ReplayReport,
-    SyncEngine, ViewRecord,
-};
+pub use engine::{AppliedChanges, LocalCursor, PeerCursor, RelayApplyReport, SyncEngine, ViewRecord};
 pub use error::{SyncError, SyncResult};
 pub use group::{GroupId, GroupMember};
 pub use hlc::{Hlc, HlcTimestamp};
-pub use migrate::{OpTranslator, TranslatorRegistry};
 pub use oplog::op::{ContentHash, EncodedOp, OpKind, OpPayload, PropOp};
-pub use oplog::parked::ParkReason;
 pub use tesela_core::property::PropScalar;
 pub use transport::loopback::LoopbackTransport;
 pub use transport::{Transport, TransportSession, TransportTarget, TransportTickReport};
@@ -85,7 +77,5 @@ pub use wire::{
 
 /// The sync op schema version stamped onto every locally produced op.
 ///
-/// Bumps when [`OpPayload`] shape or semantics change. Each bump must
-/// register an [`OpTranslator`] in `migrate::v{N}_to_v{N+1}` so older
-/// peers' ops continue to apply.
+/// Bumps when [`OpPayload`] shape or semantics change.
 pub const SYNC_SCHEMA_VERSION: u32 = 1;
