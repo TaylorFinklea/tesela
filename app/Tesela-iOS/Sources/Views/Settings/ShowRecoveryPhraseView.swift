@@ -106,22 +106,52 @@ struct ShowRecoveryPhraseView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(theme.typeTask)
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(Array(words.enumerated()), id: \.offset) { index, word in
-                    HStack(spacing: 6) {
-                        Text("\(index + 1).")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(theme.fgFaint)
-                            .frame(width: 20, alignment: .trailing)
-                        Text(word)
-                            .font(.system(size: 13, design: .monospaced))
-                            .foregroundStyle(theme.fgDefault)
-                    }
+                    wordChip(word, index: index)
                 }
             }
             .padding(.vertical, 4)
         } header: {
             Text("24-word phrase")
         }
+    }
+
+    /// Anytype-style colored word chip. Color is deterministic by
+    /// position (`index % 7`) over the theme's semantic type-* palette —
+    /// the same 7 tokens `KindBadge` uses for kind pills, so the chips
+    /// stay legible in every theme (including `prismLight`) without any
+    /// new colors. The web devices-settings reveal uses the identical
+    /// index-mod-7 rule over the CSS `--type-*` twins, so the phrase
+    /// reads as the same color pattern on both surfaces.
+    private func wordChip(_ word: String, index: Int) -> some View {
+        let color = chipColor(index: index)
+        return HStack(spacing: 5) {
+            Text("\(index + 1)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(color.opacity(0.7))
+            Text(word)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(color.opacity(0.30), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// The 7 semantic type-* tokens, cycled by word position — matches
+    /// `Theme.typeColor(forKind:)`'s palette order.
+    private func chipColor(index: Int) -> Color {
+        let palette: [Color] = [
+            theme.typeTask, theme.typeEvent, theme.typeNote, theme.typeProject,
+            theme.typePerson, theme.typeQuery, theme.typeTemplate,
+        ]
+        return palette[index % palette.count]
     }
 }

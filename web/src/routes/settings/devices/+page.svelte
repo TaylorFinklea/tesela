@@ -242,6 +242,27 @@
     recoveryPhrase ? recoveryPhrase.phrase.split(/\s+/) : [],
   );
 
+  // Anytype-style colored word chips (tesela-fa7). Deterministic by
+  // position (`index % 7`) over the app's 7 semantic type-* tokens —
+  // the same tokens the tag/kind chips elsewhere use (see
+  // `cm-decorations.ts`'s `.cm-tesela-tag-chip`), so the palette is
+  // already tuned for contrast in every theme, light and dark. The iOS
+  // Show-recovery-phrase screen cycles the same 7 tokens in the same
+  // order, so the phrase reads as the same color pattern everywhere.
+  const CHIP_TYPE_VARS = [
+    "--type-task",
+    "--type-event",
+    "--type-note",
+    "--type-project",
+    "--type-person",
+    "--type-query",
+    "--type-template",
+  ];
+
+  function chipVar(i: number): string {
+    return CHIP_TYPE_VARS[i % CHIP_TYPE_VARS.length];
+  }
+
   onMount(() => {
     refresh();
     pollHandle = setInterval(refresh, 5000);
@@ -474,11 +495,15 @@
         Write these down and keep them safe. Anyone with this phrase can read your mosaic —
         and we can't recover it for you.
       </p>
-      <ol class="grid grid-cols-3 gap-x-3 gap-y-1.5 mb-3">
+      <ol class="grid grid-cols-3 gap-2 mb-3">
         {#each recoveryWords as word, i (i)}
-          <li class="text-[11.5px] font-mono text-foreground/90 flex gap-1.5">
-            <span class="text-muted-foreground/50 w-4 text-right shrink-0">{i + 1}.</span>
-            <span>{word}</span>
+          {@const v = chipVar(i)}
+          <li
+            class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11.5px] font-mono truncate"
+            style="color: var({v}); background: color-mix(in srgb, var({v}) 14%, transparent); border-color: color-mix(in srgb, var({v}) 30%, transparent);"
+          >
+            <span class="opacity-60 w-4 text-right shrink-0">{i + 1}</span>
+            <span class="truncate">{word}</span>
           </li>
         {/each}
       </ol>
