@@ -7446,6 +7446,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "keyring",
  "loro",
  "loro-internal",
  "mdns-sd",

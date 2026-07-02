@@ -113,6 +113,10 @@ struct SeededMosaic {
 /// authors a third op that is merged back into A's doc. Peer B's ops
 /// in the version vector are the lineage marker no reseed can mint.
 async fn seed_two_peer_mosaic(mosaic: &Path) -> SeededMosaic {
+    // Hermetic test mosaic: keep the group key on the plaintext file store
+    // rather than the real macOS Keychain (tesela-tp0.2's Keychain cutover
+    // defaults there) — this test drives the identity round-trip directly.
+    std::env::set_var("TESELA_GROUP_KEY_FILE_STORE", "1");
     fs::create_dir_all(mosaic.join("notes")).unwrap();
     fs::create_dir_all(mosaic.join(".tesela")).unwrap();
     fs::write(mosaic.join(".tesela/config.toml"), "[general]\n").unwrap();
@@ -497,6 +501,8 @@ fn spawn_server(mosaic: &Path, addr: &str) -> ServerGuard {
         // The drill drives backups explicitly via POST /backups.
         .env("TESELA_BACKUP_ON_START", "0")
         .env("TESELA_BACKUP_INTERVAL_SECS", "0")
+        // Hermetic test mosaic: file-backed group key, not the real Keychain.
+        .env("TESELA_GROUP_KEY_FILE_STORE", "1")
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

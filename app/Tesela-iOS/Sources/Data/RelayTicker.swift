@@ -236,8 +236,10 @@ final class RelayTicker: ObservableObject {
     /// Without the cache, every coordinator rebuild after a tick error
     /// required Mac to be reachable over direct HTTP, which made the
     /// relay (whose whole purpose is to NOT need Mac reachable!)
-    /// uselessly dependent on Mac's network.
-    private static let pairingCodeKey = "relay.cachedPairingCode"
+    /// uselessly dependent on Mac's network. Backed by the Keychain
+    /// (`KeychainPairingCache`, tesela-tp0.2) — the code carries the
+    /// group key, so it's the same key material a pre-cutover install
+    /// kept in plaintext `UserDefaults`.
 
     /// Callback fired whenever a tick applied ≥1 incoming op. Hosts
     /// hook this up to nudge the iOS UI to re-render (typically by
@@ -707,7 +709,7 @@ final class RelayTicker: ObservableObject {
             return nil
         }
         guard let engine else { return nil }
-        let hasPairing = UserDefaults.standard.string(forKey: Self.pairingCodeKey) != nil
+        let hasPairing = KeychainPairingCache.load() != nil
         if !viewsSeeded,
            Self.shouldSeedBuiltinViews(
                hasPairing: hasPairing,
@@ -1173,7 +1175,7 @@ final class RelayTicker: ObservableObject {
 
         // Try the cached pairing code first. If we have one, the
         // path below skips the Mac HTTP fetch entirely.
-        let cached = UserDefaults.standard.string(forKey: Self.pairingCodeKey)
+        let cached = KeychainPairingCache.load()
         do {
             let codeStr: String
             if let cached {
@@ -1187,7 +1189,7 @@ final class RelayTicker: ObservableObject {
             try await buildCoordinator(engine: engine, codeStr: codeStr)
             // Survived the build → cache the code for future ticks.
             if cached == nil {
-                UserDefaults.standard.set(codeStr, forKey: Self.pairingCodeKey)
+                KeychainPairingCache.save(codeStr)
             }
         } catch {
             // Only a DEFINITIVE staleness signal invalidates the cached
@@ -1201,7 +1203,7 @@ final class RelayTicker: ObservableObject {
             // surface the error and let the next tick (with backoff)
             // retry — don't recurse here.
             if cached != nil, Self.isDefinitivePairingFailure(error) {
-                UserDefaults.standard.removeObject(forKey: Self.pairingCodeKey)
+                KeychainPairingCache.clear()
             }
             throw error
         }
@@ -1411,7 +1413,7 @@ final class RelayTicker: ObservableObject {
     /// push re-seeds per note (`recordAndPush`/`bootstrapNoteIfNeeded`).
     private func invalidateCoordinatorIfRepaired() {
         guard coordinator != nil, let built = coordinatorPairingCode else { return }
-        guard let cached = UserDefaults.standard.string(forKey: Self.pairingCodeKey),
+        guard let cached = KeychainPairingCache.load(),
               cached != built
         else { return }
         dropCoordinator()
@@ -1579,9 +1581,10 @@ final class RelayTicker: ObservableObject {
     /// Cache a scanned/entered pairing code so the relay tick can build its
     /// coordinator from it in Mock mode (no Mac HTTP fetch needed) — the relay
     /// URL + group identity ride inside. Mirrors the cache the tick itself
-    /// writes after a successful HTTP-fetched build.
+    /// writes after a successful HTTP-fetched build. Keychain-backed
+    /// (`KeychainPairingCache`, tesela-tp0.2) — the code carries the group key.
     static func cachePairingCode(_ rawCode: String) {
-        UserDefaults.standard.set(rawCode, forKey: pairingCodeKey)
+        KeychainPairingCache.save(rawCode)
     }
 
     /// The cached pairing code (set by `cachePairingCode` / a successful
@@ -1589,6 +1592,6 @@ final class RelayTicker: ObservableObject {
     /// presence transport decodes it to source the relay URL + group identity
     /// for `PresenceRelaySocket` (same code `buildCoordinator` consumes).
     static func cachedPairingCode() -> String? {
-        UserDefaults.standard.string(forKey: pairingCodeKey)
+        KeychainPairingCache.load()
     }
 }

@@ -39,6 +39,9 @@ async fn boot_health_shutdown(mosaic: &Path) -> u16 {
     std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
     std::env::set_var("TESELA_DISABLE_MDNS", "1");
     std::env::set_var("TESELA_DISABLE_PEER_SYNC", "1");
+    // File-backed group key, not the real macOS Keychain (tesela-tp0.2's
+    // Keychain cutover default) — keeps this test hermetic.
+    std::env::set_var("TESELA_GROUP_KEY_FILE_STORE", "1");
 
     let config = ServeConfig::resolve(Some(mosaic.to_path_buf())).expect("resolve mosaic");
 
