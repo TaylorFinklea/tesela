@@ -4,6 +4,17 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-07-02 — Multi-user key hierarchy: three layers, device-roster v1 (ADR approved by Taylor)
+
+Taylor approved the tp0.3 spike's direction (harness-deck 2026-07-02; full design: `phases/2026-07-02-multiuser-key-hierarchy-spec.md`). LOCKED direction — implementation stays GATED behind its own TDD + adversarial-crypto-review bar and does not start until Savanne work is scheduled:
+
+- **Three layers.** (1) Content encryption UNCHANGED — one symmetric ContentKey per key-epoch (today's GroupKey; still BIP39-renderable, still random group_id). (2) Identity = per-member Ed25519 (promotes the dormant schema columns) signing roster changes and authored ops. (3) Distribution/authorization = a SIGNED, client-authored roster + the ContentKey WRAPPED to each member's key-agreement key — onboarding stops meaning "re-type the phrase".
+- **v1 = per-DEVICE roster**; a "user" is a display-name label grouping devices. Wire/roster schema RESERVES the per-user cert tier (nullable user_id + device-cert slot) so upgrading later is additive — no re-key to introduce it. Do not build the cert chain in v1.
+- **Dedicated X25519 key-agreement key per member** (clean signing/KEX separation); wrapping via a vetted sealed-box primitive (crypto_box-class crate), never hand-rolled.
+- **Relay stays a pure zero-knowledge mailbox** — roster is client-verified; the relay enforces nothing new (topology lock intact).
+- **Revocation** = roster removal + the tp0.1 rotation primitive, with the new ContentKey re-WRAPPED to remaining members — honest devices do NOT re-onboard by phrase.
+- **Meanwhile constraint on ra7/P0 crypto:** nothing may assume phrase-retyping is the only onboarding path forever, and key-material handling must not preclude wrapping (no new places that persist the raw key outside the GroupKeyStore seam).
+
 ### 2026-06-27 — iOS-delete-needs-manual-desktop-refresh = a WEB reconcile bug; gate the own-echo skip on the CURRENT render
 
 Taylor: an iOS block delete reached the desktop's DATA but the journal UI kept the block until a manual refresh (edits auto-showed; deletes didn't). Proved the engine + materialize correct first (committed test `relay_inbound_delete_updates_peer_materialized_file`), isolating it to the web.
