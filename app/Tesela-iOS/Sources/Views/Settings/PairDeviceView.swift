@@ -35,6 +35,13 @@ struct PairDeviceView: View {
     @State private var error: String?
     @State private var showScanner: Bool = false
     @State private var showTypedCode: Bool = false
+    /// Set by `PairScanView`'s `onPaired` the instant `adopt(_:)` succeeds.
+    /// The REAL `onPaired` (up to `OnboardingView`, which pushes the
+    /// "You're synced" confirmation) fires from the scanner's
+    /// `fullScreenCover` `onDismiss` — not from this signal directly.
+    /// See `scanCoverDismissOutcome(scanDidPair:pendingName:)`.
+    @State private var scanDidPair: Bool = false
+    @State private var scanPairedName: String? = nil
 
     /// Three-way display state derived from the resolved backend. Pure and
     /// static so it's directly testable from `PairingRoutingTests` without
@@ -51,6 +58,31 @@ struct PairDeviceView: View {
         case .relay: return .relayAttached
         case .mock: return .unattached
         }
+    }
+
+    /// Pure decision for the QR-scan-completion seam (tesela-3ze). `adopt(_:)`
+    /// inside `PairScanView` fires its `onPaired` synchronously alongside
+    /// `dismiss()` (and, on the pairing-confirmation branch, alongside a
+    /// nested `.sheet(item:)` teardown one level deeper) — calling straight
+    /// through to `OnboardingView`'s `onPaired` from there raced the
+    /// scanner's `fullScreenCover` dismissal: `showSyncedConfirmation` (and
+    /// the `navigationDestination` push it drives) flipped on an ancestor
+    /// that was still obscured by the covering sheet, so the "You're synced"
+    /// screen could render while its Continue button no longer received
+    /// touches. Routing the real signal through `fullScreenCover`'s
+    /// `onDismiss` guarantees the cover has fully torn down — no ancestor
+    /// navigation state changes until then. Recovery-phrase pairing isn't
+    /// affected: `EnterRecoveryPhraseView` is a single-layer `.sheet` with
+    /// no nested item-sheet, so it keeps firing `onPaired` inline.
+    /// Extracted pure + static so `PairingRoutingTests` can lock this state
+    /// machine without a real camera scan (the simulator can't scan a QR).
+    enum ScanDismissOutcome: Equatable {
+        case noOp
+        case paired(String?)
+    }
+
+    static func scanCoverDismissOutcome(scanDidPair: Bool, pendingName: String?) -> ScanDismissOutcome {
+        scanDidPair ? .paired(pendingName) : .noOp
     }
 
     private var connectionState: ConnectionDisplayState {
@@ -93,9 +125,21 @@ struct PairDeviceView: View {
         .navigationTitle("Pair a device")
         .navigationBarTitleDisplayMode(.inline)
         .task { await refreshCode() }
-        .fullScreenCover(isPresented: $showScanner) {
+        .fullScreenCover(isPresented: $showScanner, onDismiss: {
+            switch Self.scanCoverDismissOutcome(scanDidPair: scanDidPair, pendingName: scanPairedName) {
+            case .noOp:
+                break
+            case .paired(let name):
+                onPaired?(name)
+            }
+            scanDidPair = false
+            scanPairedName = nil
+        }) {
             NavigationStack {
-                PairScanView(backend: backend, mosaic: mosaic, registry: registry, onPaired: onPaired)
+                PairScanView(backend: backend, mosaic: mosaic, registry: registry, onPaired: { name in
+                    scanPairedName = name
+                    scanDidPair = true
+                })
             }
         }
         .sheet(isPresented: $showTypedCode) {

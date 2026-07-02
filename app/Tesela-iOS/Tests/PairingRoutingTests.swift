@@ -125,6 +125,40 @@ final class PairingRoutingTests: XCTestCase {
         XCTAssertNil(OnboardingConfirmationView.resolvedInviterName(from: nil))
     }
 
+    // MARK: PairDeviceView.scanCoverDismissOutcome — QR-scan Continue dead-end (tesela-3ze)
+
+    func testScanCoverDismissOutcomeFiresPairedWhenAdoptSucceeded() {
+        // adopt(_:) set scanDidPair=true before dismiss(); once the
+        // fullScreenCover actually tears down, onDismiss must forward the
+        // paired name so OnboardingView can push "You're synced".
+        XCTAssertEqual(
+            PairDeviceView.scanCoverDismissOutcome(scanDidPair: true, pendingName: "bobs-macbook"),
+            .paired("bobs-macbook")
+        )
+    }
+
+    func testScanCoverDismissOutcomeFiresPairedWithNilNameWhenNoDisplayName() {
+        XCTAssertEqual(
+            PairDeviceView.scanCoverDismissOutcome(scanDidPair: true, pendingName: nil),
+            .paired(nil)
+        )
+    }
+
+    func testScanCoverDismissOutcomeIsNoOpOnPlainCancel() {
+        // The user backed out (toolbar Cancel, denied-permission "Back",
+        // or camera-unavailable "Back") without ever adopting a code —
+        // the cover still dismisses, but onDismiss must NOT fire onPaired.
+        XCTAssertEqual(
+            PairDeviceView.scanCoverDismissOutcome(scanDidPair: false, pendingName: nil),
+            .noOp
+        )
+        // Defensive: a stale pendingName without scanDidPair must still no-op.
+        XCTAssertEqual(
+            PairDeviceView.scanCoverDismissOutcome(scanDidPair: false, pendingName: "stale"),
+            .noOp
+        )
+    }
+
     // MARK: isDefinitivePairingFailure — cached-code invalidation
 
     func testInvalidPairingCodeIsDefinitive() {
