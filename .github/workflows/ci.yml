@@ -157,6 +157,16 @@ jobs:
         run: cargo audit --ignore RUSTSEC-2023-0071
 
   worker-conformance:
+    # FREEZE GATE (as of 2026-07-01): This job runs the relay conformance
+    # suite against the Cloudflare Worker implementation. The conformance
+    # suite defines the STABLE SURFACE of the relay (operations, parameters,
+    # error codes). Both implementations (Rust + CF Worker) MUST pass this
+    # suite before any relay change is merged.
+    #
+    # See crates/tesela-relay/README.md for the frozen surface and change
+    # policy (ADR-2). The suite spec is at crates/tesela-relay/tests/conformance.rs.
+    # Rust implementation tests are covered by `cargo test --workspace` in the
+    # rust job, so both impls gate the pipeline.
     name: Relay conformance (Cloudflare Worker via wrangler dev)
     runs-on: ubuntu-latest
     timeout-minutes: 30

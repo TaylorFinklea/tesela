@@ -5,6 +5,12 @@ notes, packaged as a Home Assistant add-on. Acts as a store-and-forward
 deposit box between your devices — every payload is AEAD-sealed
 client-side, so the relay can never read your notes.
 
+> **Relay surface is frozen** (as of 2026-07-01). The relay conforms to a
+> stable specification; new features are not accepted. Self-hosters can
+> rely on the API remaining backward-compatible. See
+> [`crates/tesela-relay/README.md`](https://github.com/TaylorFinklea/tesela/blob/main/crates/tesela-relay/README.md)
+> for the frozen surface and change policy.
+
 See [`DOCS.md`](DOCS.md) for the full install + configuration walkthrough.
 
 ## Quick start

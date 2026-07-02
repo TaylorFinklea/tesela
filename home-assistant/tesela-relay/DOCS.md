@@ -1,5 +1,10 @@
 # Tesela Sync Relay — Add-on Documentation
 
+> **Relay surface is frozen** (as of 2026-07-01). The relay conforms to a
+> stable specification; updates are only for conformance parity, never new
+> features. Self-hosters' expectations are set once — the relay API is
+> backward-compatible for self-hosted deployments.
+
 ## Why run this on Home Assistant?
 
 Home Assistant is already running 24/7 in your home, has stable storage,
@@ -34,7 +39,7 @@ your relay rides on infrastructure you already own.
 | Option         | Default     | Notes                                              |
 |----------------|-------------|----------------------------------------------------|
 | `admin_token`  | _empty_     | **Required.** Used for `DELETE /admin/registration/:id` hijack recovery. Generate with `openssl rand -hex 32`. |
-| `max_body`     | `16777216`  | Per-PUT body cap in bytes (16 MiB default). Must exceed the largest note's Loro snapshot on the wire — a single doc can't be split across envelopes. |
+| `max_body`     | `16777216`  | **CRITICAL LANDMINE.** Per-PUT body cap in bytes. Default is 16 MiB, which is REQUIRED to handle notes with large Loro snapshots (a single note's Loro doc can be several MiB on the wire and cannot be split across envelopes). If you reduce this below 16 MiB, cross-device sync will silently fail for notes larger than your cap (HTTP 413 Payload Too Large is never retried). See [relay decision 2026-05-30](https://github.com/TaylorFinklea/tesela/blob/main/.docs/ai/decisions.md) for why 16 MiB is the floor. |
 | `log_level`    | `info`      | One of `trace · debug · info · warn · error`.      |
 
 Save → **Start**. Check the **Log** tab — you should see
