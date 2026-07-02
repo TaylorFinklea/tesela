@@ -1,5 +1,6 @@
 mod agenda;
 mod calendar;
+mod commands;
 mod data_ops;
 mod history;
 mod notes;
@@ -125,6 +126,10 @@ pub fn build(state: AppState) -> Router {
         .route("/types/{name}/nodes", get(types::list_typed_nodes))
         .route("/types/{name}/blocks", get(types::list_typed_blocks))
         .route("/properties", get(types::list_properties))
+        // tesela-cmdd.2 — command manifest (id/verb/label/glyph/category/
+        // shortcut/chord/surfaces/keywords/args-shape, no closures), embedded
+        // from the checked-in web/src/lib/command-manifest.json.
+        .route("/commands", get(commands::list_commands))
         // Phase 13 — backup/export/import management (drives the web Settings UI)
         .route(
             "/backups",

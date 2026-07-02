@@ -33,6 +33,7 @@ const {
   resolveShortcut,
   surfacesFor,
   matchesCommand,
+  toManifestEntry,
 } = mod;
 
 test("register throws on duplicate id (dev — includes plain node test runs)", () => {
@@ -807,4 +808,74 @@ test("matchesCommand: matches label, verb, or keywords case-insensitively", () =
   assert.equal(matchesCommand(cmd, "journal"), true);
   assert.equal(matchesCommand(cmd, "today"), true);
   assert.equal(matchesCommand(cmd, "nope"), false);
+});
+
+// ── toManifestEntry / manifest() — tesela-cmdd.2 ────────────────────────────
+// The ONE extraction point `scripts/generate-command-manifest.mjs` also goes
+// through to produce the checked-in `command-manifest.json` the Rust
+// `GET /commands` route embeds.
+
+test("toManifestEntry strips run/when and resolves defaults", () => {
+  const entry = toManifestEntry({
+    id: "cmd-a",
+    label: "Cmd A",
+    glyph: "a",
+    category: "navigate",
+    keywords: ["a"],
+    when: () => true,
+    run: () => {},
+  });
+  assert.deepEqual(entry, {
+    id: "cmd-a",
+    verb: null,
+    label: "Cmd A",
+    glyph: "a",
+    category: "navigate",
+    shortcut: null,
+    chord: null,
+    surfaces: ["colon", "palette"], // surface unset → back-compat default
+    keywords: ["a"],
+    takes_arg: false,
+    arg_prompt: null,
+  });
+  assert.equal("run" in entry, false);
+  assert.equal("when" in entry, false);
+});
+
+test("toManifestEntry carries verb/shortcut/chord/argPrompt through, surfaces sorted", () => {
+  const entry = toManifestEntry({
+    id: "cmd-b",
+    verb: "b",
+    label: "Cmd B",
+    glyph: "b",
+    category: "pane",
+    shortcut: "⌘B",
+    chord: ["w", "b"],
+    keywords: ["b"],
+    argPrompt: "target id",
+    run: () => {},
+  });
+  assert.equal(entry.verb, "b");
+  assert.equal(entry.shortcut, "⌘B");
+  assert.deepEqual(entry.chord, ["w", "b"]);
+  assert.equal(entry.takes_arg, true);
+  assert.equal(entry.arg_prompt, "target id");
+  assert.deepEqual(entry.surfaces, [...entry.surfaces].sort());
+});
+
+test("commandRegistry.manifest() maps every registered command, closure-free, in registration order", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "cmd-1", label: "One", glyph: "1", category: "navigate", keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "cmd-2", verb: "two", label: "Two", glyph: "2", category: "tab",
+    chord: ["t", "w"], keywords: ["two"], run: () => {},
+  });
+  const manifest = commandRegistry.manifest();
+  assert.deepEqual(manifest.map((e) => e.id), ["cmd-1", "cmd-2"]);
+  for (const entry of manifest) {
+    assert.equal("run" in entry, false);
+    assert.equal("when" in entry, false);
+  }
 });

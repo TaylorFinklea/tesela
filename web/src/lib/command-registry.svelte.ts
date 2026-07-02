@@ -55,6 +55,54 @@ export type Command = {
 export type RegisteredCommand = Command & { registeredAt: number };
 
 /**
+ * The over-the-wire shape of one command's metadata — NO closures (`run`/
+ * `when` are execution, not data). Field names are snake_case to match the
+ * Rust `CommandManifestEntry` struct verbatim (mirrors the existing API
+ * convention — see `Note`/`PropertyDef` — no camelCase translation layer at
+ * the JSON boundary). `surfaces` is the RESOLVED per-command visibility
+ * (via `surfacesFor`), not the raw `cmd.surfaces`/`cmd.surface` back-compat
+ * fields, sorted for determinism. `takes_arg`/`arg_prompt` are today's only
+ * structured arg info (`Command.argPrompt`) — richer args-shape is a later
+ * concern (tesela-cmdd.3, MCP tool generation).
+ */
+export type CommandManifestEntry = {
+  id: string;
+  verb: string | null;
+  label: string;
+  glyph: string;
+  category: Command['category'];
+  shortcut: string | null;
+  chord: string[] | null;
+  surfaces: Surface[];
+  keywords: string[];
+  takes_arg: boolean;
+  arg_prompt: string | null;
+};
+
+/**
+ * Strip a command down to its manifest metadata — the ONE extraction point
+ * both `CommandRegistry.manifest()` and `scripts/generate-command-manifest.mjs`
+ * go through, so the checked-in `command-manifest.json` (read by the Rust
+ * `GET /commands` route) and the live browser registry can never define this
+ * shape twice.
+ */
+export function toManifestEntry(cmd: Command | RegisteredCommand): CommandManifestEntry {
+  return {
+    id: cmd.id,
+    verb: cmd.verb ?? null,
+    label: cmd.label,
+    glyph: cmd.glyph,
+    category: cmd.category,
+    shortcut: cmd.shortcut ?? null,
+    chord: cmd.chord && cmd.chord.length > 0 ? cmd.chord : null,
+    surfaces: [...surfacesFor(cmd)].sort(),
+    keywords: cmd.keywords,
+    takes_arg: !!cmd.argPrompt,
+    arg_prompt: cmd.argPrompt ?? null,
+  };
+}
+
+/**
  * True outside a Vite production build. `import.meta.env.DEV` is statically
  * `false` only in a real production build; every other context (Vite dev
  * server, SSR, and plain `node --test` where `import.meta.env` doesn't exist
@@ -113,6 +161,11 @@ class CommandRegistry {
   findByVerb(verb: string): RegisteredCommand | undefined {
     const v = verb.toLowerCase();
     return this.all().find((c) => c.verb === v || c.id === v);
+  }
+
+  /** Every registered command's metadata, closure-free, in registration order. */
+  manifest(): CommandManifestEntry[] {
+    return this.all().map(toManifestEntry);
   }
 
   /** Reset is intended for tests only. */
