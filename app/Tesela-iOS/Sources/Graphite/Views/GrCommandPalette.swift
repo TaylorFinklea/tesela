@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// The iOS command palette sheet — a search field over the `GrCommand`
-/// catalog. Opened from the keyboard toolbar's Commands button (the
-/// `:`/leader stand-in); `onRun` hands the chosen command back to
+/// The iOS command palette sheet — a search field over `commands`, the
+/// manifest-derived list `GrAppShell` builds via `GrCommand.palette(from:)`
+/// (tesela-cib / ADR-4). Opened from the keyboard toolbar's Commands button
+/// (the `:`/leader stand-in); `onRun` hands the chosen command back to
 /// `GrAppShell` to execute, then the sheet dismisses.
 struct GrCommandPalette: View {
+    let commands: [GrCommand]
     let onRun: (GrCommand) -> Void
 
     @Environment(\.theme) private var theme
@@ -12,7 +14,7 @@ struct GrCommandPalette: View {
     @State private var query: String = ""
     @FocusState private var fieldFocused: Bool
 
-    private var results: [GrCommand] { GrCommand.matching(query) }
+    private var results: [GrCommand] { GrCommand.matching(query, in: commands) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,7 +72,7 @@ struct GrCommandPalette: View {
 
     private func row(_ cmd: GrCommand) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: cmd.icon)
+            Text(cmd.glyph)
                 .font(.system(size: 15))
                 .foregroundStyle(theme.accentPrimary)
                 .frame(width: 24)

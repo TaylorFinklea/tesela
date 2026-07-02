@@ -53,6 +53,11 @@ struct GrAppShell: View {
     @State private var captureContext: CaptureContext = .init()
     @State private var showSettings: Bool = false
     @State private var showCommandPalette: Bool = false
+    /// The command palette's manifest (tesela-cib / ADR-4). Seeded from the
+    /// bundled checked-in snapshot so `.relay`/`.mock` (no reachable server)
+    /// always has a working palette; `activateBackend()` refreshes it from
+    /// `GET /commands` when an `.http` backend is reachable.
+    @State private var commandManifest: [CommandManifestEntry] = CommandManifestSource.loadBundled()
     /// Periodic (~3s) prune of stale remote presence carets, armed at SHELL
     /// scope (NOT per-view) so it runs regardless of the active tab. The
     /// shell-level presence sockets call `applyPresence` whatever view is up
@@ -321,6 +326,15 @@ struct GrAppShell: View {
     private func activateBackend() async {
         mosaic.attach(backend: backend.backend)
         await mosaic.refresh(from: backend.backend)
+        // Refresh the command-palette manifest from the live `GET /commands`
+        // route when a Mac is reachable, so the palette picks up anything
+        // added since this build's bundled snapshot. Best-effort — any
+        // failure (unreachable, malformed) keeps the bundled fallback.
+        if case .http(let baseURL) = backend.backend,
+           let fresh = try? await CommandManifestSource.fetchRemote(baseURL: baseURL),
+           !fresh.isEmpty {
+            commandManifest = fresh
+        }
         // Hub mode (Part E2): an HTTP Mac backend makes the live `/ws` socket
         // the sync hub, so gate the relay coordinator loop OFF; mock mode
         // re-enables it. Set BOTH ways so a runtime switch is correct (the
@@ -481,25 +495,24 @@ struct GrAppShell: View {
             .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showCommandPalette) {
-            GrCommandPalette(onRun: runCommand)
+            GrCommandPalette(commands: GrCommand.palette(from: commandManifest), onRun: runCommand)
                 .environment(\.theme, .graphite)
                 .preferredColorScheme(.dark)
         }
     }
 
-    /// Execute a command-palette command. Navigation is immediate; opening
-    /// another sheet (Settings) is deferred so the palette finishes
-    /// dismissing first (one sheet at a time on the shell).
+    /// Execute a command-palette command, dispatching on the manifest's
+    /// stable id (the native executor map — mirrors `GrCommand.executableIds`,
+    /// which gates what's OFFERED; this switch is what RUNS it). Navigation
+    /// is immediate; opening another sheet (Settings) is deferred so the
+    /// palette finishes dismissing first (one sheet at a time on the shell).
     private func runCommand(_ cmd: GrCommand) {
         switch cmd.id {
-        case "goto.daily":   activeTab = .daily
-        case "goto.agenda":  activeTab = .agenda
-        case "goto.inbox":   activeTab = .inbox
-        case "goto.library": activeTab = .library
-        case "goto.search":  activeTab = .search
-        case "action.refresh":
-            Task { await mosaic.refresh(from: backend.backend) }
-        case "open.settings":
+        case "daily":  activeTab = .daily
+        case "agenda": activeTab = .agenda
+        case "inbox":  activeTab = .inbox
+        case "settings-general", "settings-devices", "settings-sync",
+             "settings-mosaic", "settings-data":
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))
                 showSettings = true

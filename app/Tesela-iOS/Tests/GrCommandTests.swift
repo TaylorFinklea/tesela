@@ -2,30 +2,80 @@ import XCTest
 @testable import Tesela
 
 final class GrCommandTests: XCTestCase {
-    func testEmptyQueryReturnsWholeCatalog() {
-        XCTAssertEqual(GrCommand.matching("").count, GrCommand.catalog.count)
-        XCTAssertEqual(GrCommand.matching("   ").count, GrCommand.catalog.count)
+    private let manifest = CommandManifestSource.loadBundled()
+
+    // MARK: - bundled manifest loads (tesela-cib / ADR-4)
+
+    func testBundledManifestLoadsNonEmpty() {
+        XCTAssertFalse(manifest.isEmpty, "CommandManifest.json resource must bundle + decode")
+    }
+
+    func testBundledManifestMatchesWebSourceOfTruth() {
+        // Regenerate via:
+        //   cp web/src/lib/command-manifest.json app/Tesela-iOS/Sources/Data/CommandManifest.json
+        // (verified by scripts/check-command-manifest-drift.sh). This test only
+        // catches drift when both files are visible to the test *source* tree —
+        // the real gate is the drift script, since the bundled resource has no
+        // filesystem access to the repo at runtime.
+        let ids = Set(manifest.map(\.id))
+        XCTAssertTrue(ids.contains("daily"), "expected the web-authored 'daily' command in the bundled manifest")
+    }
+
+    // MARK: - palette(from:) — manifest ∩ native executors, ADR-4's "unmapped = hidden"
+
+    func testPaletteOnlyOffersExecutableIds() {
+        let palette = GrCommand.palette(from: manifest)
+        XCTAssertFalse(palette.isEmpty)
+        for cmd in palette {
+            XCTAssertTrue(GrCommand.executableIds.contains(cmd.id), "\(cmd.id) has no native executor and should be hidden")
+        }
+    }
+
+    func testPaletteOnlyOffersPaletteSurfaceCommands() {
+        let paletteIds = Set(GrCommand.palette(from: manifest).map(\.id))
+        let nonPaletteEntry = manifest.first { !$0.surfaces.contains("palette") }
+        if let nonPaletteEntry {
+            XCTAssertFalse(paletteIds.contains(nonPaletteEntry.id))
+        }
+    }
+
+    func testKnownNavigationCommandsPresent() {
+        let ids = Set(GrCommand.palette(from: manifest).map(\.id))
+        for id in ["daily", "agenda", "inbox"] {
+            XCTAssertTrue(ids.contains(id), "missing command \(id)")
+        }
+    }
+
+    func testUnmappedManifestCommandIsHidden() {
+        // "vsplit" (pane split) has no iOS equivalent — not in executableIds.
+        XCTAssertTrue(manifest.contains { $0.id == "vsplit" }, "fixture assumption: manifest still declares vsplit")
+        XCTAssertFalse(GrCommand.executableIds.contains("vsplit"))
+        XCTAssertFalse(GrCommand.palette(from: manifest).map(\.id).contains("vsplit"))
+    }
+
+    // MARK: - matching(_:in:)
+
+    func testEmptyQueryReturnsWholeList() {
+        let palette = GrCommand.palette(from: manifest)
+        XCTAssertEqual(GrCommand.matching("", in: palette).count, palette.count)
+        XCTAssertEqual(GrCommand.matching("   ", in: palette).count, palette.count)
     }
 
     func testFiltersByLabel() {
-        let hits = GrCommand.matching("agenda")
-        XCTAssertEqual(hits.map(\.id), ["goto.agenda"])
+        let palette = GrCommand.palette(from: manifest)
+        let hits = GrCommand.matching("agenda", in: palette)
+        XCTAssertEqual(hits.map(\.id), ["agenda"])
     }
 
-    func testFiltersByHint() {
-        // "deadlines" only appears in the Agenda command's hint.
-        XCTAssertEqual(GrCommand.matching("deadline").map(\.id), ["goto.agenda"])
+    func testFiltersByKeyword() {
+        // "journal" is a keyword on the "daily" manifest entry, not in its label.
+        let palette = GrCommand.palette(from: manifest)
+        let hits = GrCommand.matching("journal", in: palette)
+        XCTAssertTrue(hits.contains { $0.id == "daily" })
     }
 
     func testNoMatchIsEmpty() {
-        XCTAssertTrue(GrCommand.matching("zzzzz").isEmpty)
-    }
-
-    func testNavigationAndActionsPresent() {
-        let ids = Set(GrCommand.catalog.map(\.id))
-        for id in ["goto.daily", "goto.agenda", "goto.inbox", "goto.library",
-                   "goto.search", "action.refresh", "open.settings"] {
-            XCTAssertTrue(ids.contains(id), "missing command \(id)")
-        }
+        let palette = GrCommand.palette(from: manifest)
+        XCTAssertTrue(GrCommand.matching("zzzzz", in: palette).isEmpty)
     }
 }

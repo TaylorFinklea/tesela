@@ -1,0 +1,1363 @@
+[
+  {
+    "id": "vsplit",
+    "verb": "vsplit",
+    "label": "Split pane vertically",
+    "glyph": "│",
+    "category": "pane",
+    "shortcut": "⌘\\",
+    "chord": [
+      "w",
+      "v"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "split",
+      "vsplit",
+      "vertical",
+      "right",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "hsplit",
+    "verb": "hsplit",
+    "label": "Split pane horizontally",
+    "glyph": "─",
+    "category": "pane",
+    "shortcut": "⌘-",
+    "chord": [
+      "w",
+      "s"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "split",
+      "hsplit",
+      "horizontal",
+      "below",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "close-pane",
+    "verb": "quit",
+    "label": "Close focused pane",
+    "glyph": "×",
+    "category": "pane",
+    "shortcut": null,
+    "chord": [
+      "w",
+      "q"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "close",
+      "quit",
+      "kill",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "move-left",
+    "verb": "move-left",
+    "label": "Move pane left",
+    "glyph": "←",
+    "category": "pane",
+    "shortcut": "⌘⇧H",
+    "chord": [
+      "w",
+      "h"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "push",
+      "send",
+      "left",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "move-right",
+    "verb": "move-right",
+    "label": "Move pane right",
+    "glyph": "→",
+    "category": "pane",
+    "shortcut": "⌘⇧L",
+    "chord": [
+      "w",
+      "l"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "push",
+      "send",
+      "right",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "move-up",
+    "verb": "move-up",
+    "label": "Move pane up",
+    "glyph": "↑",
+    "category": "pane",
+    "shortcut": "⌘⇧K",
+    "chord": [
+      "w",
+      "k"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "push",
+      "send",
+      "up",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "move-down",
+    "verb": "move-down",
+    "label": "Move pane down",
+    "glyph": "↓",
+    "category": "pane",
+    "shortcut": "⌘⇧J",
+    "chord": [
+      "w",
+      "j"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "push",
+      "send",
+      "down",
+      "pane"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "tabnew",
+    "verb": "tabnew",
+    "label": "New tab",
+    "glyph": "+",
+    "category": "tab",
+    "shortcut": null,
+    "chord": [
+      "b",
+      "t"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "tab",
+      "new",
+      "open",
+      "window"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "tab-close",
+    "verb": "tabclose",
+    "label": "Close current tab",
+    "glyph": "×",
+    "category": "tab",
+    "shortcut": null,
+    "chord": [
+      "b",
+      "c"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "tab",
+      "close",
+      "kill"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "jump",
+    "verb": "jump",
+    "label": "Jump to page…",
+    "glyph": "→",
+    "category": "tile",
+    "shortcut": null,
+    "chord": [
+      "b",
+      "j"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "jump",
+      "go",
+      "open",
+      "tile",
+      "note",
+      "page"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "note slug or id"
+  },
+  {
+    "id": "backlinks",
+    "verb": "backlinks",
+    "label": "Open Backlinks (follow)",
+    "glyph": "↩",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "b"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "backlinks",
+      "derived",
+      "follow",
+      "backlinks-of-page"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "outline",
+    "verb": "outline",
+    "label": "Open Outline (follow)",
+    "glyph": "⋮",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "o"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "outline",
+      "derived",
+      "follow",
+      "outline-of-page"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "properties",
+    "verb": "properties",
+    "label": "Open Properties (follow)",
+    "glyph": "⚙",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "p"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "properties",
+      "derived",
+      "follow",
+      "properties-of-page"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "tasks",
+    "verb": "tasks",
+    "label": "Open Linked tasks (follow)",
+    "glyph": "☑",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "t"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "tasks",
+      "derived",
+      "follow",
+      "tasks-linked-to-page"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "graph-local",
+    "verb": "graph-local",
+    "label": "Open Local graph (follow)",
+    "glyph": "✦",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "g"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "graph-local",
+      "derived",
+      "follow",
+      "local-graph-of-page"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "instances-of-tag",
+    "verb": "instances-of-tag",
+    "label": "Open instances of a tag (pinned)",
+    "glyph": "▦",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "i"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "instances",
+      "tag",
+      "members",
+      "uses"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "tag slug"
+  },
+  {
+    "id": "backlinks-of-tag",
+    "verb": "backlinks-of-tag",
+    "label": "Open backlinks of a tag (pinned)",
+    "glyph": "↩",
+    "category": "derived",
+    "shortcut": null,
+    "chord": [
+      "v",
+      "k"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "backlinks",
+      "tag",
+      "uses"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "tag slug"
+  },
+  {
+    "id": "calendar",
+    "verb": "calendar",
+    "label": "Open Calendar",
+    "glyph": "📅",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "c"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "calendar",
+      "ambient",
+      "calendar"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "in-progress",
+    "verb": "in-progress",
+    "label": "Open Today in progress",
+    "glyph": "⏱",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "i"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "in-progress",
+      "ambient",
+      "today-in-progress"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "dashboard",
+    "verb": "dashboard",
+    "label": "Open Workspace dashboard",
+    "glyph": "▦",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "h"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "dashboard",
+      "ambient",
+      "workspace-dashboard"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "ai",
+    "verb": "ai",
+    "label": "Open AI workspace",
+    "glyph": "✺",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "a"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "ai",
+      "ambient",
+      "ai-workspace"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "agenda",
+    "verb": "agenda",
+    "label": "Open Agenda",
+    "glyph": "📋",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "A"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "agenda",
+      "ambient",
+      "agenda"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "inbox",
+    "verb": "inbox",
+    "label": "Open Inbox",
+    "glyph": "📥",
+    "category": "ambient",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "I"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "inbox",
+      "ambient",
+      "inbox"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "daily",
+    "verb": "daily",
+    "label": "Today's daily note",
+    "glyph": "☀",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "d"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "daily",
+      "today",
+      "journal"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "goto",
+    "verb": "goto",
+    "label": "Jump to a date (YYYY-MM-DD, today, yesterday, tomorrow, ±Nd)",
+    "glyph": "→",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "D"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "goto",
+      "go",
+      "jump",
+      "date",
+      "day",
+      "daily"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd"
+  },
+  {
+    "id": "scratch",
+    "verb": "scratch",
+    "label": "New scratch page",
+    "glyph": "✎",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "n",
+      "s"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "scratch",
+      "draft",
+      "throwaway",
+      "new"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "promote",
+    "verb": "promote",
+    "label": "Promote focused scratch to a regular page",
+    "glyph": "↑",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "n",
+      "p"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "promote",
+      "keep",
+      "save",
+      "scratch"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "delete-tag",
+    "verb": "delete-tag",
+    "label": "Delete focused tag (with usage confirmation)",
+    "glyph": "✕",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "d"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "delete",
+      "tag",
+      "remove"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "convert-to-tag",
+    "verb": "convert-to-tag",
+    "label": "Convert focused page to a tag page",
+    "glyph": "↻",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "t"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "convert",
+      "tag",
+      "type"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "convert-to-note",
+    "verb": "convert-to-note",
+    "label": "Convert focused tag page to a regular note",
+    "glyph": "↻",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "n"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "convert",
+      "note",
+      "type"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "rename-slug",
+    "verb": "rename-slug",
+    "label": "Rename focused tag's slug",
+    "glyph": "✎",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "r"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rename",
+      "slug",
+      "tag",
+      "disambiguate"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "new slug (e.g., cardinal-religion)"
+  },
+  {
+    "id": "prune-scratches",
+    "verb": "prune-scratches",
+    "label": "Prune stale scratch pages now",
+    "glyph": "🧹",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "p"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "prune",
+      "clean",
+      "sweep",
+      "scratch",
+      "delete"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "days threshold (default: workspace setting)"
+  },
+  {
+    "id": "settings-general",
+    "verb": "settings-general",
+    "label": "Settings · General",
+    "glyph": "⚙",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      ",",
+      "g"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "settings",
+      "preferences",
+      "config",
+      "general",
+      "general"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "settings-devices",
+    "verb": "settings-devices",
+    "label": "Settings · Devices",
+    "glyph": "⚙",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      ",",
+      "d"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "settings",
+      "preferences",
+      "config",
+      "devices",
+      "devices"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "settings-sync",
+    "verb": "settings-sync",
+    "label": "Settings · Sync",
+    "glyph": "⚙",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      ",",
+      "s"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "settings",
+      "preferences",
+      "config",
+      "sync",
+      "sync"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "settings-mosaic",
+    "verb": "settings-mosaic",
+    "label": "Settings · Mosaic",
+    "glyph": "⚙",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      ",",
+      "m"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "settings",
+      "preferences",
+      "config",
+      "mosaic",
+      "mosaic"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "settings-data",
+    "verb": "settings-data",
+    "label": "Settings · Data",
+    "glyph": "⚙",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      ",",
+      "a"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "settings",
+      "preferences",
+      "config",
+      "data",
+      "data"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "new-note",
+    "verb": "new",
+    "label": "New note…",
+    "glyph": "✎",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "n",
+      "n"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "new",
+      "create",
+      "note",
+      "page"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "note title"
+  },
+  {
+    "id": "peek",
+    "verb": "peek",
+    "label": "Toggle Peek popover",
+    "glyph": "i",
+    "category": "tile",
+    "shortcut": "⌘I",
+    "chord": [
+      "t",
+      "p"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "peek",
+      "backlinks",
+      "popover"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "fullscreen-graph",
+    "verb": "graph",
+    "label": "Fullscreen graph",
+    "glyph": "✦",
+    "category": "navigate",
+    "shortcut": "⌘G",
+    "chord": [
+      "g",
+      "g"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "graph",
+      "fullscreen",
+      "visual"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "command-station",
+    "verb": "station",
+    "label": "Open command station",
+    "glyph": "⌘",
+    "category": "navigate",
+    "shortcut": "⌘K",
+    "chord": [
+      "/"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "command",
+      "station",
+      "palette",
+      "cmdk"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "yesterday-daily",
+    "verb": "yesterday",
+    "label": "Yesterday's daily note",
+    "glyph": "←",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "y"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "yesterday",
+      "daily",
+      "journal"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "tomorrow-daily",
+    "verb": "tomorrow",
+    "label": "Tomorrow's daily note",
+    "glyph": "→",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "g",
+      "t"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "tomorrow",
+      "daily",
+      "journal"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "keymap",
+    "verb": "keymap",
+    "label": "Show keymap index and conflicts",
+    "glyph": "⌘",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "k"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "keymap",
+      "bindings",
+      "conflicts",
+      "keyboard"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "skip-occurrence",
+    "verb": "skip",
+    "label": "Skip to Next Occurrence",
+    "glyph": "⏭",
+    "category": "tile",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "s"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "skip",
+      "recurrence",
+      "recurring",
+      "next",
+      "occurrence"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.collection",
+    "verb": "collection",
+    "label": "Collection",
+    "glyph": "collection::",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "c"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "collection",
+      "list",
+      "cards"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.date",
+    "verb": "date",
+    "label": "Date",
+    "glyph": "📅",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "d"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "date",
+      "deadline",
+      "scheduled",
+      "calendar"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.heading",
+    "verb": "heading",
+    "label": "Heading",
+    "glyph": "#",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "h"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette",
+      "slash"
+    ],
+    "keywords": [
+      "heading",
+      "title",
+      "block"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.link",
+    "verb": "link",
+    "label": "Link",
+    "glyph": "[[ ]]",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "l"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "link",
+      "wikilink",
+      "reference"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.property",
+    "verb": "property",
+    "label": "Manual key:: value",
+    "glyph": "key:: value",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "p",
+      "p"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "property",
+      "key",
+      "value",
+      "attribute"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.query",
+    "verb": "query",
+    "label": "Query",
+    "glyph": "query::",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "q"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "query",
+      "filter",
+      "search"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.tag",
+    "verb": "tag",
+    "label": "Tag picker",
+    "glyph": "#",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "g"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "tag",
+      "label",
+      "category"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.task",
+    "verb": "task",
+    "label": "Task",
+    "glyph": "tags:: Task",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "t"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette",
+      "slash"
+    ],
+    "keywords": [
+      "task",
+      "todo",
+      "tag"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.template",
+    "verb": "template",
+    "label": "Template",
+    "glyph": "📄",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "i",
+      "m"
+    ],
+    "surfaces": [
+      "leader",
+      "slash"
+    ],
+    "keywords": [
+      "template",
+      "snippet",
+      "boilerplate"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "editor.widget",
+    "verb": "widget",
+    "label": "New widget",
+    "glyph": "widget",
+    "category": "editor",
+    "shortcut": null,
+    "chord": [
+      "n",
+      "w"
+    ],
+    "surfaces": [
+      "leader"
+    ],
+    "keywords": [
+      "widget",
+      "query",
+      "saved",
+      "collection"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  }
+]
