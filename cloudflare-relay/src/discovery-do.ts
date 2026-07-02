@@ -43,6 +43,17 @@ export class DiscoveryIndexDO implements DurableObject {
         return json({ group_id });
       }
 
+      // DELETE-by-group (ra7.3): parity with the Rust relay's FK
+      // ON DELETE CASCADE — admin hijack-delete on a GroupDO must also
+      // scrub this SEPARATE DO's disc->group_id row(s) for that group,
+      // or a stale mapping survives the registration wipe.
+      const byGroupMatch = path.match(/^\/by-group\/([0-9a-f]{32})$/);
+      if (req.method === "DELETE" && byGroupMatch) {
+        const group_id = byGroupMatch[1]!;
+        this.deleteByGroup(group_id);
+        return json({ status: "ok" });
+      }
+
       return new Response("not found", { status: 404 });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -72,6 +83,10 @@ export class DiscoveryIndexDO implements DurableObject {
       .exec<{ group_id: string }>("SELECT group_id FROM discovery_index WHERE disc = ?", disc)
       .toArray();
     return rows[0] ? rows[0].group_id : null;
+  }
+
+  private deleteByGroup(group_id: string): void {
+    this.state.storage.sql.exec("DELETE FROM discovery_index WHERE group_id = ?", group_id);
   }
 }
 

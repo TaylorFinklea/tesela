@@ -410,6 +410,23 @@ export async function handleAdminDelete(self: GroupDO, req: Request): Promise<Re
   // the Rust `delete_registration` rows-affected check.
   const existed = self.getRegistration() !== null;
   self.deleteRegistration();
+
+  // Scrub the disc->group_id discovery mapping too (ra7.3 parity fix).
+  // GroupDO and DiscoveryIndexDO are SEPARATE DOs — no FK to cascade
+  // through, unlike the Rust relay's `relay_discovery_index` — so this
+  // hijack-delete path must explicitly tell the discovery DO to drop
+  // this group's row(s). Best-effort/fire-and-forget would leave a
+  // window where a stale disc still resolves post-delete, so we await
+  // it; harmless to run even when the group never published a disc.
+  const originalPath = req.headers.get(ORIGINAL_PATH_HEADER) ?? "";
+  const groupIdMatch = originalPath.match(/^\/admin\/groups\/([0-9a-f]{32})\/register$/);
+  const groupIdHex = groupIdMatch?.[1];
+  if (groupIdHex) {
+    const discoveryId = self.env.DISCOVERY_DO.idFromName("global");
+    const discoveryStub = self.env.DISCOVERY_DO.get(discoveryId);
+    await discoveryStub.fetch(`https://do.internal/by-group/${groupIdHex}`, { method: "DELETE" });
+  }
+
   if (!existed) return new Response("group not registered", { status: 404 });
   return new Response(null, { status: 204 });
 }

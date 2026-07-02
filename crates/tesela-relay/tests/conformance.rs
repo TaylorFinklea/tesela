@@ -1673,6 +1673,191 @@ async fn test_17_discover_round_trip_and_unknown_404() {
     assert_eq!(bad.status().as_u16(), 400, "malformed disc must 400");
 }
 
+#[tokio::test]
+async fn test_18_admin_delete_scrubs_discovery_index() {
+    // ra7.3: admin hijack-delete must scrub the disc->group_id discovery
+    // mapping too, not just the registration. The Rust relay gets this
+    // for free via `relay_discovery_index`'s FK ON DELETE CASCADE; the
+    // CF Worker's DiscoveryIndexDO is a SEPARATE Durable Object with no
+    // FK to cascade through, so this pins the parity fix on both relays.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let now = now_secs();
+    let disc = derive_discovery_handle(&group.key);
+    let mut body = register_body(&group, now);
+    body["disc_b64"] = json!(b64(&disc));
+
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "register with disc_b64 expected 2xx, got {} body={}",
+        r.status(),
+        r.text().await.unwrap_or_default(),
+    );
+
+    // Sanity: disc resolves before the admin delete.
+    let d = client
+        .get(format!(
+            "{}/discover/{}",
+            relay.base_url,
+            hex::encode(disc)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        d.status().is_success(),
+        "GET /discover/{{disc}} expected 2xx before delete, got {}",
+        d.status()
+    );
+
+    // Admin hijack-delete the registration.
+    let admin_path = format!(
+        "/admin/groups/{}/register",
+        hex::encode(group.id.as_bytes())
+    );
+    let r = client
+        .delete(format!("{}{}", relay.base_url, admin_path))
+        .bearer_auth(&relay.admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 204, "correct admin token must 204");
+
+    // The disc mapping must be scrubbed too — no stale disc->group_id
+    // survives the registration wipe on EITHER relay.
+    let miss = client
+        .get(format!(
+            "{}/discover/{}",
+            relay.base_url,
+            hex::encode(disc)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        miss.status().as_u16(),
+        404,
+        "disc must 404 after admin hijack-delete scrubs the discovery index"
+    );
+}
+
+/// Same MAC-header construction as `auth_headers`, but taking owned/Copy
+/// pieces (`group_id_hex`, `auth`) instead of `&Group` so callers can
+/// build headers from inside a `tokio::spawn`'d ('static) task without
+/// needing `Group` itself to be `Clone`.
+fn auth_headers_for(
+    group_id_hex: &str,
+    auth: &[u8; 32],
+    device_id_hex: &str,
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &[u8],
+) -> reqwest::header::HeaderMap {
+    let nonce = random_nonce_b64();
+    let ts = now_secs();
+    let canonical = canonical_request(method, path, query, &nonce, ts, &body_hash_hex(body));
+    let mac = compute_request_mac(auth, &canonical);
+    let mut h = reqwest::header::HeaderMap::new();
+    h.insert("X-Tesela-Group", group_id_hex.parse().unwrap());
+    h.insert("X-Tesela-Device", device_id_hex.parse().unwrap());
+    h.insert("X-Tesela-Nonce", nonce.parse().unwrap());
+    h.insert("X-Tesela-Ts", ts.to_string().parse().unwrap());
+    h.insert("X-Tesela-Mac", b64(&mac).parse().unwrap());
+    if !body.is_empty() {
+        h.insert("Content-Type", "application/json".parse().unwrap());
+    }
+    h
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn test_19_concurrent_put_ops_race_free_seq() {
+    // rlyf.2: concurrent same-group PUT /ops must never race on seq
+    // allocation. The Rust relay's `insert_op` used a deferred BEGIN
+    // (SELECT MAX(seq)+1, then INSERT) — a TOCTOU under concurrent
+    // writers, fixed by BEGIN IMMEDIATE. CF is immune (DO serialization
+    // + AUTOINCREMENT), so this is really pinning the Rust-side fix, but
+    // runs against both relays since it's pure HTTP. Fires N PUTs from
+    // genuinely parallel tasks (multi-thread runtime) and asserts every
+    // one succeeds with a DISTINCT, contiguous seq — no dupes, no gaps,
+    // no lost writes, no 500s from lock contention.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    const N: usize = 20;
+    let group_id_hex = hex::encode(group.id.as_bytes());
+    let auth = group.auth;
+    let path = format!("/groups/{}/ops", group_id_hex);
+
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let client = client.clone();
+        let base_url = relay.base_url.clone();
+        let path = path.clone();
+        let group_id_hex = group_id_hex.clone();
+        let device = random_device_id_hex();
+        handles.push(tokio::spawn(async move {
+            let put_body = json!({
+                "from_device": device,
+                "payload_b64": b64(format!("op-{i}").as_bytes()),
+            });
+            let body_bytes = serde_json::to_vec(&put_body).unwrap();
+            let headers =
+                auth_headers_for(&group_id_hex, &auth, &device, "PUT", &path, "", &body_bytes);
+            let r = client
+                .put(format!("{}{}", base_url, path))
+                .headers(headers)
+                .body(body_bytes)
+                .send()
+                .await
+                .expect("PUT should complete");
+            let status = r.status();
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            (status, body)
+        }));
+    }
+
+    let mut seqs = Vec::with_capacity(N);
+    for h in handles {
+        let (status, body) = h.await.expect("task panicked");
+        assert!(
+            status.is_success(),
+            "concurrent PUT must succeed, got {status} body={body}"
+        );
+        seqs.push(body["seq"].as_i64().expect("seq is integer"));
+    }
+
+    seqs.sort_unstable();
+    let expected: Vec<i64> = (1..=N as i64).collect();
+    assert_eq!(
+        seqs, expected,
+        "concurrent PUTs must yield {N} distinct contiguous seqs, no dupes/gaps: got {seqs:?}"
+    );
+}
+
 // Suppress "field is never read" while stages 3b–3d wire up endpoints
 // that actually USE the test relay's admin_token field.
 #[allow(dead_code)]

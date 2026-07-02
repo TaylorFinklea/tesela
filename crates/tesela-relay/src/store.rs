@@ -207,7 +207,18 @@ impl Store {
         ts: f64,
         payload: &[u8],
     ) -> Result<(i64, f64)> {
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE (not the default deferred BEGIN) takes the
+        // write lock up front, so the SELECT MAX(seq)+1 below and the
+        // subsequent INSERT are atomic w.r.t. every other writer on
+        // this connection pool. A deferred BEGIN only acquires the
+        // write lock at the first actual write, so two concurrent
+        // same-group PUTs could both read the same next_seq before
+        // either writes — a real TOCTOU that surfaces as a lock
+        // conflict or a duplicate-seq PRIMARY KEY violation on the
+        // loser. Concurrent callers now serialize on the IMMEDIATE
+        // lock (waiting up to the pool's 5s busy_timeout) instead of
+        // racing.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let next_seq: i64 = sqlx::query(
             "SELECT MAX( \
                COALESCE((SELECT MAX(seq) FROM relay_ops WHERE group_id = ?), 0), \
