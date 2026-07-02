@@ -93,6 +93,27 @@ final class RelayBootstrapRuleTests: XCTestCase {
         )
     }
 
+    // MARK: Snapshot-deposit cadence gate (tesela-zpr)
+
+    func testSnapshotDepositDueWhenNeverDeposited() {
+        XCTAssertTrue(RelayTicker.shouldDepositSnapshots(lastDepositAt: nil, now: Date()))
+    }
+
+    func testSnapshotDepositDueAfterInterval() {
+        let now = Date()
+        let longAgo = now.addingTimeInterval(-(RelayTicker.snapshotDepositIntervalSeconds + 1))
+        XCTAssertTrue(RelayTicker.shouldDepositSnapshots(lastDepositAt: longAgo, now: now))
+    }
+
+    func testSnapshotDepositNotYetDueWithinInterval() {
+        let now = Date()
+        let recent = now.addingTimeInterval(-(RelayTicker.snapshotDepositIntervalSeconds - 1))
+        XCTAssertFalse(RelayTicker.shouldDepositSnapshots(lastDepositAt: recent, now: now))
+        // Exactly the interval boundary counts as due (`>=`).
+        let exact = now.addingTimeInterval(-RelayTicker.snapshotDepositIntervalSeconds)
+        XCTAssertTrue(RelayTicker.shouldDepositSnapshots(lastDepositAt: exact, now: now))
+    }
+
     // MARK: Daily slug derivation (date → yyyy-MM-dd)
 
     private func date(_ y: Int, _ m: Int, _ d: Int) -> Date {

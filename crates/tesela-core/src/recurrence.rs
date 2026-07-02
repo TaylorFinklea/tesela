@@ -271,6 +271,246 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     last.day()
 }
 
+/// Reverse mapping for `parse_weekday` — the canonical 3-letter token
+/// used in normalized/canonicalized recurrence strings.
+fn weekday_abbrev(w: Weekday) -> &'static str {
+    match w {
+        Weekday::Mon => "mon",
+        Weekday::Tue => "tue",
+        Weekday::Wed => "wed",
+        Weekday::Thu => "thu",
+        Weekday::Fri => "fri",
+        Weekday::Sat => "sat",
+        Weekday::Sun => "sun",
+    }
+}
+
+/// Validate + pluralize a unit token (`day`/`week`/`month`/`year`,
+/// singular or plural) to its canonical plural form. `None` for
+/// anything else.
+fn pluralize_unit(unit: &str) -> Option<&'static str> {
+    Some(match unit {
+        "day" | "days" => "days",
+        "week" | "weeks" => "weeks",
+        "month" | "months" => "months",
+        "year" | "years" => "years",
+        _ => return None,
+    })
+}
+
+/// Recognize + canonicalize a `recurring::` value into its normalized
+/// storage form, or `None` if unrecognized. This is the Rust source of
+/// truth backing the iOS `parse_recurrence` FFI call — it mirrors what
+/// used to be Swift's (and still is TS's) `parseRecurrenceInput`:
+/// trim/lowercase/collapse whitespace, then normalize BYDAY sets to
+/// sorted/deduped Mon..Sun order, "every other <unit>"/"every N <unit>"
+/// to plural units, and `n == 1` cadences to their single-word alias
+/// (`every 1 week` → `weekly`). Single-word cadences (`biweekly`,
+/// `fortnightly`, `quarterly`, …) are preserved verbatim — canonicalization
+/// is a surface normalization, not a structural round-trip through
+/// [`Recurrence`], so it deliberately does NOT collapse `biweekly` into
+/// `every 2 weeks` (they parse to the same [`Recurrence`] but stay
+/// distinct strings).
+pub fn recognize(input: &str) -> Option<String> {
+    let s: String = input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (base, end_clause): (&str, String) = if let Some(idx) = s.rfind(" until ") {
+        let date_str = s[idx + 7..].trim();
+        NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+        (&s[..idx], format!(" until {date_str}"))
+    } else if let Some(idx) = s.rfind(" count ") {
+        let n: u32 = s[idx + 7..].trim().parse().ok()?;
+        if n == 0 {
+            return None;
+        }
+        (&s[..idx], format!(" count {n}"))
+    } else {
+        (s.as_str(), String::new())
+    };
+
+    let freq = recognize_freq(base)?;
+    Some(freq + &end_clause)
+}
+
+/// Canonicalize just the frequency/BYDAY portion (no end clause).
+fn recognize_freq(base: &str) -> Option<String> {
+    match base {
+        "daily" | "every day" => return Some("daily".to_string()),
+        "weekly" | "every week" => return Some("weekly".to_string()),
+        "monthly" | "every month" => return Some("monthly".to_string()),
+        "yearly" | "annually" | "every year" => return Some("yearly".to_string()),
+        "biweekly" => return Some("biweekly".to_string()),
+        "fortnightly" => return Some("fortnightly".to_string()),
+        "quarterly" => return Some("quarterly".to_string()),
+        "weekdays" | "every weekday" | "every weekdays" => return Some("weekdays".to_string()),
+        "weekends" => return Some("weekends".to_string()),
+        _ => {}
+    }
+
+    let rest = base.strip_prefix("every ")?;
+
+    // BYDAY: "every mon, wed, fri" — all tokens must be weekdays.
+    // Normalized to sorted, deduped Mon..Sun order.
+    let day_tokens: Vec<&str> = rest.split(',').map(|t| t.trim()).collect();
+    if !rest.is_empty() && day_tokens.iter().all(|t| parse_weekday(t).is_some()) {
+        let days: Vec<Weekday> = day_tokens.iter().filter_map(|t| parse_weekday(t)).collect();
+        let days = normalize_weekdays(days);
+        let canon: Vec<&str> = days.into_iter().map(weekday_abbrev).collect();
+        return Some(format!("every {}", canon.join(", ")));
+    }
+
+    // "every other <unit>" → normalized plural unit.
+    if let Some(unit) = rest.strip_prefix("other ") {
+        let plural = pluralize_unit(unit)?;
+        return Some(format!("every other {plural}"));
+    }
+
+    // "every N <unit>" — N == 1 collapses to the single-word cadence.
+    let (n_str, unit) = rest.split_once(' ')?;
+    let n: u32 = n_str.parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    let plural = pluralize_unit(unit)?;
+    if n == 1 {
+        return Some(
+            match plural {
+                "days" => "daily",
+                "weeks" => "weekly",
+                "months" => "monthly",
+                "years" => "yearly",
+                _ => unreachable!("pluralize_unit only returns the four known units"),
+            }
+            .to_string(),
+        );
+    }
+    Some(format!("every {n} {plural}"))
+}
+
+/// Human-readable rendering of a `recurring::` property value. Unrecognized
+/// input is returned **unchanged** (never errors) — mirrors the (now
+/// deleted) Swift `RecurrenceFormat.human` / TS `formatRecurrence`.
+///
+/// Unlike [`recognize`], this does NOT normalize BYDAY order or unit
+/// plurality — it renders whatever raw string it's given, preserving
+/// token order (`"every fri, mon"` displays as `"Fri, Mon"`, not
+/// `"Mon, Fri"`).
+pub fn format(value: &str) -> String {
+    let s: String = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if s.is_empty() {
+        return value.to_string();
+    }
+
+    let (base, end_text): (&str, String) = if let Some(idx) = s.rfind(" until ") {
+        let date_str = s[idx + 7..].trim();
+        (&s[..idx], format_until_date(date_str))
+    } else if let Some(idx) = s.rfind(" count ") {
+        let n = s[idx + 7..].trim();
+        (&s[..idx], format!(", {n}\u{d7}"))
+    } else {
+        (s.as_str(), String::new())
+    };
+
+    match format_freq(base) {
+        Some(freq) => freq + &end_text,
+        None => value.to_string(),
+    }
+}
+
+/// Parse `YYYY-MM-DD` and return ` until MMM d, yyyy` (e.g. " until Dec 31, 2026"),
+/// or `""` if unparseable — mirrors the raw string passthrough of the
+/// deleted Swift/TS formatters (no validation error, just an empty suffix).
+fn format_until_date(date_str: &str) -> String {
+    match NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        Ok(date) => format!(" until {}", date.format("%b %-d, %Y")),
+        Err(_) => String::new(),
+    }
+}
+
+/// 3-letter weekday token → display label. Deliberately narrower than
+/// [`parse_weekday`] (no full names/aliases) — matches the (now deleted)
+/// Swift/TS `dayLabel` tables exactly.
+fn day_label(tok: &str) -> Option<&'static str> {
+    Some(match tok {
+        "mon" => "Mon",
+        "tue" => "Tue",
+        "wed" => "Wed",
+        "thu" => "Thu",
+        "fri" => "Fri",
+        "sat" => "Sat",
+        "sun" => "Sun",
+        _ => return None,
+    })
+}
+
+/// Unit token → singular display label, for `"every other <unit>"`.
+fn other_unit_label(unit: &str) -> Option<&'static str> {
+    Some(match unit {
+        "day" | "days" => "day",
+        "week" | "weeks" => "week",
+        "month" | "months" => "month",
+        "year" | "years" => "year",
+        _ => return None,
+    })
+}
+
+/// Maps a normalized frequency `base` string to a human label, or `None`
+/// for unrecognized input. Operates on an already lowercased,
+/// whitespace-normalized string with no end clause.
+fn format_freq(base: &str) -> Option<String> {
+    match base {
+        "daily" => return Some("Daily".to_string()),
+        "weekly" => return Some("Weekly".to_string()),
+        "monthly" => return Some("Monthly".to_string()),
+        "yearly" => return Some("Yearly".to_string()),
+        "biweekly" => return Some("Biweekly".to_string()),
+        "fortnightly" => return Some("Fortnightly".to_string()),
+        "quarterly" => return Some("Quarterly".to_string()),
+        "weekdays" | "every weekday" | "every weekdays" => return Some("Weekdays".to_string()),
+        "weekends" => return Some("Weekends".to_string()),
+        _ => {}
+    }
+
+    let rest = base.strip_prefix("every ")?;
+
+    // `every mon, wed, fri` — all comma-tokens must be known 3-letter day
+    // names. Preserves the RAW token order (display doesn't normalize).
+    let tokens: Vec<&str> = rest.split(',').map(|t| t.trim()).collect();
+    if !rest.is_empty() && tokens.iter().all(|t| day_label(t).is_some()) {
+        let labels: Vec<&str> = tokens.iter().map(|t| day_label(t).unwrap()).collect();
+        return Some(labels.join(", "));
+    }
+
+    // `every other <unit>`.
+    if let Some(unit) = rest.strip_prefix("other ") {
+        let label = other_unit_label(unit)?;
+        return Some(format!("Every other {label}"));
+    }
+
+    // `every N days|weeks|months|years` — echoes the matched unit text
+    // verbatim (singular or plural), doesn't normalize plurality.
+    let (n_str, unit) = rest.split_once(' ')?;
+    if !n_str.is_empty()
+        && n_str.chars().all(|c| c.is_ascii_digit())
+        && other_unit_label(unit).is_some()
+    {
+        return Some(format!("Every {n_str} {unit}"));
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +817,118 @@ mod tests {
         assert_eq!(next_after(&weekdays, d(2026, 5, 10)), d(2026, 5, 11));
         // Mon 2026-05-11 → Tue 2026-05-12
         assert_eq!(next_after(&weekdays, d(2026, 5, 11)), d(2026, 5, 12));
+    }
+
+    // ── recognize (canonicalize) ────────────────────────────────────────
+
+    #[test]
+    fn recognize_simple_and_natural_cadences() {
+        assert_eq!(recognize("daily"), Some("daily".to_string()));
+        assert_eq!(recognize("every day"), Some("daily".to_string()));
+        assert_eq!(recognize("Biweekly"), Some("biweekly".to_string()));
+        assert_eq!(recognize("  Quarterly  "), Some("quarterly".to_string()));
+        assert_eq!(recognize("every weekday"), Some("weekdays".to_string()));
+        assert_eq!(recognize("weekends"), Some("weekends".to_string()));
+    }
+
+    #[test]
+    fn recognize_normalizes_every_n_and_other() {
+        // n == 1 collapses to the single-word cadence.
+        assert_eq!(recognize("every 1 day"), Some("daily".to_string()));
+        assert_eq!(recognize("every 1 week"), Some("weekly".to_string()));
+        // n > 1 normalizes the unit to plural regardless of input plurality.
+        assert_eq!(recognize("every 2 week"), Some("every 2 weeks".to_string()));
+        assert_eq!(recognize("every 3 days"), Some("every 3 days".to_string()));
+        // "every other <unit>" always normalizes to plural.
+        assert_eq!(
+            recognize("every other week"),
+            Some("every other weeks".to_string())
+        );
+        assert_eq!(
+            recognize("every other day"),
+            Some("every other days".to_string())
+        );
+        assert_eq!(recognize("every other decade"), None);
+    }
+
+    #[test]
+    fn recognize_byday_sorts_and_dedupes() {
+        assert_eq!(
+            recognize("every fri, mon"),
+            Some("every mon, fri".to_string())
+        );
+        assert_eq!(
+            recognize("every mon, wed, fri"),
+            Some("every mon, wed, fri".to_string())
+        );
+        assert_eq!(recognize("every mon, blarg"), None);
+    }
+
+    #[test]
+    fn recognize_end_clauses() {
+        assert_eq!(
+            recognize("every other week count 5"),
+            Some("every other weeks count 5".to_string())
+        );
+        assert_eq!(
+            recognize("every other month until 2027-06-01"),
+            Some("every other months until 2027-06-01".to_string())
+        );
+        assert_eq!(recognize("daily count 0"), None);
+        assert_eq!(recognize("daily until not-a-date"), None);
+    }
+
+    #[test]
+    fn recognize_rejects_garbage() {
+        assert_eq!(recognize(""), None);
+        assert_eq!(recognize("blarg"), None);
+        assert_eq!(recognize("every"), None);
+    }
+
+    // ── format ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_simple_cadences() {
+        assert_eq!(format("daily"), "Daily");
+        assert_eq!(format("weekly"), "Weekly");
+        assert_eq!(format("biweekly"), "Biweekly");
+        assert_eq!(format("Quarterly"), "Quarterly");
+        assert_eq!(format("every weekday"), "Weekdays");
+    }
+
+    #[test]
+    fn format_every_n_preserves_raw_plurality() {
+        // Display echoes the matched unit text verbatim — no pluralization.
+        assert_eq!(format("every 1 day"), "Every 1 day");
+        assert_eq!(format("every 2 weeks"), "Every 2 weeks");
+        assert_eq!(format("every other day"), "Every other day");
+    }
+
+    #[test]
+    fn format_byday_preserves_raw_order() {
+        // Display does NOT normalize BYDAY order (unlike `recognize`).
+        assert_eq!(format("every fri, mon"), "Fri, Mon");
+        assert_eq!(format("every mon, wed, fri"), "Mon, Wed, Fri");
+        // Full weekday names aren't in the display token table — falls
+        // back to the raw input unchanged.
+        assert_eq!(format("every monday"), "every monday");
+    }
+
+    #[test]
+    fn format_end_clauses() {
+        assert_eq!(
+            format("weekly until 2026-12-31"),
+            "Weekly until Dec 31, 2026"
+        );
+        assert_eq!(format("daily count 3"), "Daily, 3\u{d7}");
+        // count clause isn't validated as a number — echoed verbatim.
+        assert_eq!(format("daily count nope"), "Daily, nope\u{d7}");
+    }
+
+    #[test]
+    fn format_unrecognized_returns_input_unchanged() {
+        assert_eq!(format(""), "");
+        assert_eq!(format("blarg"), "blarg");
+        assert_eq!(format("every"), "every");
     }
 }

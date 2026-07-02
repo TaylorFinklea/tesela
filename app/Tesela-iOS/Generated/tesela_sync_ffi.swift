@@ -435,6 +435,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
     typealias FfiType = Int64
     typealias SwiftType = Int64
@@ -564,6 +580,29 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * work. The full envelope-bearing poll lands in B.2.
      */
     func pollCount(sinceSeq: Int64) async throws  -> PollProbeRecord
+    
+    /**
+     * Deposit a full set of per-note snapshots (tesela-zpr) — the FFI
+     * mirror of [`tesela_sync::transport::relay::RelayClient::put_snapshots`].
+     * See [`SyncEngineHandle::export_all_note_snapshots`] for building the
+     * `snapshots` argument. Returns the number of relay ops GC'd (0 for an
+     * inert `covers_seq = 0` deposit — see `put_snapshots_chunked` for why
+     * iOS deposits inertly).
+     */
+    func putSnapshots(coversSeq: Int64, snapshots: [NoteSnapshotRecord]) async throws  -> UInt64
+    
+    /**
+     * Chunked variant of [`Self::put_snapshots`] — the FFI mirror of
+     * [`tesela_sync::transport::relay::RelayClient::put_snapshots_chunked`].
+     * `RelayTicker` calls this (not `put_snapshots`) with `covers_seq = 0`
+     * on a cadence, mirroring the server's INERT heal-snapshot deposit
+     * (`tesela-server::sync_relay`'s broadcast-heal path): iOS contributes
+     * its resident notes to the relay's snapshot pool for other devices'
+     * GC-window bootstrap, without touching the group's compaction
+     * watermark — that stays the Mac's call, so iOS can never GC ops a
+     * peer hasn't applied yet.
+     */
+    func putSnapshotsChunked(coversSeq: Int64, snapshots: [NoteSnapshotRecord], budgetBytes: UInt64) async throws  -> SnapshotDepositReportRecord
     
     /**
      * Register this device's APNs push token so the relay can wake our
@@ -717,6 +756,59 @@ open func pollCount(sinceSeq: Int64)async throws  -> PollProbeRecord  {
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypePollProbeRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Deposit a full set of per-note snapshots (tesela-zpr) — the FFI
+     * mirror of [`tesela_sync::transport::relay::RelayClient::put_snapshots`].
+     * See [`SyncEngineHandle::export_all_note_snapshots`] for building the
+     * `snapshots` argument. Returns the number of relay ops GC'd (0 for an
+     * inert `covers_seq = 0` deposit — see `put_snapshots_chunked` for why
+     * iOS deposits inertly).
+     */
+open func putSnapshots(coversSeq: Int64, snapshots: [NoteSnapshotRecord])async throws  -> UInt64  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_put_snapshots(
+                    self.uniffiCloneHandle(),
+                    FfiConverterInt64.lower(coversSeq),FfiConverterSequenceTypeNoteSnapshotRecord.lower(snapshots)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterUInt64.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Chunked variant of [`Self::put_snapshots`] — the FFI mirror of
+     * [`tesela_sync::transport::relay::RelayClient::put_snapshots_chunked`].
+     * `RelayTicker` calls this (not `put_snapshots`) with `covers_seq = 0`
+     * on a cadence, mirroring the server's INERT heal-snapshot deposit
+     * (`tesela-server::sync_relay`'s broadcast-heal path): iOS contributes
+     * its resident notes to the relay's snapshot pool for other devices'
+     * GC-window bootstrap, without touching the group's compaction
+     * watermark — that stays the Mac's call, so iOS can never GC ops a
+     * peer hasn't applied yet.
+     */
+open func putSnapshotsChunked(coversSeq: Int64, snapshots: [NoteSnapshotRecord], budgetBytes: UInt64)async throws  -> SnapshotDepositReportRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_put_snapshots_chunked(
+                    self.uniffiCloneHandle(),
+                    FfiConverterInt64.lower(coversSeq),FfiConverterSequenceTypeNoteSnapshotRecord.lower(snapshots),FfiConverterUInt64.lower(budgetBytes)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSnapshotDepositReportRecord_lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -1315,6 +1407,18 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func ensureBuiltinViews() async throws 
     
     /**
+     * Export the current full Loro snapshot for every note this engine
+     * tracks (tesela-zpr). Mirrors the server's `deposit_snapshots`
+     * (`tesela-server::sync_relay`) — the iOS analogue backing
+     * `RelayClientHandle::put_snapshots_chunked` deposits from
+     * `RelayTicker`, so a device recovering from the relay's GC window
+     * can bootstrap from iOS-authored content too, not just the Mac's.
+     * Skips notes whose export fails (not resident / no doc) — same
+     * best-effort posture as the server side.
+     */
+    func exportAllNoteSnapshots() async  -> [NoteSnapshotRecord]
+    
+    /**
      * Import the server's full Loro snapshot for a note as an **authoritative
      * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
      * BlockUpsert resolves to the server's tree nodes instead of minting rival
@@ -1794,6 +1898,34 @@ open func ensureBuiltinViews()async throws   {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Export the current full Loro snapshot for every note this engine
+     * tracks (tesela-zpr). Mirrors the server's `deposit_snapshots`
+     * (`tesela-server::sync_relay`) — the iOS analogue backing
+     * `RelayClientHandle::put_snapshots_chunked` deposits from
+     * `RelayTicker`, so a device recovering from the relay's GC window
+     * can bootstrap from iOS-authored content too, not just the Mac's.
+     * Skips notes whose export fails (not resident / no doc) — same
+     * best-effort posture as the server side.
+     */
+open func exportAllNoteSnapshots()async  -> [NoteSnapshotRecord]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_export_all_note_snapshots(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeNoteSnapshotRecord.lift,
+            errorHandler: nil
+            
         )
 }
     
@@ -2702,6 +2834,77 @@ public func FfiConverterTypeIndexEntryRecord_lower(_ value: IndexEntryRecord) ->
 
 
 /**
+ * One note's full Loro snapshot, keyed by note id — see
+ * [`SyncEngineHandle::export_all_note_snapshots`] (producer) and
+ * [`RelayClientHandle::put_snapshots_chunked`] (consumer).
+ */
+public struct NoteSnapshotRecord: Equatable, Hashable {
+    /**
+     * 16-byte note id, opaque `stream_id` on the relay.
+     */
+    public var noteId: Data
+    /**
+     * Full compact Loro snapshot bytes for this note.
+     */
+    public var payload: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 16-byte note id, opaque `stream_id` on the relay.
+         */noteId: Data, 
+        /**
+         * Full compact Loro snapshot bytes for this note.
+         */payload: Data) {
+        self.noteId = noteId
+        self.payload = payload
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NoteSnapshotRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNoteSnapshotRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NoteSnapshotRecord {
+        return
+            try NoteSnapshotRecord(
+                noteId: FfiConverterData.read(from: &buf), 
+                payload: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NoteSnapshotRecord, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.noteId, into: &buf)
+        FfiConverterData.write(value.payload, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoteSnapshotRecord_lift(_ buf: RustBuffer) throws -> NoteSnapshotRecord {
+    return try FfiConverterTypeNoteSnapshotRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoteSnapshotRecord_lower(_ value: NoteSnapshotRecord) -> RustBuffer {
+    return FfiConverterTypeNoteSnapshotRecord.lower(value)
+}
+
+
+/**
  * Decoded view of a pairing code. Swift-friendly: all strings.
  */
 public struct PairingCodeRecord: Equatable, Hashable {
@@ -3143,6 +3346,92 @@ public func FfiConverterTypeRelaySnapshotRecord_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeRelaySnapshotRecord_lower(_ value: RelaySnapshotRecord) -> RustBuffer {
     return FfiConverterTypeRelaySnapshotRecord.lower(value)
+}
+
+
+/**
+ * Outcome of a chunked snapshot deposit — see
+ * [`RelayClientHandle::put_snapshots_chunked`].
+ */
+public struct SnapshotDepositReportRecord: Equatable, Hashable {
+    /**
+     * Number of relay ops GC'd by this deposit (0 for an inert
+     * `covers_seq = 0` deposit).
+     */
+    public var gc: UInt64
+    /**
+     * Number of `PUT /snapshot` chunks sent.
+     */
+    public var chunksSent: UInt32
+    /**
+     * Note ids whose single-snapshot size alone exceeded the relay's
+     * body cap and were skipped (never retried by halving — see
+     * `put_snapshots_chunked`'s doc comment on the inner client).
+     */
+    public var skippedStreamIds: [Data]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Number of relay ops GC'd by this deposit (0 for an inert
+         * `covers_seq = 0` deposit).
+         */gc: UInt64, 
+        /**
+         * Number of `PUT /snapshot` chunks sent.
+         */chunksSent: UInt32, 
+        /**
+         * Note ids whose single-snapshot size alone exceeded the relay's
+         * body cap and were skipped (never retried by halving — see
+         * `put_snapshots_chunked`'s doc comment on the inner client).
+         */skippedStreamIds: [Data]) {
+        self.gc = gc
+        self.chunksSent = chunksSent
+        self.skippedStreamIds = skippedStreamIds
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SnapshotDepositReportRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSnapshotDepositReportRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SnapshotDepositReportRecord {
+        return
+            try SnapshotDepositReportRecord(
+                gc: FfiConverterUInt64.read(from: &buf), 
+                chunksSent: FfiConverterUInt32.read(from: &buf), 
+                skippedStreamIds: FfiConverterSequenceData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SnapshotDepositReportRecord, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.gc, into: &buf)
+        FfiConverterUInt32.write(value.chunksSent, into: &buf)
+        FfiConverterSequenceData.write(value.skippedStreamIds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSnapshotDepositReportRecord_lift(_ buf: RustBuffer) throws -> SnapshotDepositReportRecord {
+    return try FfiConverterTypeSnapshotDepositReportRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSnapshotDepositReportRecord_lower(_ value: SnapshotDepositReportRecord) -> RustBuffer {
+    return FfiConverterTypeSnapshotDepositReportRecord.lower(value)
 }
 
 
@@ -3805,6 +4094,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
+    typealias SwiftType = [Data]
+
+    public static func write(_ value: [Data], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Data] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Data]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterData.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeIndexEntryRecord: FfiConverterRustBuffer {
     typealias SwiftType = [IndexEntryRecord]
 
@@ -3822,6 +4136,31 @@ fileprivate struct FfiConverterSequenceTypeIndexEntryRecord: FfiConverterRustBuf
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeIndexEntryRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNoteSnapshotRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [NoteSnapshotRecord]
+
+    public static func write(_ value: [NoteSnapshotRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNoteSnapshotRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NoteSnapshotRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NoteSnapshotRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNoteSnapshotRecord.read(from: &buf))
         }
         return seq
     }
@@ -3985,6 +4324,19 @@ public func encodePairingCode(groupIdHex: String, groupKeyHex: String, deviceIdH
 })
 }
 /**
+ * Human-readable rendering of a `recurring::` property value
+ * (tesela-pfix.2). Unrecognized input is returned unchanged — never
+ * errors. Backs the iOS `RecurrenceFormat` display path — see
+ * `tesela_core::recurrence::format`.
+ */
+public func formatRecurrence(value: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_format_recurrence(
+        FfiConverterString.lower(value),$0
+    )
+})
+}
+/**
  * Generate a fresh random device id (UUIDv7, hex-encoded). Used on
  * first run of the iOS app to mint the device's identity.
  */
@@ -4002,6 +4354,19 @@ public func generateDeviceIdHex() -> String  {
 public func generateGroupIdentity() -> GroupIdentityRecord  {
     return try!  FfiConverterTypeGroupIdentityRecord_lift(try! rustCall() {
     uniffi_tesela_sync_ffi_fn_func_generate_group_identity($0
+    )
+})
+}
+/**
+ * Recognize + canonicalize a `recurring::` property value (tesela-pfix.2).
+ * Returns the normalized storage form (e.g. `"every fri, mon"` →
+ * `"every mon, fri"`) on success, or `None` for unrecognized input. Backs
+ * the iOS DateParser recurrence path — see `tesela_core::recurrence::recognize`.
+ */
+public func parseRecurrence(input: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_parse_recurrence(
+        FfiConverterString.lower(input),$0
     )
 })
 }
@@ -4162,10 +4527,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_func_encode_pairing_code() != 5465) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_func_format_recurrence() != 24755) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_func_generate_device_id_hex() != 205) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_generate_group_identity() != 55706) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_parse_recurrence() != 29995) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_presence_open() != 33887) {
@@ -4193,6 +4564,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_poll_count() != 27172) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_put_snapshots() != 12367) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_put_snapshots_chunked() != 13082) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_register_device() != 2582) {
@@ -4235,6 +4612,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_ensure_builtin_views() != 59556) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_export_all_note_snapshots() != 9983) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 55621) {

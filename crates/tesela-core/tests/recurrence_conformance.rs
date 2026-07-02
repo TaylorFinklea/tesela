@@ -6,14 +6,19 @@
 //! straight from the real Rust parser (`tesela_core::recurrence::parse`),
 //! so the fixture can never drift from what Rust actually accepts.
 //!
-//! `canonical_display` has no Rust formatter to source from (recurrence.rs
-//! only parses/advances — it doesn't render), so per the bead's fallback
-//! rule it is canonicalized on the WEB TS output
-//! (`web/src/lib/recurrence-format.ts`'s `formatRecurrence`). The web and
-//! iOS conformance runners (`web/tests/unit/recurrence-conformance.test.mjs`,
+//! `canonical_display` is hand-canonicalized on the WEB TS output
+//! (`web/src/lib/recurrence-format.ts`'s `formatRecurrence`) — the web
+//! client keeps its own TS mirror until the wasm pipeline (tesela-pfix.5)
+//! lands. As of tesela-pfix.2, `tesela_core::recurrence::format` is ALSO
+//! a real Rust formatter (iOS now calls it through the FFI instead of
+//! carrying its own Swift mirror); `format_matches_rust_formatter` below
+//! asserts every case's `canonical_display` round-trips through it, so
+//! Rust/web/iOS can't silently drift apart. The web and iOS conformance
+//! runners (`web/tests/unit/recurrence-conformance.test.mjs`,
 //! `app/Tesela-iOS/Tests/RecurrenceConformanceTests.swift`) assert their
-//! REAL `formatRecurrence` / `RecurrenceFormat.human` output against this
-//! field, so drift between the two client mirrors is caught immediately.
+//! REAL `formatRecurrence` (web) / the FFI-backed `RecurrenceFormat.human`
+//! (iOS) output against this field too, so drift between the clients is
+//! caught immediately.
 //!
 //! Both `valid` and `canonical_display` are independent, structurally
 //! computed properties — `canonical_display` is NOT reset to the raw
@@ -47,7 +52,7 @@
 //! on-disk fixture has exactly one generator.
 
 use serde::Serialize;
-use tesela_core::recurrence::parse;
+use tesela_core::recurrence::{format, parse};
 
 #[derive(Serialize)]
 struct Case {
@@ -324,8 +329,8 @@ fn build_fixture() -> Fixture {
             "crates/tesela-core/tests/recurrence_conformance.rs from tesela_core::recurrence::parse.".to_string(),
             "Consumed by the same test (round-trip) plus the web (recurrence-conformance.test.mjs)".to_string(),
             "and iOS (RecurrenceConformanceTests.swift) mirrors. Rust is the source of truth for".to_string(),
-            "`valid`; `canonical_display` is sourced from web recurrence-format.ts (no Rust".to_string(),
-            "formatter exists) — see the module docs in recurrence_conformance.rs.".to_string(),
+            "`valid` AND (as of tesela-pfix.2) `canonical_display`, via tesela_core::recurrence::format".to_string(),
+            "— see the module docs in recurrence_conformance.rs.".to_string(),
             "".to_string(),
             "Case shape: { name, input, valid, canonical_display }".to_string(),
         ],
@@ -407,6 +412,29 @@ fn client_extraction_case_names_are_unique() {
     for (name, _, _, _) in client_extraction_raw_cases() {
         assert!(seen.insert(name), "duplicate client extraction case name: {name}");
     }
+}
+
+/// `tesela_core::recurrence::format` (the FFI-backed formatter iOS now
+/// calls, tesela-pfix.2) must reproduce the hand-canonicalized
+/// `canonical_display` column for every case — catches drift between the
+/// Rust formatter and the web/iOS mirrors immediately.
+#[test]
+fn format_matches_rust_formatter() {
+    let mut failures = Vec::new();
+    for (name, input, display) in raw_cases() {
+        let got = format(input);
+        if got != display {
+            failures.push(format!(
+                "  {name} — input {input:?}: expected {display:?}, got {got:?}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} case(s) diverged from tesela_core::recurrence::format:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// The extraction section exercises the trailing form of every new-grammar

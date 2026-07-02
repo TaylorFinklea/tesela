@@ -72,6 +72,24 @@ pub fn sync_schema_version() -> u32 {
     tesela_sync::SYNC_SCHEMA_VERSION
 }
 
+/// Recognize + canonicalize a `recurring::` property value (tesela-pfix.2).
+/// Returns the normalized storage form (e.g. `"every fri, mon"` →
+/// `"every mon, fri"`) on success, or `None` for unrecognized input. Backs
+/// the iOS DateParser recurrence path — see `tesela_core::recurrence::recognize`.
+#[uniffi::export]
+pub fn parse_recurrence(input: String) -> Option<String> {
+    tesela_core::recurrence::recognize(&input)
+}
+
+/// Human-readable rendering of a `recurring::` property value
+/// (tesela-pfix.2). Unrecognized input is returned unchanged — never
+/// errors. Backs the iOS `RecurrenceFormat` display path — see
+/// `tesela_core::recurrence::format`.
+#[uniffi::export]
+pub fn format_recurrence(value: String) -> String {
+    tesela_core::recurrence::format(&value)
+}
+
 /// Generate a fresh random device id (UUIDv7, hex-encoded). Used on
 /// first run of the iOS app to mint the device's identity.
 #[uniffi::export]
@@ -1186,6 +1204,28 @@ impl SyncEngineHandle {
             .map_err(FfiSyncError::from)
     }
 
+    /// Export the current full Loro snapshot for every note this engine
+    /// tracks (tesela-zpr). Mirrors the server's `deposit_snapshots`
+    /// (`tesela-server::sync_relay`) — the iOS analogue backing
+    /// `RelayClientHandle::put_snapshots_chunked` deposits from
+    /// `RelayTicker`, so a device recovering from the relay's GC window
+    /// can bootstrap from iOS-authored content too, not just the Mac's.
+    /// Skips notes whose export fails (not resident / no doc) — same
+    /// best-effort posture as the server side.
+    pub async fn export_all_note_snapshots(&self) -> Vec<NoteSnapshotRecord> {
+        let ids = self.inner.tracked_note_ids().await;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(payload) = self.inner.export_doc_update(id, None).await {
+                out.push(NoteSnapshotRecord {
+                    note_id: id.to_vec(),
+                    payload,
+                });
+            }
+        }
+        out
+    }
+
     /// All saved views from the synced views registry, sorted by
     /// `(order, id)` — deterministic across devices. Empty on a fresh
     /// device that has neither seeded nor synced yet. The registry doc
@@ -1883,6 +1923,84 @@ impl RelayClientHandle {
             .await
             .map_err(FfiSyncError::from)
     }
+
+    /// Deposit a full set of per-note snapshots (tesela-zpr) — the FFI
+    /// mirror of [`tesela_sync::transport::relay::RelayClient::put_snapshots`].
+    /// See [`SyncEngineHandle::export_all_note_snapshots`] for building the
+    /// `snapshots` argument. Returns the number of relay ops GC'd (0 for an
+    /// inert `covers_seq = 0` deposit — see `put_snapshots_chunked` for why
+    /// iOS deposits inertly).
+    pub async fn put_snapshots(
+        &self,
+        covers_seq: i64,
+        snapshots: Vec<NoteSnapshotRecord>,
+    ) -> Result<u64, FfiSyncError> {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = snapshots
+            .into_iter()
+            .map(|s| (s.note_id, s.payload))
+            .collect();
+        self.inner
+            .put_snapshots(covers_seq, pairs)
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// Chunked variant of [`Self::put_snapshots`] — the FFI mirror of
+    /// [`tesela_sync::transport::relay::RelayClient::put_snapshots_chunked`].
+    /// `RelayTicker` calls this (not `put_snapshots`) with `covers_seq = 0`
+    /// on a cadence, mirroring the server's INERT heal-snapshot deposit
+    /// (`tesela-server::sync_relay`'s broadcast-heal path): iOS contributes
+    /// its resident notes to the relay's snapshot pool for other devices'
+    /// GC-window bootstrap, without touching the group's compaction
+    /// watermark — that stays the Mac's call, so iOS can never GC ops a
+    /// peer hasn't applied yet.
+    pub async fn put_snapshots_chunked(
+        &self,
+        covers_seq: i64,
+        snapshots: Vec<NoteSnapshotRecord>,
+        budget_bytes: u64,
+    ) -> Result<SnapshotDepositReportRecord, FfiSyncError> {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = snapshots
+            .into_iter()
+            .map(|s| (s.note_id, s.payload))
+            .collect();
+        let report = self
+            .inner
+            .put_snapshots_chunked(covers_seq, pairs, budget_bytes as usize)
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(SnapshotDepositReportRecord {
+            gc: report.gc,
+            chunks_sent: report.chunks_sent,
+            skipped_stream_ids: report.skipped_streams,
+        })
+    }
+}
+
+/// One note's full Loro snapshot, keyed by note id — see
+/// [`SyncEngineHandle::export_all_note_snapshots`] (producer) and
+/// [`RelayClientHandle::put_snapshots_chunked`] (consumer).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NoteSnapshotRecord {
+    /// 16-byte note id, opaque `stream_id` on the relay.
+    pub note_id: Vec<u8>,
+    /// Full compact Loro snapshot bytes for this note.
+    pub payload: Vec<u8>,
+}
+
+/// Outcome of a chunked snapshot deposit — see
+/// [`RelayClientHandle::put_snapshots_chunked`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SnapshotDepositReportRecord {
+    /// Number of relay ops GC'd by this deposit (0 for an inert
+    /// `covers_seq = 0` deposit).
+    pub gc: u64,
+    /// Number of `PUT /snapshot` chunks sent.
+    pub chunks_sent: u32,
+    /// Note ids whose single-snapshot size alone exceeded the relay's
+    /// body cap and were skipped (never retried by halving — see
+    /// `put_snapshots_chunked`'s doc comment on the inner client).
+    pub skipped_stream_ids: Vec<Vec<u8>>,
 }
 
 /// Probe-only return shape — see [`RelayClientHandle::poll_count`].
@@ -1923,6 +2041,23 @@ mod tests {
     #[test]
     fn version_string_is_non_empty() {
         assert!(!tesela_sync_version().is_empty());
+    }
+
+    // --- recurrence (tesela-pfix.2) -----------------------------------------
+
+    #[test]
+    fn parse_recurrence_recognizes_and_canonicalizes() {
+        assert_eq!(
+            parse_recurrence("every fri, mon".to_string()),
+            Some("every mon, fri".to_string())
+        );
+        assert_eq!(parse_recurrence("blarg".to_string()), None);
+    }
+
+    #[test]
+    fn format_recurrence_renders_and_falls_back() {
+        assert_eq!(format_recurrence("daily count 3".to_string()), "Daily, 3×");
+        assert_eq!(format_recurrence("blarg".to_string()), "blarg");
     }
 
     // --- relay presence (Option B) -----------------------------------------
@@ -3490,6 +3625,89 @@ mod tests {
             b.views_list().await,
             a.views_list().await,
             "registries converge through the FFI delta path"
+        );
+    }
+
+    // ─── tesela-zpr: iOS snapshot deposit mirror ─────────────────────────
+
+    /// `export_all_note_snapshots` → `put_snapshots_chunked` (inert,
+    /// `covers_seq = 0`, mirroring `RelayTicker.depositSnapshotsIfDue`) →
+    /// a FRESH device's `fetch_snapshots` → `import_note_snapshot_by_id`
+    /// round-trips a note's content through the relay's snapshot pool —
+    /// the durability path the ARCH REVIEW flagged as Mac-only before this
+    /// bead. Also asserts the inert deposit does NOT advance the relay's
+    /// compaction watermark (iOS must never claim compaction authority).
+    #[tokio::test]
+    async fn export_all_note_snapshots_deposits_and_a_fresh_device_bootstraps() {
+        let (url, _relay_tmp, _srv) = spawn_relay().await;
+        let g = generate_group_identity();
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+
+        let (a, _coord_a) =
+            open_device(dir_a.path(), "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", &url, &g).await;
+
+        let slug = "zpr-note".to_string();
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            "ZPR".into(),
+            "- ios-authored content <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let snapshots = a.export_all_note_snapshots().await;
+        assert!(
+            !snapshots.is_empty(),
+            "the just-authored note must be tracked"
+        );
+
+        let relay_a = RelayClientHandle::new(
+            url.clone(),
+            g.group_id_hex.clone(),
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1".into(),
+            g.group_key_hex.clone(),
+        )
+        .unwrap();
+        relay_a.register_or_recover().await.expect("register");
+
+        // Inert deposit — covers_seq = 0, mirroring the iOS tick's posture.
+        let report = relay_a
+            .put_snapshots_chunked(0, snapshots, 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(report.gc, 0, "an inert covers_seq=0 deposit GCs nothing");
+        assert!(report.skipped_stream_ids.is_empty());
+
+        // A fresh device (C), never having talked to A, bootstraps purely
+        // from the deposited snapshot pool.
+        let c = open_handle(dir_c.path(), "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3").await;
+        let relay_c = RelayClientHandle::new(
+            url,
+            g.group_id_hex.clone(),
+            "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3".into(),
+            g.group_key_hex,
+        )
+        .unwrap();
+        relay_c.register_or_recover().await.expect("register");
+        let fetched = relay_c.fetch_snapshots().await.unwrap();
+        assert!(
+            !fetched.snapshots.is_empty(),
+            "the relay must serve back A's deposited snapshot"
+        );
+        for s in &fetched.snapshots {
+            c.import_note_snapshot_by_id(s.stream_id.clone(), s.payload.clone())
+                .await
+                .unwrap();
+        }
+
+        let note_id = stable_uuid_from_slug(&slug);
+        let rendered = c.inner.render_note(note_id).await.unwrap_or_default();
+        assert!(
+            rendered.contains("ios-authored content"),
+            "a fresh device recovers iOS-authored content purely from the deposited \
+             snapshot pool (no direct A<->C sync ever happened): {rendered:?}"
         );
     }
 }

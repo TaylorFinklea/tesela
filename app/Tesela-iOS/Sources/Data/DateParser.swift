@@ -43,19 +43,6 @@ private let MONTHS: [String: Int] = [
     "dec": 11, "december": 11,
 ]
 
-/// Weekday token → canonical 3-letter abbreviation
-private let WEEKDAY_TOKENS: [String: String] = [
-    "mon": "mon", "monday": "mon",
-    "tue": "tue", "tues": "tue", "tuesday": "tue",
-    "wed": "wed", "wednesday": "wed",
-    "thu": "thu", "thur": "thu", "thurs": "thu", "thursday": "thu",
-    "fri": "fri", "friday": "fri",
-    "sat": "sat", "saturday": "sat",
-    "sun": "sun", "sunday": "sun",
-]
-
-private let WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-
 // MARK: - Regex Patterns
 
 /// Trailing recurrence regex: requires leading whitespace so it only matches after a date prefix.
@@ -150,104 +137,13 @@ private extension NSRegularExpression {
 
 // MARK: - Recurrence Parsing
 
-/// Parse a recurrence phrase. Returns canonical string or nil if unrecognized.
+/// Recognize + canonicalize a recurrence phrase. Delegates to the Rust FFI
+/// (`tesela_core::recurrence::recognize`, exposed as `parseRecurrence`) —
+/// the standalone Swift mirror that used to live here was deleted in
+/// tesela-pfix.2. Returns the canonical storage string, or `nil` if
+/// unrecognized.
 func parseRecurrenceInput(_ input: String) -> String? {
-    let s = input.trimmingCharacters(in: .whitespaces).lowercased()
-        .components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined(separator: " ")
-    guard !s.isEmpty else { return nil }
-
-    // Split off a trailing end clause: " until YYYY-MM-DD" or " count N".
-    var base = s
-    var endClause = ""
-
-    if let untilRange = findLastOccurrence(" until ", in: s) {
-        let dateStr = String(s[untilRange.upperBound...]).trimmingCharacters(in: .whitespaces)
-        // Validate format
-        let isoRe = try! NSRegularExpression(pattern: "^\\d{4}-\\d{2}-\\d{2}$")
-        guard isoRe.firstMatch(in: dateStr) != nil else { return nil }
-        // Round-trip validate to catch overflow dates like 2026-02-30
-        let parts = dateStr.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        guard makeDate(parts[0], parts[1] - 1, parts[2]) != nil else { return nil }
-        base = String(s[s.startIndex..<untilRange.lowerBound])
-        endClause = " until \(dateStr)"
-    } else if let countRange = findLastOccurrence(" count ", in: s) {
-        let nStr = String(s[countRange.upperBound...]).trimmingCharacters(in: .whitespaces)
-        guard let n = Int(nStr), n >= 1 else { return nil }
-        base = String(s[s.startIndex..<countRange.lowerBound])
-        endClause = " count \(n)"
-    }
-
-    let freq = parseRecurrenceFreq(base)
-    return freq.map { $0 + endClause }
-}
-
-/// Find the last occurrence of a literal substring, returning its range in the source.
-private func findLastOccurrence(_ needle: String, in haystack: String) -> Range<String.Index>? {
-    var result: Range<String.Index>? = nil
-    var searchFrom = haystack.startIndex
-    while searchFrom < haystack.endIndex {
-        guard let r = haystack.range(of: needle, range: searchFrom..<haystack.endIndex) else { break }
-        result = r
-        searchFrom = haystack.index(after: r.lowerBound)
-    }
-    return result
-}
-
-private func parseRecurrenceFreq(_ base: String) -> String? {
-    switch base {
-    case "daily",   "every day":   return "daily"
-    case "weekly",  "every week":  return "weekly"
-    case "monthly", "every month": return "monthly"
-    case "yearly",  "annually",    "every year": return "yearly"
-    // Single-word cadences (Rust recurrence.rs, added 2026-06-20).
-    case "biweekly": return "biweekly"
-    case "fortnightly": return "fortnightly"
-    case "quarterly": return "quarterly"
-    case "weekdays": return "weekdays"
-    case "every weekday", "every weekdays": return "weekdays"
-    case "weekends": return "weekends"
-    default: break
-    }
-
-    guard base.hasPrefix("every ") else { return nil }
-    let rest = String(base.dropFirst(6))
-
-    // BYDAY: "every mon, wed, fri" — all comma-separated tokens must be weekdays.
-    let tokens = rest.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-    if !rest.isEmpty && tokens.allSatisfy({ WEEKDAY_TOKENS[$0] != nil }) {
-        var seen = [String: Bool]()
-        let canonicals: [String] = tokens.compactMap { WEEKDAY_TOKENS[$0] }.filter { seen.updateValue(true, forKey: $0) == nil }
-        let sorted = canonicals.sorted { (WEEKDAY_ORDER.firstIndex(of: $0) ?? 99) < (WEEKDAY_ORDER.firstIndex(of: $1) ?? 99) }
-        return "every \(sorted.joined(separator: ", "))"
-    }
-
-    // "every other <unit>" → interval 2 (added 2026-06-20).
-    if rest.hasPrefix("other ") {
-        let unit = String(rest.dropFirst(6))
-        let known: Set<String> = ["day", "days", "week", "weeks", "month", "months", "year", "years"]
-        guard known.contains(unit) else { return nil }
-        let plural = unit.hasSuffix("s") ? unit : unit + "s"
-        return "every other \(plural)"
-    }
-
-    // "every N <unit>"
-    let nUnitRe = try! NSRegularExpression(pattern: "^(\\d+) (day|days|week|weeks|month|months|year|years)$")
-    if let m = nUnitRe.firstMatch(in: rest) {
-        guard let nStr = nUnitRe.group(1, in: m, source: rest),
-              let unitStr = nUnitRe.group(2, in: m, source: rest),
-              let n = Int(nStr), n >= 1 else { return nil }
-        let unit = unitStr.hasSuffix("s") ? unitStr : unitStr + "s"
-        if n == 1 {
-            if unit == "days"   { return "daily" }
-            if unit == "weeks"  { return "weekly" }
-            if unit == "months" { return "monthly" }
-            if unit == "years"  { return "yearly" }
-        }
-        return "every \(n) \(unit)"
-    }
-
-    return nil
+    parseRecurrence(input: input)
 }
 
 // MARK: - Recurrence Extraction

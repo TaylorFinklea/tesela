@@ -4,8 +4,8 @@
     "crates/tesela-core/tests/recurrence_conformance.rs from tesela_core::recurrence::parse.",
     "Consumed by the same test (round-trip) plus the web (recurrence-conformance.test.mjs)",
     "and iOS (RecurrenceConformanceTests.swift) mirrors. Rust is the source of truth for",
-    "`valid`; `canonical_display` is sourced from web recurrence-format.ts (no Rust",
-    "formatter exists) — see the module docs in recurrence_conformance.rs.",
+    "`valid` AND (as of tesela-pfix.2) `canonical_display`, via tesela_core::recurrence::format",
+    "— see the module docs in recurrence_conformance.rs.",
     "",
     "Case shape: { name, input, valid, canonical_display }"
   ],

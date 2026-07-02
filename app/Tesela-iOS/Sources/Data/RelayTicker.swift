@@ -193,6 +193,30 @@ final class RelayTicker: ObservableObject {
     static func outboundCursorKey(scope: String) -> String {
         "relay.outboundCursorNtp.\(scope)"
     }
+    /// Persisted wall-clock (seconds since epoch) of this device's last
+    /// snapshot deposit, scoped per (relay, group) identity like the
+    /// cursors above — see `depositSnapshotsIfDue` (tesela-zpr).
+    static func snapshotDepositAtKey(scope: String) -> String {
+        "relay.lastSnapshotDepositAt.\(scope)"
+    }
+    /// Snapshot-deposit cadence, mirroring the server's default
+    /// (`tesela-server::sync_relay::snapshot_interval_secs`, 5 minutes).
+    /// Not env-tunable on iOS — the server side already exercises the
+    /// gate's tunability for tests; iOS just needs a sane fixed cadence.
+    static let snapshotDepositIntervalSeconds: TimeInterval = 300
+    /// Per-request body budget for `putSnapshotsChunked`, mirroring the
+    /// server's default (`deposit_chunk_budget_bytes`, 4 MiB) — comfortable
+    /// headroom under the HA relay's cap; the 413-adaptive halving inside
+    /// `put_snapshots_chunked` degrades further for a tighter cap (e.g. the
+    /// CF Worker's 1 MiB default) automatically.
+    static let snapshotDepositBudgetBytes: UInt64 = 4 * 1024 * 1024
+    /// Pure cadence gate (mirrors the server's `due` check in
+    /// `sync_relay::tick`): is a new snapshot deposit due, given the last
+    /// deposit's wall-clock (`nil` = never deposited) and now?
+    static func shouldDepositSnapshots(lastDepositAt: Date?, now: Date) -> Bool {
+        guard let lastDepositAt else { return true }
+        return now.timeIntervalSince(lastDepositAt) >= snapshotDepositIntervalSeconds
+    }
     /// Seconds to sleep before the next tick given `consecutiveErrors`.
     /// Exponential (doubling) backoff from `base`, hard-capped at
     /// `maxSeconds`. The cap is on the RESULTING SECONDS, not the shift
@@ -1091,6 +1115,13 @@ final class RelayTicker: ObservableObject {
             // Idempotent + best-effort; the guard makes this a no-op on every
             // tick after the first successful registration.
             await maybeRegisterApnsToken()
+            // tesela-zpr: mirror the server's snapshot-deposit cadence gate
+            // so iOS contributes its resident notes to the relay's snapshot
+            // pool too (durability — see `depositSnapshotsIfDue`'s doc
+            // comment). Best-effort; a failure here doesn't fail the tick.
+            if let relay, let engine, let scope = tickScope {
+                await depositSnapshotsIfDue(relay: relay, engine: engine, scope: scope)
+            }
         } catch let err as FfiSyncError {
             lastError = err.localizedDescription
             consecutiveErrors = consecutiveErrors &+ 1
@@ -1466,6 +1497,44 @@ final class RelayTicker: ObservableObject {
             // Snapshot fetch failed (network). Best-effort: a pending
             // note resurfaces on its next inbound delta; `lastError` is
             // not set here so a one-off blip doesn't flag the whole tick.
+        }
+    }
+
+    /// tesela-zpr: mirror iOS's resident notes into the relay's snapshot
+    /// pool on a cadence, so a device recovering past the relay's GC window
+    /// can bootstrap from iOS-authored content — not just the Mac's (ARCH
+    /// REVIEW 2026-07-01: today only `tesela-server` deposits, making the
+    /// Mac a silent single point of durability).
+    ///
+    /// Mirrors the server's snapshot-deposit posture (`tesela-server::
+    /// sync_relay::tick`'s heal-snapshot deposit) but takes the MINIMAL
+    /// sensible subset: a cadence gate (`shouldDepositSnapshots`,
+    /// `snapshotDepositIntervalSeconds`) instead of the server's per-note
+    /// content-hash throttle — iOS's tick loop runs far more often than the
+    /// server's, so a 5-minute cadence alone already keeps deposits rare.
+    /// Deliberately **always inert** (`coversSeq = 0`): iOS never advances
+    /// the group's compaction watermark, so it can never GC an op a peer
+    /// hasn't applied yet — that stays the Mac's call.
+    private func depositSnapshotsIfDue(
+        relay: RelayClientHandle,
+        engine: SyncEngineHandle,
+        scope: String
+    ) async {
+        let key = Self.snapshotDepositAtKey(scope: scope)
+        let lastAt = (UserDefaults.standard.object(forKey: key) as? Double).map(Date.init(timeIntervalSince1970:))
+        guard Self.shouldDepositSnapshots(lastDepositAt: lastAt, now: Date()) else { return }
+        let snapshots = await engine.exportAllNoteSnapshots()
+        guard !snapshots.isEmpty else { return }
+        do {
+            _ = try await relay.putSnapshotsChunked(
+                coversSeq: 0,
+                snapshots: snapshots,
+                budgetBytes: Self.snapshotDepositBudgetBytes
+            )
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key)
+        } catch {
+            // Best-effort: leave the cadence stamp unset so the next tick
+            // retries promptly instead of waiting out the full window.
         }
     }
 
