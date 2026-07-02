@@ -4,7 +4,9 @@
   import { goto } from "$app/navigation";
   import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
   import { getGroupByProp, setGroupByProp } from "$lib/stores/tag-view-prefs.svelte";
+  import { resolveKanbanGroupBy, isSelectWithChoices } from "$lib/kanban-group-by";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
+  import type { QueryItem } from "$lib/types/QueryItem";
   import type { Note } from "$lib/types/Note";
   import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import type { PropertyDef } from "$lib/types/PropertyDef";
@@ -14,19 +16,87 @@
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
-  let { tagName, focused = false }: { tagName: string; focused?: boolean } = $props();
+  let {
+    dsl,
+    tagName = null,
+    viewId = null,
+    displayGroupBy = null,
+    groupByStorageKey,
+    focused = false,
+  }: {
+    /** tesela-ya4.1 — DSL string this board's cards come from. The single,
+     *  generalized block source (spec decision 2/G3): `executeQuery(dsl)`,
+     *  grouped client-side. `Kind` defaults to `block` in the parser, so a
+     *  bare `tag:X` and an arbitrary non-tag-scoped filter both work. */
+    dsl: string;
+    /** Resolved tag name when the DSL is tag-scoped (first positive `tag:X`
+     *  filter) — drives the type's own declared property order for the
+     *  group-by candidate list (decision 3c) and legacy tag-keyed
+     *  localStorage. `null` for a non-tag-scoped query (G2). */
+    tagName?: string | null;
+    /** Non-null when this board renders a saved view (`ViewRecord.id`) —
+     *  group-by changes persist via `updateView` instead of localStorage
+     *  (decision 4/5). */
+    viewId?: string | null;
+    /** The saved view's `display_group_by` — highest-priority group-by
+     *  resolution (decision 3a). `null` outside a saved-view context. */
+    displayGroupBy?: string | null;
+    /** localStorage key for the per-surface group-by pref (decision 3b) —
+     *  `tagName` for tag-scoped boards (preserves existing tag-page prefs),
+     *  the widget id otherwise. */
+    groupByStorageKey: string;
+    focused?: boolean;
+  } = $props();
 
   const queryClient = useQueryClient();
 
+  // Only fetched when the DSL is tag-scoped — the type's own declared
+  // property list gives the (c) candidate order tag-page kanban has always
+  // used. A non-tag-scoped query has no single type to enumerate.
   const typeQuery = createQuery(() => ({
-    queryKey: ["type", tagName] as const,
-    queryFn: () => api.getType(tagName),
+    queryKey: ["type", tagName ?? ""] as const,
+    queryFn: () => api.getType(tagName as string),
+    enabled: !!tagName,
   }));
 
-  const blocksQuery = createQuery(() => ({
-    queryKey: ["typed-blocks", tagName] as const,
-    queryFn: () => api.getTypedBlocks(tagName),
+  // tesela-ya4.1 — single generalized block source (spec decision 2):
+  // executeQuery(dsl), ungrouped (group=null yields one flat bucket, see
+  // `apply_group`), grouped into kanban columns client-side below. Replaces
+  // `getTypedBlocks`, which (a) only works for tag-scoped boards (G2) and
+  // (b) is NOT membership-equivalent to `executeQuery("tag:X kind:block")`
+  // — a block nested under a tagged parent is included by the `tag:`
+  // predicate's inherited-tags chain but excluded by `getTypedBlocks`'s
+  // direct-tags-only check (proven divergent by
+  // `crates/tesela-core/tests/typed_blocks_query_equivalence.rs`).
+  const kanbanQueryKey = $derived(["kanban-source", dsl] as const);
+  const kanbanSourceQuery = createQuery(() => ({
+    queryKey: kanbanQueryKey,
+    queryFn: () => api.executeQuery(dsl, null, null),
+    enabled: dsl.trim().length > 0,
   }));
+
+  /** Adapt one flat `executeQuery` row into the `ParsedBlock` shape the
+   *  board/card/move machinery already speaks. `QueryItem` has no `bid` —
+   *  writes fall back to the line-addressed `block_id`, same as
+   *  QueryWidgetView's list/table rows already do (they never had a bid
+   *  either). Callers filter out page-kind rows (`block_id === null`)
+   *  before mapping — kanban only shows blocks. */
+  function queryItemToParsedBlock(item: QueryItem): ParsedBlock {
+    return {
+      id: item.block_id as string,
+      bid: null,
+      text: item.text,
+      raw_text: item.text,
+      tags: item.primary_tag ? [item.primary_tag] : [],
+      inline_tags: [],
+      trailing_tags: [],
+      inherited_tags: [],
+      properties: item.properties,
+      indent_level: 0,
+      note_id: item.page_id,
+      parent_note_type: item.page_note_type,
+    };
+  }
 
   // Phase 11 — property registry powers card chip rendering. Reuses the
   // same buildRegistry that BlockOutliner uses inline so cards inherit any
@@ -40,23 +110,102 @@
   const propertyRegistry = $derived(buildRegistry((allNotesQuery.data ?? []) as Note[]));
 
   const typeDef: TypeDefinition | undefined = $derived(typeQuery.data as TypeDefinition | undefined);
-  const blocks: ParsedBlock[] = $derived((blocksQuery.data ?? []) as ParsedBlock[]);
-
-  // Only properties with value_type "select" and defined choices
-  const selectProperties = $derived(
-    (typeDef?.properties ?? []).filter(
-      (p): p is PropertyDef & { values: string[] } => p.value_type === "select" && Array.isArray(p.values) && p.values.length > 0,
-    ),
-  );
-
-  // Resolve group-by property: stored preference or first select property
-  const groupByPropName = $derived.by(() => {
-    const stored = getGroupByProp(tagName);
-    if (stored && selectProperties.some((p) => p.name === stored)) return stored;
-    return selectProperties[0]?.name ?? "";
+  const blocks: ParsedBlock[] = $derived.by(() => {
+    const result = kanbanSourceQuery.data;
+    if (!result) return [];
+    return result.groups
+      .flatMap((g) => g.items)
+      .filter((item): item is QueryItem & { block_id: string } => item.block_id !== null)
+      .map(queryItemToParsedBlock);
   });
 
-  const groupByDef = $derived(selectProperties.find((p) => p.name === groupByPropName));
+  // Global property registry — the group-by candidate source for
+  // non-tag-scoped queries (no type to enumerate), and the fallback lookup
+  // for resolving an explicit override that isn't among a tag's own
+  // declared properties.
+  const propertiesQuery = createQuery(() => ({
+    queryKey: ["properties"] as const,
+    queryFn: () => api.listProperties(),
+  }));
+  const globalProperties = $derived((propertiesQuery.data ?? []) as PropertyDef[]);
+
+  // Group-by candidates for decision-3(c) "first select property with ≥1
+  // choice": a tag-scoped board uses the TYPE's own declared property order
+  // (existing tag-page behavior, unchanged). A non-tag-scoped query has no
+  // type to enumerate, so candidates are the global select properties that
+  // actually appear on ≥1 returned block — an irrelevant global default
+  // would be worse than the honest empty state (decision 3d).
+  const selectProperties = $derived.by(() => {
+    if (tagName) return (typeDef?.properties ?? []).filter(isSelectWithChoices);
+    const present = new Set<string>();
+    for (const b of blocks) for (const k of Object.keys(b.properties)) present.add(k.toLowerCase());
+    return globalProperties.filter((p) => isSelectWithChoices(p) && present.has(p.name.toLowerCase()));
+  });
+
+  /** Resolve ANY property name (not just a `selectProperties` candidate) to
+   *  its select-type def — an explicit `displayGroupBy` or stored pref must
+   *  be honored even when no currently-visible block carries that property
+   *  (decisions 3a/3b outrank "does the data have it"). */
+  function resolvePropDef(name: string): (PropertyDef & { values: string[] }) | undefined {
+    const fromType = tagName ? (typeDef?.properties ?? []).find((p) => p.name === name) : undefined;
+    const def = fromType ?? globalProperties.find((p) => p.name === name);
+    return def && isSelectWithChoices(def) ? (def as PropertyDef & { values: string[] }) : undefined;
+  }
+
+  // Group-by resolution (spec decision 3, locked order) — the pure
+  // resolution logic lives in `kanban-group-by.ts` so the acceptance
+  // contract (a > b > c > d) is unit-testable without mounting this
+  // component. (d) honest empty state is handled by the render branch
+  // below via `!groupByPropName`.
+  //
+  // (b) is the TAG PAGE's own localStorage pref (decision 3b says
+  // "per-surface localStorage pref (tag page)"; decision 4 confirms a
+  // saved-view board never WRITES there — `handleGroupByChange` below only
+  // calls `setGroupByProp` when `viewId` is unset). `groupByStorageKey`
+  // collapses to the bare tag name for any tag-scoped board, so a saved
+  // view scoped to the same tag as a tag-page/plain-widget board would
+  // otherwise read that OTHER surface's pref here. Gate the read the same
+  // way the write is already gated: a saved view (`viewId` set) skips (b)
+  // entirely and falls through straight to (c).
+  const groupByPropName = $derived(
+    resolveKanbanGroupBy({
+      displayGroupBy,
+      storedPref: viewId ? null : getGroupByProp(groupByStorageKey) || null,
+      candidates: selectProperties,
+      resolveDef: resolvePropDef,
+    }),
+  );
+
+  const groupByDef = $derived(groupByPropName ? resolvePropDef(groupByPropName) : undefined);
+
+  // Options for the group-by <select>: the (c) candidate list, plus the
+  // currently-resolved property when an (a)/(b) override picked something
+  // outside that list — keeps the dropdown's selection consistent with
+  // what's actually rendered.
+  const groupByOptions = $derived.by(() => {
+    const opts = [...selectProperties];
+    if (groupByPropName && groupByDef && !opts.some((p) => p.name === groupByPropName)) {
+      opts.unshift(groupByDef);
+    }
+    return opts;
+  });
+
+  /** Persist a group-by change per decision 4/5: a saved-view board
+   *  (`viewId` set) round-trips through `updateView` so `display_group_by`
+   *  is round-trip-authoritative; a tag-page / plain-widget board keeps the
+   *  existing localStorage pref. */
+  async function handleGroupByChange(newProp: string) {
+    if (viewId) {
+      try {
+        await api.updateView(viewId, { display_group_by: newProp });
+        queryClient.invalidateQueries({ queryKey: ["views"] });
+      } catch (err) {
+        console.error("Failed to persist saved-view group-by:", err);
+      }
+    } else {
+      setGroupByProp(groupByStorageKey, newProp);
+    }
+  }
 
   // Column names: Unset first, then canonical order from PropertyDef.values
   const columnNames = $derived(["__unset__", ...(groupByDef?.values ?? [])]);
@@ -115,9 +264,9 @@
 
     try {
       if (column === "__unset__") {
-        await clearBlockProperty({ block, propKey: groupByPropName, tagName, queryClient });
+        await clearBlockProperty({ block, propKey: groupByPropName, queryKey: kanbanQueryKey, queryClient });
       } else {
-        await updateBlockProperty({ block, propKey: groupByPropName, value: column, tagName, queryClient });
+        await updateBlockProperty({ block, propKey: groupByPropName, value: column, queryKey: kanbanQueryKey, queryClient });
       }
     } catch (err) {
       console.error("Failed to move card:", err);
@@ -149,9 +298,9 @@
 
     try {
       if (column === "__unset__") {
-        await clearBlockProperty({ block, propKey: groupByPropName, tagName, queryClient });
+        await clearBlockProperty({ block, propKey: groupByPropName, queryKey: kanbanQueryKey, queryClient });
       } else {
-        await updateBlockProperty({ block, propKey: groupByPropName, value: column, tagName, queryClient });
+        await updateBlockProperty({ block, propKey: groupByPropName, value: column, queryKey: kanbanQueryKey, queryClient });
       }
     } catch (err) {
       console.error("Failed to move card:", err);
@@ -173,7 +322,7 @@
 
   // Shift+H/L move helper. Drops the focused card into the column at
   // `targetIdx` and parks `pendingFocusBlockId` so the effect below can
-  // resolve the card's actual landing index once the typed-blocks query
+  // resolve the card's actual landing index once the kanban source query
   // refetches. Block order in a column follows source-file order (not
   // append-to-end), so we cannot guess the index up-front.
   let pendingFocusBlockId = $state<string | null>(null);
@@ -185,9 +334,9 @@
     focusedColIndex = targetIdx;
     try {
       if (targetCol === "__unset__") {
-        await clearBlockProperty({ block, propKey: groupByPropName, tagName, queryClient });
+        await clearBlockProperty({ block, propKey: groupByPropName, queryKey: kanbanQueryKey, queryClient });
       } else {
-        await updateBlockProperty({ block, propKey: groupByPropName, value: targetCol, tagName, queryClient });
+        await updateBlockProperty({ block, propKey: groupByPropName, value: targetCol, queryKey: kanbanQueryKey, queryClient });
       }
     } catch (err) {
       console.error("Failed to move card:", err);
@@ -344,11 +493,16 @@
 
 <svelte:window onkeydown={handleKanbanKeydown} />
 
-{#if blocksQuery.isLoading || typeQuery.isLoading}
+{#if kanbanSourceQuery.isLoading || (tagName && typeQuery.isLoading)}
   <div class="text-[12px] text-muted-foreground py-4">Loading...</div>
-{:else if selectProperties.length === 0}
+{:else if !groupByPropName}
+  <!-- Decision 3(d) — honest empty state. Never silently fall back to a
+       list under a kanban toggle: if nothing groupable was found (no
+       explicit display_group_by, no stored pref, no select property with
+       choices), say so instead of pretending the board is empty. -->
   <div class="text-[12px] text-muted-foreground py-4 italic">
-    No select properties defined. Add a select property to use Kanban view.
+    No groupable select property found for this view. Add a select property
+    with choices, or set a group-by on this view.
   </div>
 {:else}
   <!-- Group-by picker -->
@@ -356,11 +510,11 @@
     <span class="text-[10px] text-muted-foreground/60 uppercase tracking-widest">Group by</span>
     <select
       value={groupByPropName}
-      onchange={(e) => setGroupByProp(tagName, (e.target as HTMLSelectElement).value)}
+      onchange={(e) => void handleGroupByChange((e.target as HTMLSelectElement).value)}
       class="text-[11px] px-2 py-0.5 rounded-md border transition-colors outline-none"
       style="background: var(--surface); border-color: var(--border); color: var(--foreground)"
     >
-      {#each selectProperties as prop}
+      {#each groupByOptions as prop}
         <option value={prop.name}>{prop.name}</option>
       {/each}
     </select>
@@ -420,7 +574,7 @@
             >
               <KanbanCard
                 {block}
-                properties={typeDef?.properties ?? []}
+                properties={tagName ? (typeDef?.properties ?? []) : globalProperties}
                 groupByProp={groupByPropName}
                 {propertyRegistry}
                 isFocused={isCardFocused}

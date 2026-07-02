@@ -110,6 +110,10 @@
           section: "saved",
           view: displayMode,
           system: false,
+          // ya4.1 — marks this widget as a saved-view mount so KanbanBoard's
+          // group-by resolution decision 3a fires and group-by changes
+          // round-trip through `updateView` instead of localStorage.
+          viewId: selected.id,
         }
       : null,
   );

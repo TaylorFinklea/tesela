@@ -36,4 +36,14 @@ export type Widget = {
    * if the user deleted them. User-authored widgets have `system: false`.
    */
   system: boolean;
+  /**
+   * ya4.1 — set to the saved view's id when this widget is a synthetic
+   * table/kanban mount OVER a saved view (`GrInbox`'s `modeWidget`).
+   * `undefined`/`null` for a plain Query-note widget. Distinguishes
+   * "explicit `display_group_by` on the active saved view" (group-by
+   * resolution decision 3a, persists via `updateView`) from a Query note's
+   * `group::` frontmatter, which kanban does not treat as an override
+   * (unchanged from before this bead).
+   */
+  viewId?: string | null;
 };

@@ -128,7 +128,7 @@
         block: editingBlock,
         propKey: editingProp.name,
         value,
-        tagName,
+        queryKey: ["typed-blocks", tagName],
         queryClient,
       });
     } catch (e) {

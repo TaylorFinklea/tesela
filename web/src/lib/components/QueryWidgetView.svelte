@@ -72,10 +72,13 @@
   });
 
   /**
-   * Pull the first positive `tag:X` filter out of the query DSL — that's
-   * the tag whose blocks the kanban renders. Returns null when the query
-   * isn't tag-scoped (e.g. `kind:page note_type:Project`); the kanban
-   * view falls back to the table list in that case.
+   * Pull the first positive `tag:X` filter out of the query DSL. Used to
+   * key the tag-page localStorage group-by pref and to give the kanban
+   * board the type's own declared property order (decision 3c). `null`
+   * when the query isn't tag-scoped (e.g. `kind:page note_type:Project`)
+   * — kanban still renders (tesela-ya4.1/G2: the block source generalized
+   * to `executeQuery`, so a non-tag-scoped view no longer silently falls
+   * back to the table list).
    */
   const inferredKanbanTag: string | null = $derived.by(() => {
     if (!widget.query) return null;
@@ -86,7 +89,7 @@
     } catch { return null; }
   });
 
-  const showKanban = $derived(widgetView === "kanban" && inferredKanbanTag !== null);
+  const showKanban = $derived(widgetView === "kanban");
 
   function handleViewChange(mode: string) {
     if (mode === "table" || mode === "kanban") setViewMode(widget.id, mode);
@@ -467,7 +470,7 @@
 <div class="qwv" tabindex="0" bind:this={rootEl} onkeydown={handleKeydown}>
   <div class="qwv-header">
     <div class="qwv-meta">{view.subtitle}</div>
-    {#if inferredKanbanTag}
+    {#if widget.query.trim().length > 0}
       <ViewSwitcher
         views={[
           { id: "table",  label: "Table",  Icon: IconTable },
@@ -478,8 +481,22 @@
       />
     {/if}
   </div>
-  {#if showKanban && inferredKanbanTag}
-    <KanbanBoard tagName={inferredKanbanTag} focused={true} />
+  {#if showKanban}
+    <!-- tesela-ya4.1 — generalized kanban block source (decision 2/G2):
+         KanbanBoard is fully driven by the DSL now, tag-scoped or not.
+         `viewId`/`displayGroupBy` only carry the saved-view override
+         (decision 3a) when `widget.viewId` marks this as a saved-view
+         mount (`GrInbox`'s `modeWidget`) — a plain Query-note widget's
+         `group::` frontmatter is NOT treated as an override, matching the
+         pre-ya4.1 tag-page kanban behavior. -->
+    <KanbanBoard
+      dsl={widget.query}
+      tagName={inferredKanbanTag}
+      viewId={widget.viewId ?? null}
+      displayGroupBy={widget.viewId ? widget.group : null}
+      groupByStorageKey={inferredKanbanTag ?? widget.id}
+      focused={true}
+    />
   {:else if view.error}
     <div class="qwv-error">Query error: {view.error}</div>
   {:else if view.groups}
