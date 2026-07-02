@@ -316,11 +316,17 @@ struct GrSettingsView: View {
         }
     }
 
+    /// `.relay` mode never talks to `backend.serverURL` (see
+    /// `BackendSettings.resolveBackend` — relay ignores the server URL
+    /// entirely), so showing it here as the "Connected" detail was the
+    /// dead `127.0.0.1:7474` that actively misled diagnosis (tesela-4mc).
+    /// The real address lives in `relayTicker.relayURL`, shown in the
+    /// Sync section below; this row shows nothing extra for relay mode.
     private var statusDetail: String? {
         switch mosaic.connection {
         case .failed(let msg): return msg
-        case .ready:           return backend.serverURL
-        case .connecting:      return backend.serverURL
+        case .ready:           return backend.mode == .relay ? nil : backend.serverURL
+        case .connecting:      return backend.mode == .relay ? nil : backend.serverURL
         default:               return nil
         }
     }
@@ -513,6 +519,8 @@ struct GrSettingsView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     VStack(spacing: 0) {
+                        metricRow("Relay URL", relayTicker.relayURL ?? "resolving…")
+                        metricRow("Last push", relativeTime(relayTicker.lastSuccessfulPushAt))
                         metricRow("Last tick", relativeTime(relayTicker.lastTickAt))
                         metricRow("Last received", "\(relayTicker.lastApplied) op\(relayTicker.lastApplied == 1 ? "" : "s")")
                         metricRow("Last sent", "\(relayTicker.lastSent) op\(relayTicker.lastSent == 1 ? "" : "s")")

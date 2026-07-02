@@ -568,9 +568,21 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Mirror of `scheduleWriteback` for yesterday's daily. Routes
     /// through `pushPage` since yesterday isn't tracked under
     /// `serverDailyId`.
+    ///
+    /// `beginLocalWriteSuppression()` fires HERE, synchronously, before the
+    /// `Task` is even scheduled — matching `scheduleWriteback`'s (today's)
+    /// ordering. `pushPage` opens its own suppression window too, but only
+    /// once the Task actually runs; the gap between the optimistic local
+    /// mutation (e.g. `deleteYesterdayBlock`'s `removeAll`) and that Task
+    /// firing let a same-tick `applyRemoteChange()` (relay tick's
+    /// `onAppliedChanges` seam) see suppression as inactive, refresh from
+    /// the not-yet-updated local sandbox file, and resurrect the
+    /// just-deleted block for a tick (tesela-z1e). Opening the window here
+    /// closes it for the whole yesterday family (create/edit/delete/indent).
     private func scheduleYesterdayWriteback() {
         let slug = yesterdayId
         guard !slug.isEmpty else { return }
+        beginLocalWriteSuppression()
         let snapshot = yesterdayBlocks
         Task { await pushPage(id: slug, blocks: snapshot) }
     }
@@ -4401,6 +4413,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     func testableWaitForPendingTasks() async {
         try? await Task.sleep(nanoseconds: 1_000_000)
+    }
+
+    /// True while a local write's remote-refresh suppression window is
+    /// open. Exposes `suppressRemoteUntil` so a regression test can assert
+    /// the window opens SYNCHRONOUSLY — before the writeback's async
+    /// `Task` has even run — rather than only once that Task reaches
+    /// `pushPage`'s own `beginLocalWriteSuppression()` call (tesela-z1e:
+    /// the yesterday-block delete flicker).
+    func testableIsRemoteSuppressionActive() -> Bool {
+        guard let until = suppressRemoteUntil else { return false }
+        return until > Date()
     }
 }
 

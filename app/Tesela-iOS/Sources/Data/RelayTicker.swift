@@ -37,6 +37,20 @@ final class RelayTicker: ObservableObject {
     /// Ops sent on the last outbound tick (0 ≡ engine had nothing
     /// new authored since the last push).
     @Published private(set) var lastSent: UInt32 = 0
+    /// Wall-clock of the last outbound tick that actually delivered ops to
+    /// the relay (`opsSent > 0` and no batch failed) — distinct from
+    /// `lastTickAt`, which advances on every tick even when nothing was
+    /// sent. Settings → Sync (tesela-4mc) shows this as the honest
+    /// "last-successful-push age" instead of conflating it with tick
+    /// cadence.
+    @Published private(set) var lastSuccessfulPushAt: Date? = nil
+    /// This device's own relay URL, resolved from the cached pairing code
+    /// the moment the coordinator is (re)built (`buildCoordinator`).
+    /// Settings → Sync (tesela-4mc) surfaces this instead of the HTTP
+    /// `backend.serverURL`, which in `.relay` mode still holds whatever
+    /// loopback/LAN address was last typed into the `.http` field and is
+    /// never the address actually used for sync.
+    @Published private(set) var relayURL: String? = nil
     /// DIAGNOSTIC (2026-06-25, build 50): the last today-block splice's
     /// outcome — slug, the spliceBlockText op count (`applied`, normally
     /// discarded), and the resulting outbound `sent`/`failed`. Surfaced in
@@ -470,6 +484,18 @@ final class RelayTicker: ObservableObject {
         } else {
             lastError = nil
         }
+        if Self.isSuccessfulPush(opsSent: outcome.opsSent, batchesFailed: outcome.batchesFailed) {
+            lastSuccessfulPushAt = Date()
+        }
+    }
+
+    /// Pure predicate: does this outbound-tick outcome represent an actual
+    /// successful PUSH — as opposed to an empty poll (`opsSent == 0`, e.g.
+    /// nothing new authored) or a failed batch? Extracted for unit testing
+    /// (tesela-4mc: Settings → Sync's "last-successful-push age" must not
+    /// advance on a tick that sent nothing or that failed to deliver).
+    static func isSuccessfulPush(opsSent: UInt32, batchesFailed: UInt32) -> Bool {
+        opsSent > 0 && batchesFailed == 0
     }
 
     /// Collab editing C1 outbound: record ONE in-block CHARACTER SPLICE
@@ -1281,6 +1307,7 @@ final class RelayTicker: ObservableObject {
         self.coordinator = coordinator
         self.cursorScope = scope
         self.coordinatorPairingCode = codeStr
+        self.relayURL = relayURL
     }
 
     /// Pure half of the mid-run bootstrap gate (stranded-behind-compaction

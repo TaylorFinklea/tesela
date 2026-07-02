@@ -173,6 +173,44 @@ final class MockMosaicServiceTests: XCTestCase {
             "an inbound change to yesterday must re-render on iOS, like today")
     }
 
+    /// 2026-07-02 device flicker fix (tesela-z1e): rapid deletes on
+    /// yesterday's blocks re-showed a just-deleted block for a tick. Root
+    /// cause: `scheduleWriteback` (today) opens the remote-refresh
+    /// suppression window SYNCHRONOUSLY before spawning its writeback
+    /// `Task`, but `scheduleYesterdayWriteback` only opened it inside
+    /// `pushPage`, which runs INSIDE that async Task — leaving a window
+    /// where a same-tick `applyRemoteChange()` (relay tick's
+    /// `onAppliedChanges` seam) could see suppression as inactive and
+    /// refresh from the not-yet-updated local sandbox file, resurrecting
+    /// the deleted block. Guards the fix: deleting a yesterday block must
+    /// open suppression before the writeback Task ever runs, mirroring
+    /// today's create/delete symmetry.
+    func testDeleteYesterdayBlockOpensRemoteSuppressionSynchronously() async throws {
+        let today = "2099-06-23"
+        let yesterday = "2099-06-22"
+        try resetLocalDailyFixtures([today, yesterday])
+        defer { try? resetLocalDailyFixtures([today, yesterday]) }
+        try writeLocalDaily(id: today, body: "- today block")
+        try writeLocalDaily(id: yesterday, body: "- keep me\n- delete me")
+
+        let now = date(2099, 6, 23)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["keep me", "delete me"])
+        XCTAssertFalse(service.testableIsRemoteSuppressionActive())
+
+        let deleteId = service.yesterdayBlocks[1].id
+        service.deleteYesterdayBlock(id: deleteId)
+
+        XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["keep me"])
+        XCTAssertTrue(
+            service.testableIsRemoteSuppressionActive(),
+            "deleting a yesterday block must open remote-refresh suppression synchronously, " +
+            "before the async writeback Task runs, so a same-tick applyRemoteChange() can't " +
+            "resurrect the just-deleted block from a stale local read")
+    }
+
     /// HONEST CONNECTION STATUS (2026-06-21 silent-desync fix): an
     /// unreachable HTTP backend must flip `connection` to `.failed` even
     /// when local data is on screen — it must NOT sit silently green
