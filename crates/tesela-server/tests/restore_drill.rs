@@ -35,8 +35,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
+
+#[path = "common/mod.rs"]
+mod common;
+use common::ServerGuard;
 
 use loro::VersionVector;
 use tesela_sync::{DeviceId, GroupId, Hlc, LoroEngine, OpPayload, SyncEngine};
@@ -452,48 +456,8 @@ async fn reseed_cannot_reproduce_restored_lineage() {
 
 // ───────────────────────── server-level drill ─────────────────────────
 
-fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tesela-server"))
-}
-
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
-
-fn wait_for_port(addr: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(addr).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
-struct ServerGuard(Option<Child>);
-
-impl ServerGuard {
-    fn stop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let pid = child.id() as i32;
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-            let _ = child.wait();
-        }
-    }
-}
-
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-fn spawn_server(mosaic: &Path, addr: &str) -> ServerGuard {
-    let child = Command::new(binary_path())
+fn spawn_server_child(mosaic: &Path, addr: &str) -> Child {
+    Command::new(common::binary_path())
         .current_dir(mosaic)
         .env("TESELA_SERVER_BIND", addr)
         .env("TESELA_DISABLE_MDNS", "1")
@@ -507,8 +471,7 @@ fn spawn_server(mosaic: &Path, addr: &str) -> ServerGuard {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn tesela-server");
-    ServerGuard(Some(child))
+        .expect("spawn tesela-server")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -523,14 +486,13 @@ async fn server_level_restore_drill() {
     )
     .unwrap();
 
-    let port = pick_free_port();
-    let addr = format!("127.0.0.1:{}", port);
-    let base = format!("http://{}", addr);
     let client = reqwest::Client::new();
 
     // ── Phase 1: live server, engine-authored note, explicit backup ──
-    let mut server = spawn_server(&mosaic, &addr);
-    assert!(wait_for_port(&addr, Duration::from_secs(60)), "server #1");
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let mut server = ServerGuard(Some(child));
 
     let note: serde_json::Value = client
         .post(format!("{}/notes", base))
@@ -600,11 +562,10 @@ async fn server_level_restore_drill() {
     assert_eq!(identity_before, read_identity(&mosaic));
 
     // ── Phase 3: relaunch on the restored mosaic — NO reseed env ──
-    let port2 = pick_free_port();
-    let addr2 = format!("127.0.0.1:{}", port2);
-    let base2 = format!("http://{}", addr2);
-    let _server2 = spawn_server(&mosaic, &addr2);
-    assert!(wait_for_port(&addr2, Duration::from_secs(60)), "server #2");
+    let (child2, _addr2, base2) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server2 = ServerGuard(Some(child2));
 
     let fetched_after: serde_json::Value = client
         .get(format!("{}/notes/{}", base2, note_id))

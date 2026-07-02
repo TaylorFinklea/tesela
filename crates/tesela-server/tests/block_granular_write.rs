@@ -27,34 +27,18 @@
 #![cfg(unix)]
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tempfile::TempDir;
 
+#[path = "common/mod.rs"]
+mod common;
+use common::ServerGuard;
+
 const ALPHA_BID: &str = "01010101-0101-0101-0101-010101010101";
 const BETA_BID: &str = "02020202-0202-0202-0202-020202020202";
-
-fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tesela-server"))
-}
-
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
-
-fn wait_for_port(addr: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(addr).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
 
 fn make_fixture_mosaic(root: &Path) -> std::io::Result<()> {
     fs::create_dir_all(root.join("notes"))?;
@@ -67,32 +51,15 @@ fn make_fixture_mosaic(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Owns the spawned server process and SIGTERMs it on drop so the server is
-/// reaped even if the test panics mid-flight.
-struct ServerGuard(Option<Child>);
-
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let pid = child.id() as i32;
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-            let _ = child.wait();
-        }
-    }
-}
-
-fn spawn_server(mosaic: &Path, addr: &str) -> ServerGuard {
-    let child = Command::new(binary_path())
+fn spawn_server_child(mosaic: &Path, addr: &str) -> Child {
+    Command::new(common::binary_path())
         .current_dir(mosaic)
         .env("TESELA_SERVER_BIND", addr)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn tesela-server");
-    ServerGuard(Some(child))
+        .expect("spawn tesela-server")
 }
 
 /// Find the materialized note file under `notes/` whose content holds
@@ -117,18 +84,12 @@ async fn post_blocks_preserves_concurrent_peer_edit() {
     let mosaic = temp.path().join("mosaic");
     make_fixture_mosaic(&mosaic).unwrap();
 
-    let port = pick_free_port();
-    let addr = format!("127.0.0.1:{}", port);
-    let base = format!("http://{}", addr);
     // _server is the RAII guard — SIGTERMs the child on drop, including on
     // any assertion panic below.
-    let _server = spawn_server(&mosaic, &addr);
-
-    assert!(
-        wait_for_port(&addr, Duration::from_secs(60)),
-        "server never bound to {}",
-        addr
-    );
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server = ServerGuard(Some(child));
 
     let client = reqwest::Client::new();
 
@@ -261,14 +222,10 @@ async fn post_blocks_after_bid_inserts_adjacent() {
     let mosaic = temp.path().join("mosaic");
     make_fixture_mosaic(&mosaic).unwrap();
 
-    let port = pick_free_port();
-    let addr = format!("127.0.0.1:{}", port);
-    let base = format!("http://{}", addr);
-    let _server = spawn_server(&mosaic, &addr);
-    assert!(
-        wait_for_port(&addr, Duration::from_secs(60)),
-        "server never bound to {addr}"
-    );
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server = ServerGuard(Some(child));
 
     let client = reqwest::Client::new();
 

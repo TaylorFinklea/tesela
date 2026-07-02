@@ -8,17 +8,13 @@
 #![cfg(unix)]
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 use tempfile::TempDir;
 
-fn binary_path() -> PathBuf {
-    // CARGO_BIN_EXE_<name> is set by cargo for integration tests when
-    // the package defines a [[bin]]. tesela-server's bin name is
-    // `tesela-server`.
-    PathBuf::from(env!("CARGO_BIN_EXE_tesela-server"))
-}
+#[path = "common/mod.rs"]
+mod common;
 
 fn make_fixture_mosaic(root: &Path) -> std::io::Result<()> {
     fs::create_dir_all(root.join("notes"))?;
@@ -33,20 +29,15 @@ fn make_fixture_mosaic(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn pick_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
-
-fn wait_for_port(addr: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(addr).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
+fn spawn_server_child(mosaic: &Path, addr: &str) -> Child {
+    Command::new(common::binary_path())
+        .current_dir(mosaic)
+        .env("TESELA_SERVER_BIND", addr)
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tesela-server")
 }
 
 #[test]
@@ -55,23 +46,9 @@ fn sigterm_triggers_validated_backup() {
     let mosaic = temp.path().join("mosaic");
     make_fixture_mosaic(&mosaic).unwrap();
 
-    let port = pick_free_port();
-    let addr = format!("127.0.0.1:{}", port);
-
-    let mut child = Command::new(binary_path())
-        .current_dir(&mosaic)
-        .env("TESELA_SERVER_BIND", &addr)
-        .env("RUST_LOG", "warn")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn tesela-server");
-
-    assert!(
-        wait_for_port(&addr, Duration::from_secs(60)),
-        "server never bound to {}",
-        addr
-    );
+    let (mut child, _addr, _base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
 
     // SIGTERM should drive `wait_for_shutdown_signal` -> graceful
     // axum drain -> auto-backup-on-quit.
