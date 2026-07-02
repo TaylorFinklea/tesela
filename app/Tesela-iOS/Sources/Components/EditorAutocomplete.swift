@@ -382,6 +382,12 @@ enum InlineNLP {
         let c = max(0, min(caret, ns.length))
         guard c > 0 else { return nil }
 
+        // Literal ranges (wiki links, markdown links/images, inline code, bare
+        // URLs) that no lift may be detected inside — mirrors web's
+        // `task-tokens.ts` `literalRanges`/`overlaps` pre-claim, closing the
+        // gap where a `p1` inside a pasted URL lifted on iOS only.
+        let literal = literalRanges(in: text)
+
         // Resolve the block's property defs once (first def per name wins).
         var defs: [PropertyDef] = []
         var seen = Set<String>()
@@ -409,7 +415,7 @@ enum InlineNLP {
         // (a) Exact nl_trigger token → a property lift. A select property whose
         // nl_trigger equals a choice sets that choice (e.g. priority `p1`);
         // otherwise the trigger is the property and the token its value.
-        if !tokenLower.isEmpty {
+        if !tokenLower.isEmpty, !overlapsAny(NSRange(location: tokenStart, length: c - tokenStart), literal) {
             for def in defs where def.valueType != .date {
                 // Only lift when the typed token IS one of the property's
                 // CHOICES — so the value is meaningful (e.g. priority p1, status
@@ -471,6 +477,7 @@ enum InlineNLP {
             let tail = ns.substring(with: NSRange(location: s, length: c - s))
                 .trimmingCharacters(in: .whitespaces)
             guard !tail.isEmpty else { continue }
+            guard !overlapsAny(NSRange(location: s, length: c - s), literal) else { continue }
             guard let parsed = DateParser.parse(tail, today: today) else { continue }
             // Clear date intent gate: only offer the lift when the tail begins
             // at line-start (a), OR is immediately preceded by a date
@@ -539,6 +546,41 @@ enum InlineNLP {
     /// candidate tail without crossing a newline.
     private static func isLineSpace(_ ch: unichar) -> Bool {
         ch == 0x20 || ch == 0x09
+    }
+
+    // MARK: - Literal-range guard (mirror of web task-tokens.ts `literalRanges`)
+
+    private static let wikiLinkRe = try! NSRegularExpression(pattern: "\\[\\[[^\\]]*\\]\\]")
+    private static let mdLinkRe = try! NSRegularExpression(pattern: "!?\\[[^\\]]*\\]\\([^)]*\\)")
+    private static let inlineCodeRe = try! NSRegularExpression(pattern: "`[^`]*`")
+    private static let bareUrlRe = try! NSRegularExpression(pattern: "\\bhttps?://\\S+")
+
+    /// Ranges (`[[wiki links]]`, markdown links/images, inline `` `code` ``,
+    /// bare URLs) that no lift may be detected inside — mirrors web's
+    /// `task-tokens.ts` `literalRanges`, so a `p1` inside a pasted URL, or a
+    /// date word inside a `[[wiki link]]`, is never lifted on iOS either.
+    static func literalRanges(in text: String) -> [NSRange] {
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        var ranges: [NSRange] = []
+        for re in [wikiLinkRe, mdLinkRe, inlineCodeRe, bareUrlRe] {
+            for m in re.matches(in: text, range: full) {
+                ranges.append(m.range)
+            }
+        }
+        return ranges
+    }
+
+    /// Whether `range` overlaps any range in `ranges`.
+    private static func overlapsAny(_ range: NSRange, _ ranges: [NSRange]) -> Bool {
+        guard range.length > 0 else { return false }
+        let a0 = range.location
+        let a1 = range.location + range.length
+        return ranges.contains { r in
+            let b0 = r.location
+            let b1 = r.location + r.length
+            return a0 < b1 && a1 > b0
+        }
     }
 
     /// Blur-time WHOLE-BLOCK lift (P-surface-parity): scan the whole block for
@@ -661,7 +703,17 @@ enum InlineNLP {
             // whitespace.
             if !prevIsSpace, atEnd || nextIsSpace,
                let hit = detect(in: text, caretUTF16: i, tags: tags, registry: registry, today: today) {
-                if best == nil || hit.start < best!.start { best = hit }
+                // Prefer the earliest-starting hit; among ties on `start` (two
+                // different caret boundaries both anchoring at the same word,
+                // e.g. "due thu" vs "due thu at 8"), prefer the LONGER match —
+                // the more complete parse — so a later boundary that extends an
+                // earlier one's phrase isn't shadowed by the shorter one found
+                // first. Without this, "due thu at 8" split into a bare "due
+                // thu" lift plus a stray "at 8" lift on the next pass.
+                if best == nil || hit.start < best!.start
+                    || (hit.start == best!.start && hit.length > best!.length) {
+                    best = hit
+                }
             }
             i += 1
         }

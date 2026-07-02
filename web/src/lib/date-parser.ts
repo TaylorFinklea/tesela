@@ -258,6 +258,19 @@ function extractTime(s: string): { time: string | null; rest: string } {
   if (s === "noon") return { time: "12:00", rest: "today" };
   if (s === "midnight") return { time: "00:00", rest: "today" };
 
+  // "noon" / "midnight" as a trailing word (e.g. "today noon", "tomorrow
+  // midnight") — mirrors iOS's DateParser.swift extractTime, which already
+  // handled this; web previously only matched the bare "noon"/"midnight"
+  // exact-string cases above, so "today noon" fell through unparsed.
+  if (s.endsWith(" noon")) {
+    const rest = s.slice(0, -5).trim();
+    return { time: "12:00", rest: rest || "today" };
+  }
+  if (s.endsWith(" midnight")) {
+    const rest = s.slice(0, -9).trim();
+    return { time: "00:00", rest: rest || "today" };
+  }
+
   const m = s.match(TRAILING_TIME_RE);
   if (!m) return { time: null, rest: s };
 

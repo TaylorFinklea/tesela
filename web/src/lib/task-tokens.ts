@@ -117,20 +117,26 @@ export function literalRanges(line0: string): Array<[number, number]> {
 }
 
 /** Longest valid date phrase starting at word `i` (skips claimed ranges). */
-function longestDateFrom(line0: string, words: WordSpan[], i: number, overlaps: (a: number, b: number) => boolean): DateHit | null {
+function longestDateFrom(line0: string, words: WordSpan[], i: number, overlaps: (a: number, b: number) => boolean, today: Date): DateHit | null {
   const maxLen = Math.min(MAX_DATE_WORDS, words.length - i);
   for (let len = maxLen; len >= 1; len--) {
     const from = words[i].start;
     const to = words[i + len - 1].end;
     if (overlaps(from, to)) continue;
-    const parsed = parseDateAndRecurrenceInput(line0.slice(from, to));
+    const parsed = parseDateAndRecurrenceInput(line0.slice(from, to), today);
     if (parsed) return { from, to, endWord: i + len - 1, date: parsed.date, time: parsed.time, recurrence: parsed.recurrence };
   }
   return null;
 }
 
-/** Detect tokens in the block's first line per the spec. Ranges are doc-absolute. */
-export function detectTokens(text: string, spec: DetectSpec): DetectedToken[] {
+/**
+ * Detect tokens in the block's first line per the spec. Ranges are
+ * doc-absolute. `today` anchors relative-date phrases ("tomorrow", "next
+ * tuesday") — defaults to the real current time; callers only need to pass
+ * it explicitly for deterministic tests/fixtures (mirrors iOS's
+ * `InlineNLP.detect(..., today:)`).
+ */
+export function detectTokens(text: string, spec: DetectSpec, today: Date = new Date()): DetectedToken[] {
   const line0 = firstLine(text);
   const tokens: DetectedToken[] = [];
   // Seed the claimed set with the line's literal ranges (links / URLs / inline
@@ -187,7 +193,7 @@ export function detectTokens(text: string, spec: DetectSpec): DetectedToken[] {
         if (overlaps(trigFrom, afterTrig)) continue;
         const startWord = words.findIndex((w) => w.start >= afterTrig);
         if (startWord === -1) continue;
-        const hit = longestDateFrom(line0, words, startWord, overlaps);
+        const hit = longestDateFrom(line0, words, startWord, overlaps, today);
         if (hit && !overlaps(trigFrom, hit.to)) {
           claim(trigFrom, hit.to);
           tokens.push({ from: trigFrom, to: hit.to, key: p.key, value: dateValue(hit), kind: "date", recurrence: hit.recurrence });
@@ -196,18 +202,44 @@ export function detectTokens(text: string, spec: DetectSpec): DetectedToken[] {
     }
   }
 
-  // 4. default date property: bare NL dates in still-unclaimed ranges.
+  // 4. default date property: bare NL dates in still-unclaimed ranges — but
+  // ONLY at line-start, trailing position, or right after a date-intent word
+  // (mirrors iOS InlineNLP's locked trailing-position rule: a bare date
+  // phrase mid-prose needs an intent word so "call her tomorrow about the
+  // launch" doesn't lift, while "buy milk tomorrow" does).
   const defaultKey = spec.defaultDateProperty;
+  const dateIntentWords = new Set(["on", "by", "at"]);
+  for (const p of spec.properties) {
+    if (p.valueType !== "date") continue;
+    for (const trig of p.triggers) dateIntentWords.add(trig.toLowerCase());
+  }
+  // Trailing = nothing but whitespace and/or already-claimed spans (which
+  // will themselves be stripped) follows `from` to the end of the line.
+  const isTrailingFrom = (from: number): boolean => {
+    let j = from;
+    while (j < line0.length) {
+      if (/\s/.test(line0[j])) { j++; continue; }
+      const covering = claimed.find(([a, b]) => j >= a && j < b);
+      if (!covering) return false;
+      j = covering[1];
+    }
+    return true;
+  };
   let i = 0;
   while (i < words.length) {
     if (overlaps(words[i].start, words[i].end)) {
       i++;
       continue;
     }
-    const hit = longestDateFrom(line0, words, i, overlaps);
+    const hit = longestDateFrom(line0, words, i, overlaps, today);
     if (hit) {
-      claim(hit.from, hit.to);
-      tokens.push({ from: hit.from, to: hit.to, key: defaultKey, value: dateValue(hit), kind: "date", recurrence: hit.recurrence });
+      const atLineStart = hit.from === 0;
+      const prevWord = i > 0 ? line0.slice(words[i - 1].start, words[i - 1].end).toLowerCase() : null;
+      const precededByIntent = prevWord !== null && dateIntentWords.has(prevWord);
+      if (atLineStart || precededByIntent || isTrailingFrom(hit.to)) {
+        claim(hit.from, hit.to);
+        tokens.push({ from: hit.from, to: hit.to, key: defaultKey, value: dateValue(hit), kind: "date", recurrence: hit.recurrence });
+      }
       i = hit.endWord + 1;
     } else {
       i++;
@@ -220,14 +252,15 @@ export function detectTokens(text: string, spec: DetectSpec): DetectedToken[] {
 /**
  * Detect + strip tokens from `text` (first line only). Returns the stripped text
  * + the structured props to set, or unchanged + `[]` when nothing is detected.
- * Per key, the last token wins; recurrences ride along as `recurring`.
+ * Per key, the last token wins; recurrences ride along as `recurring`. `today`
+ * defaults to the real current time — see `detectTokens`.
  */
-export function detectTaskTokens(text: string, spec: DetectSpec): DetectResult {
+export function detectTaskTokens(text: string, spec: DetectSpec, today: Date = new Date()): DetectResult {
   const nl = text.indexOf("\n");
   const line0 = nl === -1 ? text : text.slice(0, nl);
   const rest = nl === -1 ? "" : text.slice(nl);
 
-  const tokens = detectTokens(line0, spec);
+  const tokens = detectTokens(line0, spec, today);
   if (tokens.length === 0) return { stripped: text, props: [] };
 
   const byKey = new Map<string, string>();
