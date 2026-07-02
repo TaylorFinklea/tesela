@@ -67,7 +67,7 @@ fn resolve_mosaic() -> Option<PathBuf> {
 /// URL. Source: `TESELA_DESKTOP_REMOTE_URL` env (wins, for terminal launches),
 /// else a `remote_url = "..."` line in `desktop.toml`. `None` → embed (default).
 fn resolve_remote_url() -> Option<String> {
-    desktop_config_value("TESELA_DESKTOP_REMOTE_URL", "remote_url")
+    desktop_config_value("TESELA_DESKTOP_REMOTE_URL", |c| c.remote_url.clone())
 }
 
 /// If the EMBEDDED server should JOIN the relay (the spine) directly — instead
@@ -77,66 +77,41 @@ fn resolve_remote_url() -> Option<String> {
 /// — never alongside a standalone server, or two relay participants share one
 /// device_id. `None` → embed stays loopback-only (default).
 fn resolve_embed_relay_url() -> Option<String> {
-    desktop_config_value("TESELA_EMBED_RELAY_URL", "relay_url")
+    desktop_config_value("TESELA_EMBED_RELAY_URL", |c| c.relay_url.clone())
 }
 
-/// Read a `key = "value"` line from `desktop.toml`, with an `env_var` override
-/// (env wins — terminal launches; the file works for Finder/Dock launches that
-/// don't inherit shell env). A hand-rolled scan, not a TOML parse — the file is
-/// a handful of flat keys.
-fn desktop_config_value(env_var: &str, key: &str) -> Option<String> {
+/// Flat keys read from `desktop.toml`. Mirrors what `resolve_remote_url` /
+/// `resolve_embed_relay_url` look for; unknown keys are ignored by serde
+/// default (no `deny_unknown_fields`).
+#[derive(Debug, Default, serde::Deserialize)]
+struct DesktopConfig {
+    remote_url: Option<String>,
+    relay_url: Option<String>,
+}
+
+/// Parse `desktop.toml` (if present) via serde. Errors (missing file, bad
+/// TOML) resolve to an empty config rather than failing the app.
+fn desktop_config() -> DesktopConfig {
+    (|| -> Option<DesktopConfig> {
+        let home = std::env::var_os("HOME")?;
+        let cfg = PathBuf::from(home).join("Library/Application Support/tesela/desktop.toml");
+        let text = std::fs::read_to_string(&cfg).ok()?;
+        toml::from_str(&text).ok()
+    })()
+    .unwrap_or_default()
+}
+
+/// Read a config value, with an `env_var` override (env wins — terminal
+/// launches; the file works for Finder/Dock launches that don't inherit
+/// shell env).
+fn desktop_config_value(env_var: &str, from_file: impl FnOnce(&DesktopConfig) -> Option<String>) -> Option<String> {
     if let Ok(v) = std::env::var(env_var) {
         let v = v.trim().to_string();
         if !v.is_empty() {
             return Some(v);
         }
     }
-    let home = std::env::var_os("HOME")?;
-    let cfg = PathBuf::from(home).join("Library/Application Support/tesela/desktop.toml");
-    let text = std::fs::read_to_string(&cfg).ok()?;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix(key) {
-            // Require a whole-key match (next char is `=` or whitespace) so
-            // `relay_url` can't match a longer key like `relay_url_extra`.
-            if rest
-                .chars()
-                .next()
-                .is_some_and(|c| c != '=' && !c.is_whitespace())
-            {
-                continue;
-            }
-            let raw = rest
-                .trim_start_matches(|c: char| c == '=' || c.is_whitespace())
-                .trim();
-            let mut in_quotes = false;
-            let mut escaped = false;
-            let mut comment_start = raw.len();
-            for (idx, ch) in raw.char_indices() {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' if in_quotes => escaped = true,
-                    '"' => in_quotes = !in_quotes,
-                    '#' if !in_quotes => {
-                        comment_start = idx;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let val = raw[..comment_start].trim().trim_matches('"').trim();
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
-        }
-    }
-    None
+    from_file(&desktop_config()).filter(|v| !v.trim().is_empty())
 }
 
 /// The built static `/g` bundle the embedded server serves. `TESELA_STATIC_DIR`

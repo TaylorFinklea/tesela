@@ -929,6 +929,14 @@ pub struct CurrentMosaicResponse {
     /// `~/.local/share/tesela/` on Linux, `%APPDATA%/tesela/` on
     /// Windows). The UI uses this to pre-fill new-mosaic paths.
     pub suggested_root: String,
+    /// `TESELA_EMBEDDED` — this server is running in-process inside the
+    /// desktop shell (see src-tauri/src/main.rs), where `/server/restart`
+    /// always 409s (`restart_server` refuses rather than re-exec'ing the
+    /// Tauri binary). The UI uses this to disable switch-mosaic controls
+    /// instead of surfacing that dead-end 409 (tesela-ejn.2). Interim until
+    /// tesela-mmos (one server, N mosaics, lazy-loaded) replaces the whole
+    /// restart-to-switch flow.
+    pub embedded: bool,
 }
 
 pub async fn get_current_mosaic(
@@ -949,6 +957,7 @@ pub async fn get_current_mosaic(
         config_path: config_path.to_string_lossy().into_owned(),
         config_default_mosaic: config_default,
         suggested_root: Config::mosaic_root_dir().to_string_lossy().into_owned(),
+        embedded: std::env::var_os("TESELA_EMBEDDED").is_some(),
     }))
 }
 

@@ -460,6 +460,9 @@ export interface CurrentMosaicResponse {
   config_default_mosaic: string | null;
   /** Parent directory the UI uses to suggest new-mosaic paths. */
   suggested_root: string;
+  /** Running in-process inside the desktop shell — `/server/restart` always
+   * 409s there, so the UI disables switch-mosaic controls instead (tesela-ejn.2). */
+  embedded: boolean;
 }
 export interface CreateMosaicRequest {
   /** Custom absolute path. Mutually exclusive with `name`. */

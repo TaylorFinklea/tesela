@@ -167,8 +167,16 @@
     logseqPlanTarget = null;
   }
 
+  // tesela-ejn.2: the embedded desktop server always 409s
+  // `/server/restart` (it can't re-exec the Tauri binary) — the switch
+  // flow is a dead end there. Interim = hide/disable the controls with
+  // explanatory copy; tesela-mmos (one server, N mosaics, lazy-loaded)
+  // replaces the whole restart-to-switch flow, so don't build a relaunch
+  // flow that would just be thrown away.
+  const embedded = $derived(current?.embedded === true);
+
   async function switchAndRestart(path: string) {
-    if (switchingPath) return;
+    if (switchingPath || embedded) return;
     if (
       !confirm(
         `Switch to ${path}? The server will shut down (auto-backup runs), then a new instance will start in ~2 seconds. The page will lose its WebSocket connection during the swap.`,
@@ -219,13 +227,23 @@
     </div>
   {/if}
 
+  {#if embedded}
+    <div class="text-[11px] text-amber-400/80 mb-3 leading-relaxed border border-amber-400/20 rounded-md px-3 py-2 bg-amber-400/5">
+      Switching mosaics isn't available in the desktop app yet — the embedded
+      server can't restart itself. Quit and reopen Tesela with a different
+      mosaic instead.
+    </div>
+  {/if}
+
   <!-- Discovered mosaics -->
   <div class="mb-3">
     <button
       class="px-2.5 py-1 rounded-md text-[11px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
-      disabled={pickingExisting || !!switchingPath}
+      disabled={embedded || pickingExisting || !!switchingPath}
       onclick={pickAndSwitchExisting}
-      title="Pick any folder with a `.tesela/` to switch to it"
+      title={embedded
+        ? "Not available in the desktop app — quit and reopen with a different mosaic"
+        : "Pick any folder with a `.tesela/` mosaic to switch to it"}
     >
       {pickingExisting || switchingPath ? "…" : "Switch to existing mosaic…"}
     </button>
@@ -256,7 +274,8 @@
             <div class="flex items-center gap-2 pt-1">
               <button
                 class="px-2 py-0.5 rounded text-[11px] border border-border/40 hover:bg-muted/40 disabled:opacity-50"
-                disabled={switchingPath === m.path}
+                disabled={embedded || switchingPath === m.path}
+                title={embedded ? "Not available in the desktop app — quit and reopen with a different mosaic" : undefined}
                 onclick={() => switchAndRestart(m.path)}>Switch</button>
               {#if rowMessage[m.path]}
                 <span class="text-[10px] text-muted-foreground/70">{rowMessage[m.path]}</span>
@@ -386,16 +405,23 @@
           <div class="text-[11px] text-red-300/90">Import returned errors:</div>
           <pre class="text-[11px] font-mono whitespace-pre-wrap text-red-300/80">{result.import_stderr ?? result.import_stdout ?? ""}</pre>
         {/if}
-        <button
-          class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-          disabled={!!switchingPath}
-          onclick={() => switchAndRestart(result!.path)}
-        >
-          {switchingPath ? "Switching…" : "Switch to this mosaic"}
-        </button>
-        <p class="text-[10px] text-muted-foreground/50">
-          Server will gracefully shut down (auto-backup runs), then a fresh instance binds in ~2s. Page reloads automatically.
-        </p>
+        {#if embedded}
+          <p class="text-[10px] text-amber-400/80">
+            Created, but switching to it isn't available in the desktop app —
+            quit and reopen Tesela with this mosaic instead.
+          </p>
+        {:else}
+          <button
+            class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+            disabled={!!switchingPath}
+            onclick={() => switchAndRestart(result!.path)}
+          >
+            {switchingPath ? "Switching…" : "Switch to this mosaic"}
+          </button>
+          <p class="text-[10px] text-muted-foreground/50">
+            Server will gracefully shut down (auto-backup runs), then a fresh instance binds in ~2s. Page reloads automatically.
+          </p>
+        {/if}
       </div>
     {/if}
 
@@ -435,13 +461,20 @@
             </ul>
           </details>
         {/if}
-        <button
-          class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-          disabled={!!switchingPath}
-          onclick={() => switchAndRestart(logseqPlanTarget!)}
-        >
-          {switchingPath ? "Switching…" : "Switch to this mosaic"}
-        </button>
+        {#if embedded}
+          <p class="text-[10px] text-amber-400/80">
+            Applied, but switching to it isn't available in the desktop app —
+            quit and reopen Tesela with this mosaic instead.
+          </p>
+        {:else}
+          <button
+            class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+            disabled={!!switchingPath}
+            onclick={() => switchAndRestart(logseqPlanTarget!)}
+          >
+            {switchingPath ? "Switching…" : "Switch to this mosaic"}
+          </button>
+        {/if}
       </div>
     {/if}
     {#if error}
