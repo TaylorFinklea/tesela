@@ -10189,4 +10189,207 @@ mod tests {
         e.ensure_builtin_views().await.unwrap();
         assert_eq!(e.views_list().await, expected, "registry survives restart");
     }
+
+    // -----------------------------------------------------------------
+    // Residency audit (tesela-engc.5): #[ignore]'d assumption stubs for
+    // the lazy-load/evict implementer (blocking bead tesela-qql and
+    // follow-ups). The full classification table of every walk over
+    // `self.inner.docs` lives in the bead's close note; these three
+    // encode the highest-severity assumptions a future evict() must not
+    // violate — that a note's `LoroDoc` can be dropped from
+    // `self.inner.docs` while its `.bin` snapshot survives on disk, and
+    // every one of these three call sites must keep working transparently.
+    // All three currently FAIL (that's the point — they're `#[ignore]`d
+    // pre-fix regressions); un-ignore each as its corresponding walk
+    // gains load-on-demand or a residency-independent signal.
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
+                doc_for_note_mut residency assumption from the tesela-engc.5 \
+                audit — activate once doc_for_note_mut loads a note's .bin \
+                on a docs-map miss instead of creating a fresh empty doc"]
+    async fn doc_for_note_mut_must_not_recreate_evicted_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir)
+            .await
+            .unwrap();
+        let note_id = [0x33; 16];
+        let existing_block = [0x44; 16];
+
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: existing_block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "pre-eviction content".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let before = engine.render_note(note_id).await.unwrap();
+        assert!(before.contains("pre-eviction content"));
+
+        // Simulate eviction: the note's snapshot is safely on disk (the
+        // BlockUpsert above just wrote it via `save_snapshot`), but the
+        // in-memory doc is dropped — exactly what a future evict() would
+        // leave behind. `doc_for_note_mut` (loro_engine.rs:1587) is the
+        // ONLY entry point that resolves a note's doc for a local edit.
+        engine.inner.docs.write().await.remove(&note_id);
+
+        let new_block = [0x55; 16];
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: new_block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a1".into(),
+                indent_level: 0,
+                text: "post-eviction content".into(),
+                after_block_id: Some(existing_block),
+            })
+            .await
+            .unwrap();
+
+        let after = engine.render_note(note_id).await.unwrap();
+        assert!(
+            after.contains("pre-eviction content"),
+            "doc_for_note_mut unconditionally `or_insert_with`s a FRESH empty \
+             LoroDoc on a docs-map miss — an evicted note's entire prior \
+             history is silently discarded on the next local edit (got {after:?})"
+        );
+        assert!(after.contains("post-eviction content"));
+    }
+
+    #[tokio::test]
+    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
+                apply_import already_resident heal-gate assumption from the \
+                tesela-engc.5 audit — activate once the Delta path's twin-heal \
+                protection plan is gated on 'has genuine local state (resident \
+                OR evicted-with-snapshot)', not on the docs-map's CURRENT \
+                in-memory residency"]
+    async fn apply_import_heal_gate_must_protect_evicted_note_local_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::with_snapshot_dir(sdev, Arc::new(Hlc::new(sdev)), dir)
+            .await
+            .unwrap();
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily-evicted");
+
+        seed_disjoint(&server, &device, note).await;
+
+        // Server's own genuine edit — the value that must survive.
+        server
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome sweet".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // Device, stale (never saw the server edit), re-authors A back to
+        // its old value AND genuinely edits B, then exports a full
+        // snapshot (the cold-launch first-push frame).
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: B_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "B device".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = device.export_doc_update(note, None).await.unwrap();
+
+        // Evict the SERVER's note between its own edit and the inbound
+        // frame — exactly the window `already_resident`
+        // (loro_engine.rs:628) samples. The note's snapshot is safely on
+        // disk; only the in-memory entry is gone.
+        server.inner.docs.write().await.remove(&note);
+
+        server.import_doc_update(note, &snapshot).await.unwrap();
+
+        let a = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        let b = block_text(&server, note, B_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            a, "Awesome sweet",
+            "an evicted-but-locally-edited note must still get twin-heal \
+             protection on the next Delta import — A must NOT revert to the \
+             device's stale value (got {a:?})"
+        );
+        assert_eq!(
+            b, "B device",
+            "the device's genuine edit must still apply (got {b:?})"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "lazy-load/evict not implemented (tesela-qql); encodes the \
+                produce_relay_updates residency assumption from the \
+                tesela-engc.5 audit — activate once an evicted note's \
+                un-broadcast local edits can still be produced (load-on-demand \
+                or a residency-independent dirty-set)"]
+    async fn produce_relay_updates_must_include_evicted_dirty_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir)
+            .await
+            .unwrap();
+        let note_id = [0x77; 16];
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("evicted".into()),
+                title: "Evicted".into(),
+                content: "---\ntitle: Evicted\n---\n- hello\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // No broadcast cursor has been committed yet, so this note has
+        // ops pending relay. Simulate eviction (the resident doc is
+        // dropped; its snapshot is on disk).
+        engine.inner.docs.write().await.remove(&note_id);
+
+        let updates = engine.produce_relay_updates().await;
+        assert!(
+            updates.iter().any(|(id, _, _)| *id == note_id),
+            "produce_relay_updates (loro_engine.rs:1197) walks \
+             self.inner.docs.keys() directly — an evicted note's \
+             un-broadcast local edits silently never reach the relay"
+        );
+    }
 }
