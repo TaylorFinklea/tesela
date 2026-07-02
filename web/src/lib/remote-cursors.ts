@@ -10,7 +10,7 @@
  * the consumer is CodeMirror, which bridges via dispatch, not reactivity.
  */
 import type { PresenceFrame } from "./loro/presence";
-import { apiBase } from "./runtime-base";
+import { apiBase } from "./runtime-base.ts";
 
 export type RemoteCursor = PresenceFrame & {
   /** Wall-clock ms of the last update — drives staleness. */
