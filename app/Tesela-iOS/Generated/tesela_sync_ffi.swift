@@ -1424,9 +1424,9 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * BlockUpsert resolves to the server's tree nodes instead of minting rival
      * TreeIDs) AND as the disjoint-device catch-up: if the device ALREADY
      * authored this note on its own lineage, the re-base tombstones the
-     * device's stale same-bid twins and keeps the snapshot's nodes, so the
-     * device truly adopts the server's lineage (server-wins) instead of the
-     * non-authoritative min-`TreeID` dedup keeping its own twin. Computes the
+     * device's same-bid twins down to the global-max `TreeID` node (pure rule,
+     * tesela-fte), so both sides pick the IDENTICAL survivor and the device
+     * truly shares one lineage per bid instead of forking. Computes the
      * note id with the same `stable_uuid_from_slug` blake3-truncation the rest
      * of this bridge uses; the engine import is commutative + idempotent, so a
      * re-import or a snapshot captured mid-edit is safe (no data loss).
@@ -1935,9 +1935,9 @@ open func exportAllNoteSnapshots()async  -> [NoteSnapshotRecord]  {
      * BlockUpsert resolves to the server's tree nodes instead of minting rival
      * TreeIDs) AND as the disjoint-device catch-up: if the device ALREADY
      * authored this note on its own lineage, the re-base tombstones the
-     * device's stale same-bid twins and keeps the snapshot's nodes, so the
-     * device truly adopts the server's lineage (server-wins) instead of the
-     * non-authoritative min-`TreeID` dedup keeping its own twin. Computes the
+     * device's same-bid twins down to the global-max `TreeID` node (pure rule,
+     * tesela-fte), so both sides pick the IDENTICAL survivor and the device
+     * truly shares one lineage per bid instead of forking. Computes the
      * note id with the same `stable_uuid_from_slug` blake3-truncation the rest
      * of this bridge uses; the engine import is commutative + idempotent, so a
      * re-import or a snapshot captured mid-edit is safe (no data loss).
@@ -4617,7 +4617,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_export_all_note_snapshots() != 9983) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 55621) {
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 37295) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot_by_id() != 34200) {
