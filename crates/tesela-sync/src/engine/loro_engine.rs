@@ -325,6 +325,13 @@ struct Inner {
     /// engine carries every connected peer's presence. Cloneable + Send+Sync
     /// (Arc<Mutex> internally), so it sits in `Inner` without an extra lock.
     presence: EphemeralStore,
+    /// Wall-clock ms of the last local presence set. EphemeralStore stamps
+    /// wall-clock ms and a peer's apply DROPS timestamp ties (loro-internal
+    /// awareness.rs: `peer_info.timestamp >= timestamp` keeps the existing
+    /// entry), so a same-millisecond re-set of the same key would never win
+    /// LWW remotely. `set_local_presence` holds until the clock strictly
+    /// advances past this watermark. (tesela-sz8)
+    presence_last_set_ms: std::sync::atomic::AtomicI64,
 }
 
 /// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
@@ -392,6 +399,7 @@ impl LoroEngine {
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
                 presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
+                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         }
     }
@@ -414,6 +422,7 @@ impl LoroEngine {
                 materialize_dir: None,
                 migrate_in_text: true,
                 presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
+                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         }
     }
@@ -505,6 +514,7 @@ impl LoroEngine {
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
                 presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
+                presence_last_set_ms: std::sync::atomic::AtomicI64::new(0),
             }),
         };
         if needs_rebuild {
@@ -1112,6 +1122,31 @@ impl LoroEngine {
     /// encoded delta to broadcast to peers. Presence is ephemeral — never
     /// persisted to a doc. (Phase 1 presence foundation.)
     pub fn set_local_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
+        // Hold until the wall clock strictly advances past the last local set:
+        // EphemeralStore stamps wall-clock ms and remote apply drops timestamp
+        // TIES (keeps the existing entry), so a same-ms re-set would silently
+        // lose LWW at every peer. Presence is human-cadence (clients throttle
+        // ~100ms), so this waits at most ~1ms and only under burst. (tesela-sz8)
+        use std::sync::atomic::Ordering;
+        loop {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let last = self.inner.presence_last_set_ms.load(Ordering::Acquire);
+            if now_ms > last {
+                if self
+                    .inner
+                    .presence_last_set_ms
+                    .compare_exchange(last, now_ms, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    break;
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        }
         self.inner
             .presence
             .set(&key, loro::LoroValue::Binary(value.into()));
