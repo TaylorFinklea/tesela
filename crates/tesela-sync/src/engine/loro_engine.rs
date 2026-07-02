@@ -309,6 +309,42 @@ struct Inner {
     /// `key:: value` lines regardless (from `FlatBlock.properties`), so an old
     /// reader still SEES the property as text.
     migrate_in_text: bool,
+    /// Per-note apply serialization (tesela-4ju). `apply_import`'s
+    /// plan→import→tombstone sequence reads the pre-import doc, mutates it,
+    /// then resolves disjoint twins from post-import state — none of that is
+    /// atomic against a CONCURRENT `apply_import` for the SAME note (the docs
+    /// map's write lock, taken only inside `doc_for_note_mut`, is released
+    /// before the sequence starts). Without this, two racing applies for one
+    /// note could interleave: a second import lands between the first's plan
+    /// fork and its tombstone pass, so the tombstone — sized to the FIRST
+    /// import's twin set — can delete a block the second import just
+    /// legitimately created or edited. One `tokio::sync::Mutex` per note_id,
+    /// held for the entire `apply_import` body, closes the window. Lazily
+    /// created; never removed (bounded by note count, matches `docs`).
+    ///
+    /// Widened post-review (tesela-4ju REVIEW REJECT, 2026-07-02): the SAME
+    /// interleave is reachable via `record_local` (a local edit racing an
+    /// inbound `apply_import` for the same note) and via `heal_disjoint_twins`
+    /// (its own plan/tombstone/reassert sequence, run frameless). Both now
+    /// acquire this lock for the same note before mutating — see
+    /// `record_local`'s trait impl and `heal_disjoint_twins`.
+    ///
+    /// **Lock ordering rule**: `apply_locks` is always acquired (via
+    /// `apply_lock_for_note`) and its per-note `Mutex` guard established
+    /// BEFORE any subsequent read/write of `docs` (or `block_index`) within
+    /// the same call — never the reverse, and never hold `docs`'s lock across
+    /// an `.await` that then tries to acquire an `apply_locks` guard. Every
+    /// caller that resolves a note-scoped payload's target note_id first
+    /// (`note_id_for_payload`, a `block_index` read released before the
+    /// guard is taken) upholds this. `apply_locks` itself is never held
+    /// across an inner acquisition of `apply_locks` for a DIFFERENT note_id —
+    /// only one per-note guard is ever live per call stack, so the per-note
+    /// `Mutex` is never reentered: internal helpers invoked from inside an
+    /// already-guarded body (`reassert_prop_heals`) call the lock-free
+    /// `record_local_locked` rather than the public `record_local`, which
+    /// would deadlock trying to re-acquire the SAME note's non-reentrant
+    /// guard.
+    apply_locks: RwLock<HashMap<[u8; 16], Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
@@ -377,6 +413,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
+                apply_locks: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -398,6 +435,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: true,
+                apply_locks: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -488,6 +526,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
+                apply_locks: RwLock::new(HashMap::new()),
             }),
         };
         if needs_rebuild {
@@ -594,6 +633,16 @@ impl LoroEngine {
         bytes: &[u8],
         mode: ImportMode,
     ) -> SyncResult<ImportOutcome> {
+        // Serialize the WHOLE plan→import→tombstone sequence per note_id
+        // (tesela-4ju): held until this fn returns, so a concurrent
+        // `apply_import` for the SAME note can't interleave its import
+        // between this call's props-plan fork and its twin tombstone (which
+        // would size the tombstone to a twin set the second import just
+        // changed, dropping the second caller's genuine edit). Different
+        // notes never contend — this is a per-note, not global, lock.
+        let apply_lock = self.apply_lock_for_note(note_id).await;
+        let _apply_guard = apply_lock.lock().await;
+
         let doc = self.doc_for_note_mut(note_id).await;
         let is_views = Self::is_views_doc(&note_id);
 
@@ -697,8 +746,10 @@ impl LoroEngine {
             tombstone_duplicate_twins(&doc, note_id);
         }
         // Props half of the heal: re-assert each tombstoned twin's resolved props
-        // onto the surviving winner (per-key, idempotency-guarded). record_local
-        // re-acquires the docs lock + re-fetches the doc.
+        // onto the surviving winner (per-key, idempotency-guarded). Goes
+        // through `record_local_locked` (this note's `apply_locks` guard is
+        // already held here), which re-acquires the docs lock + re-fetches
+        // the doc.
         if let Some(changes) = &plan {
             self.reassert_prop_heals(note_id, changes).await?;
         }
@@ -843,12 +894,22 @@ impl LoroEngine {
     /// Gated by the CALLER (dry-run default + mosaic lock in the CLI). Twins now
     /// also self-heal on the next relay round via the apply-path heal; this is
     /// the offline/force path for existing residue.
+    ///
+    /// Runs its own plan (`twin_winners_for`) → tombstone → prop-reassert
+    /// sequence per note — the SAME shape as `apply_import`'s, and subject to
+    /// the SAME interleave risk against a concurrent `apply_import` (or
+    /// `record_local`) for that note (tesela-4ju REVIEW REJECT, 2026-07-02).
+    /// Takes that note's `apply_locks` guard for the whole per-note sequence
+    /// (see `Inner::apply_locks` for the ordering rule) before touching
+    /// `docs`, closing the same window `apply_import` closes for itself.
     pub async fn heal_disjoint_twins(&self) -> Vec<([u8; 16], String)> {
         let mut healed = Vec::new();
         for note_id in self.note_ids().await {
             if Self::is_views_doc(&note_id) {
                 continue;
             }
+            let apply_lock = self.apply_lock_for_note(note_id).await;
+            let _apply_guard = apply_lock.lock().await;
             let doc = self.doc_for_note_mut(note_id).await;
             let changes = twin_winners_for(&doc);
             if changes.is_empty() {
@@ -903,16 +964,20 @@ impl LoroEngine {
     ///   equal value is a no-op skipped here to keep the apply idempotent).
     ///
     /// Reads the survivor's current props with the docs lock, then RELEASES it
-    /// before `record_local` (which re-acquires) — same lock discipline as the
-    /// text heal. A `BlockPropertySet` on a block whose survivor went missing is
-    /// itself a safe no-op (the apply arm guards it).
+    /// before `record_local_locked` (which re-acquires) — same lock discipline
+    /// as the text heal. Called only from inside the caller's `apply_locks`
+    /// guard for `note_id` (`apply_import`, `heal_disjoint_twins`), so it
+    /// dispatches to `record_local_locked`, not the public `record_local`,
+    /// to avoid re-entering that (non-reentrant) guard. A `BlockPropertySet`
+    /// on a block whose survivor went missing is itself a safe no-op (the
+    /// apply arm guards it).
     async fn reassert_prop_heals(
         &self,
         note_id: [u8; 16],
         changes: &[PeerBlockChange],
     ) -> SyncResult<()> {
         // Collect the (block_id, key, op) re-asserts while holding the read
-        // lock, then drop it before `record_local` (which re-acquires).
+        // lock, then drop it before `record_local_locked` (which re-acquires).
         let mut block_ops: Vec<([u8; 16], String, PropOp)> = Vec::new();
         {
             let Some(doc) = self.lazy_load_doc(note_id).await else {
@@ -970,7 +1035,12 @@ impl LoroEngine {
             }
         }
         for (block_id, key, value) in block_ops {
-            self.record_local(OpPayload::BlockPropertySet {
+            // `record_local_locked`, NOT `record_local`: every caller of
+            // `reassert_prop_heals` (`apply_import`, `heal_disjoint_twins`)
+            // already holds this note's `apply_locks` guard, and the guard
+            // is not reentrant — `record_local` would deadlock re-acquiring
+            // it (see `record_local_locked`'s doc comment).
+            self.record_local_locked(OpPayload::BlockPropertySet {
                 note_id,
                 block_id,
                 key,
@@ -1531,6 +1601,22 @@ impl LoroEngine {
         let _ = doc.set_peer_id(self.peer_id());
     }
 
+    /// Get-or-create this note's apply-serialization lock (tesela-4ju). See
+    /// `Inner::apply_locks` for why `apply_import` must hold this for its
+    /// entire plan→import→tombstone sequence.
+    async fn apply_lock_for_note(&self, note_id: [u8; 16]) -> Arc<tokio::sync::Mutex<()>> {
+        if let Some(lock) = self.inner.apply_locks.read().await.get(&note_id) {
+            return lock.clone();
+        }
+        self.inner
+            .apply_locks
+            .write()
+            .await
+            .entry(note_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     /// Resolve a note's doc, transparently lazy-loading its `.bin` snapshot
     /// from `snapshot_dir` into `self.inner.docs` when the map doesn't
     /// currently hold it — the eviction-ready reload every future `evict()`
@@ -1564,6 +1650,36 @@ impl LoroEngine {
         self.set_doc_peer(&doc);
         let mut docs = self.inner.docs.write().await;
         Some(docs.entry(note_id).or_insert(doc).clone())
+    }
+
+    /// Resolve the note a payload's mutation targets, so `record_local` can
+    /// take that note's `apply_locks` guard BEFORE mutating (tesela-4ju
+    /// REVIEW REJECT follow-up: without this, a local edit could interleave
+    /// with a concurrent `apply_import` for the same note, same as the
+    /// apply-vs-apply race the lock was originally added for).
+    ///
+    /// Ops that carry `note_id` directly return it as-is. `BlockMove` /
+    /// `BlockDelete` carry only a `block_id`, so it's resolved through
+    /// `block_index` — read-then-release, same as `find_doc_for_block`,
+    /// upholding the "`apply_locks` before `docs`/`block_index`" ordering
+    /// rule on `Inner::apply_locks` (this lookup fully completes and drops
+    /// its lock before the caller acquires the note's apply guard). An
+    /// unregistered block_id resolves to `None` — `apply_payload_inner`
+    /// treats that as a no-op too, so no lock is needed. Attachment ops
+    /// never touch a per-note doc (see the no-op arm in
+    /// `apply_payload_inner`) and always resolve to `None`.
+    async fn note_id_for_payload(&self, payload: &OpPayload) -> Option<[u8; 16]> {
+        match payload {
+            OpPayload::NoteUpsert { note_id, .. }
+            | OpPayload::NoteDelete { note_id, .. }
+            | OpPayload::BlockUpsert { note_id, .. }
+            | OpPayload::BlockPropertySet { note_id, .. }
+            | OpPayload::PagePropertySet { note_id, .. } => Some(*note_id),
+            OpPayload::BlockMove { block_id, .. } | OpPayload::BlockDelete { block_id } => {
+                self.inner.block_index.read().await.get(block_id).copied()
+            }
+            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => None,
+        }
     }
 
     /// Get-or-create the Loro doc for a given note id, with this engine's
@@ -3789,12 +3905,27 @@ impl SyncEngine for LoroEngine {
     /// Local-side mutation. Stamps a fresh HLC + content hash, then
     /// runs the payload through the same per-op logic that
     /// `apply_changes` uses for peer-originated ops.
+    ///
+    /// Serialized against a concurrent `apply_import` (or another
+    /// `record_local`) for the SAME note (tesela-4ju REVIEW REJECT,
+    /// 2026-07-02): without this, a local edit could land between
+    /// `apply_import`'s props-plan fork and its twin tombstone, and get
+    /// silently dropped by a tombstone pass sized to a plan that predates
+    /// this edit. Takes the note's `apply_locks` guard (see
+    /// `Inner::apply_locks` for the ordering rule) via
+    /// `note_id_for_payload`, then delegates to the lock-free
+    /// `record_local_locked`. Ops with no resolvable note (an unknown
+    /// block, an attachment-only op — see `note_id_for_payload`) skip
+    /// locking; there's no per-note doc mutation to serialize.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
-        let hlc = self.inner.hlc.now();
-        let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
-        let hash = op.content_hash;
-        self.apply_payload(&payload).await?;
-        Ok(hash)
+        match self.note_id_for_payload(&payload).await {
+            Some(note_id) => {
+                let apply_lock = self.apply_lock_for_note(note_id).await;
+                let _apply_guard = apply_lock.lock().await;
+                self.record_local_locked(payload).await
+            }
+            None => self.record_local_locked(payload).await,
+        }
     }
 
     async fn local_cursor(&self) -> SyncResult<LocalCursor> {
@@ -3940,6 +4071,23 @@ impl SyncEngine for LoroEngine {
 }
 
 impl LoroEngine {
+    /// The un-locked body of `record_local` (tesela-4ju REVIEW REJECT
+    /// follow-up). `SyncEngine::record_local` takes the target note's
+    /// `apply_locks` guard, then calls this. Internal callers that ALREADY
+    /// hold that guard — currently only `reassert_prop_heals`, invoked from
+    /// inside `apply_import` and `heal_disjoint_twins`, both of which hold
+    /// the note's guard for their whole body — must call this directly
+    /// instead of the public `record_local`: re-entering the same note's
+    /// `tokio::sync::Mutex` from within its own critical section deadlocks
+    /// (it is not reentrant).
+    async fn record_local_locked(&self, payload: OpPayload) -> SyncResult<ContentHash> {
+        let hlc = self.inner.hlc.now();
+        let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
+        let hash = op.content_hash;
+        self.apply_payload(&payload).await?;
+        Ok(hash)
+    }
+
     /// Per-payload mutation shared between `record_local`,
     /// `apply_changes`, and `DualEngine`'s startup oplog replay.
     /// Replays a single `OpPayload` against the per-note Loro doc/tree.
@@ -10455,6 +10603,375 @@ mod tests {
             "deleted-wins must survive a GC-compacted snapshot round-trip: \
              a stale NoteUpsert on a fresh engine must not resurrect a bid \
              tombstoned only in the imported snapshot's current state"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Per-note apply serialization (tesela-4ju): adversarial-review
+    // finding #4 on tesela-y11 asked whether `apply_import`'s
+    // plan→import→tombstone sequence can interleave across CONCURRENT
+    // applies for the SAME note (the docs-map write lock, taken only
+    // inside `doc_for_note_mut`, is released before the sequence starts —
+    // so without an additional per-note lock, two racing applies could
+    // interleave and the second's twins could be tombstoned by the
+    // first's stale plan, or vice versa). `apply_lock_for_note` +
+    // `apply_import` holding it for the whole body (loro_engine.rs) close
+    // that window. These two tests prove it at both levels: the lock
+    // primitive itself, and an end-to-end hammer of the public apply API.
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_lock_serializes_same_note_not_different_notes() {
+        let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+        let note_a = [0xaa; 16];
+        let note_b = [0xbb; 16];
+
+        let lock_a1 = engine.apply_lock_for_note(note_a).await;
+        let lock_a2 = engine.apply_lock_for_note(note_a).await;
+        assert!(
+            Arc::ptr_eq(&lock_a1, &lock_a2),
+            "the same note_id must resolve to the SAME lock across calls, \
+             or two concurrent applies for that note would each grab an \
+             independent (non-serializing) mutex"
+        );
+
+        let lock_b = engine.apply_lock_for_note(note_b).await;
+        assert!(
+            !Arc::ptr_eq(&lock_a1, &lock_b),
+            "different notes must NOT share a lock — that would serialize \
+             unrelated notes' applies against each other for no reason"
+        );
+
+        // Prove actual mutual exclusion: hold note_a's lock, spawn a task
+        // that also wants note_a's lock and records when it acquires it;
+        // it must NOT acquire until the holder releases.
+        let order = Arc::new(tokio::sync::Mutex::new(Vec::<&'static str>::new()));
+        let guard = lock_a1.lock().await;
+        let order2 = order.clone();
+        let lock_a3 = engine.apply_lock_for_note(note_a).await;
+        let waiter = tokio::spawn(async move {
+            let _g = lock_a3.lock().await;
+            order2.lock().await.push("waiter-acquired");
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        order.lock().await.push("holder-still-held");
+        drop(guard);
+        waiter.await.unwrap();
+        let seq = order.lock().await.clone();
+        assert_eq!(
+            seq,
+            vec!["holder-still-held", "waiter-acquired"],
+            "the waiter must not acquire note_a's apply lock while the \
+             first holder is still active — mutual exclusion is broken"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_import_hammer_one_note_converges_without_leftover_twins() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let note = blake3_note_id("apply-race-note");
+
+        // 8 devices each independently author the SAME note body (disjoint
+        // Loro lineages — same block_ids A_BID/B_BID, distinct TreeIDs per
+        // device), producing 8 full-snapshot frames the server will import
+        // CONCURRENTLY. Each frame carries a genuinely different text for A
+        // so a corrupted/interleaved heal would be visible as garbled or
+        // vanished text, not just a silently-wrong-but-plausible value.
+        let mut frames = Vec::new();
+        for i in 0u8..8 {
+            let ddev = DeviceId::from_bytes([i + 1; 16]);
+            let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+            device
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: note,
+                    display_alias: Some("race".into()),
+                    title: "Race".into(),
+                    content: format!(
+                        "- Awesome from {i} <!-- bid:{A_BID} -->\n\
+                         - B from {i} <!-- bid:{B_BID} -->\n"
+                    ),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+            frames.push(device.export_doc_update(note, None).await.unwrap());
+        }
+
+        // Hammer: import all 8 frames into the SAME server note
+        // CONCURRENTLY from separate tokio tasks on a multi-thread runtime.
+        // Pre-fix (no per-note apply lock) this races each frame's
+        // props-plan fork against every other frame's raw import +
+        // tombstone; post-fix (tesela-4ju) the per-note mutex in
+        // `apply_import` forces them one at a time, so the result must be
+        // identical to a sequential run: exactly one surviving node per
+        // block_id, nothing vanished.
+        let mut set = tokio::task::JoinSet::new();
+        for bytes in frames {
+            let server = server.clone();
+            set.spawn(async move { server.import_doc_update(note, &bytes).await });
+        }
+        while let Some(res) = set.join_next().await {
+            res.expect("apply task must not panic")
+                .expect("concurrent import_doc_update must not error");
+        }
+
+        {
+            let docs = server.inner.docs.read().await;
+            let doc = docs
+                .get(&note)
+                .expect("note resident after concurrent imports");
+            assert!(
+                duplicate_block_ids(doc).is_empty(),
+                "concurrent apply_import calls for one note must still \
+                 converge to a single surviving node per block_id — leftover \
+                 twins mean the plan→import→tombstone sequence interleaved \
+                 across callers"
+            );
+        }
+
+        let a = block_text(&server, note, A_BID_BYTES).await;
+        let b = block_text(&server, note, B_BID_BYTES).await;
+        assert!(
+            a.is_some(),
+            "block A must survive concurrent hammering, not vanish entirely"
+        );
+        assert!(
+            b.is_some(),
+            "block B must survive concurrent hammering, not vanish entirely"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // tesela-4ju REVIEW REJECT (2026-07-02): the per-note `apply_locks`
+    // guard closed apply-vs-apply, but `record_local` and
+    // `heal_disjoint_twins` ran their own plan/import/tombstone-shaped
+    // sequences WITHOUT taking it — the same interleave class stayed open
+    // through those two paths. Both now take the SAME per-note guard
+    // (`note_id_for_payload` + `apply_lock_for_note`). These two tests race
+    // each path against a concurrent `apply_import` for the SAME note.
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn record_local_races_apply_import_for_same_note_preserves_local_edits() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let note = blake3_note_id("record-vs-import-race");
+
+        // Server already resident (so the Delta import's twin-heal plan gate
+        // — `already_resident && !is_views` — is active): exactly the
+        // residency this bead's finding is about.
+        server
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("race".into()),
+                title: "Race".into(),
+                content: format!(
+                    "- Server original <!-- bid:{A_BID} -->\n\
+                     - B server <!-- bid:{B_BID} -->\n"
+                ),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // A peer authors the SAME note on a disjoint Loro lineage (fresh
+        // TreeIDs for the same block_ids) with genuinely different text —
+        // importing it mints server-side twins that `apply_import` must
+        // resolve concurrently with the local edits below.
+        let pdev = DeviceId::from_bytes([0x7f; 16]);
+        let peer = LoroEngine::new(pdev, Arc::new(Hlc::new(pdev)));
+        peer.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("race".into()),
+            title: "Race".into(),
+            content: format!(
+                "- Peer incoming <!-- bid:{A_BID} -->\n\
+                 - B peer <!-- bid:{B_BID} -->\n"
+            ),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        let peer_frame = peer.export_doc_update(note, None).await.unwrap();
+
+        // Race: N concurrent LOCAL edits (`record_local`) against block A's
+        // "race_tag" list, plus the ONE inbound import, all launched
+        // together for the SAME note. The per-note `apply_locks` guard
+        // serializes them into SOME total order (never interleaved
+        // mid-sequence) — regardless of that order, every local AddToList
+        // must survive: applied directly to the still-live node if it runs
+        // AFTER the import's tombstone, or captured by the props-plan union
+        // fork (`peer_genuine_block_changes`/`twin_winners_for`) and
+        // re-asserted onto the survivor if it runs BEFORE the import.
+        const N: u8 = 6;
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..N {
+            let server = server.clone();
+            set.spawn(async move {
+                server
+                    .record_local(OpPayload::BlockPropertySet {
+                        note_id: note,
+                        block_id: A_BID_BYTES,
+                        key: "race_tag".into(),
+                        value: PropOp::AddToList(PropScalar::Text(format!("local-{i}"))),
+                    })
+                    .await
+                    .map(|_| ())
+            });
+        }
+        {
+            let server = server.clone();
+            let peer_frame = peer_frame.clone();
+            set.spawn(async move { server.import_doc_update(note, &peer_frame).await });
+        }
+        while let Some(res) = set.join_next().await {
+            res.expect("race task must not panic")
+                .expect("record_local/import_doc_update must not error");
+        }
+
+        {
+            let docs = server.inner.docs.read().await;
+            let doc = docs.get(&note).expect("note resident after the race");
+            assert!(
+                duplicate_block_ids(doc).is_empty(),
+                "record_local racing apply_import for the same note must still \
+                 converge to a single surviving node per block_id"
+            );
+        }
+
+        let mut tags: Vec<String> = block_prop_list(&server, note, A_BID_BYTES, "race_tag")
+            .await
+            .into_iter()
+            .map(|s| match s {
+                PropScalar::Text(t) => t,
+                other => format!("{other:?}"),
+            })
+            .collect();
+        tags.sort();
+        let expected: Vec<String> = (0..N).map(|i| format!("local-{i}")).collect();
+        assert_eq!(
+            tags, expected,
+            "every concurrent record_local AddToList must survive a racing \
+             apply_import for the SAME note — a dropped entry here means the \
+             local edit landed between apply_import's props-plan fork and its \
+             twin tombstone and got silently discarded (the tesela-4ju REVIEW \
+             REJECT finding this test guards)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn heal_disjoint_twins_races_apply_import_for_same_note_without_corruption() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let note = blake3_note_id("heal-vs-import-race");
+        const C_BID_BYTES: [u8; 16] = [0x0c; 16];
+
+        // Seed block A via the normal self-healing path (single live node —
+        // no apply path ever leaves a standing twin post-tesela-fte, per
+        // relay_inbound_rebase.rs's c14 comment).
+        server
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("race".into()),
+                title: "Race".into(),
+                content: format!("- Base A <!-- bid:{A_BID} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // Fabricate a GENUINE standing twin for A directly on the doc,
+        // bypassing every self-healing apply path — the only realistic
+        // source of a persistent twin (legacy pre-fix `.bin` residue loaded
+        // from disk). Gives `heal_disjoint_twins` real work, so this test
+        // exercises its ACTUAL plan→tombstone→reassert body racing a
+        // concurrent `apply_import`, not a no-op scan.
+        {
+            let doc = server.doc_for_note_mut(note).await;
+            let tree = doc.get_tree("blocks");
+            let raw_twin = tree.create(TreeParentId::Root).unwrap();
+            let meta = tree.get_meta(raw_twin).unwrap();
+            meta.insert("block_id", hex_id(&A_BID_BYTES).as_str())
+                .unwrap();
+            meta.insert("indent_level", 0i64).unwrap();
+            meta.insert("parent", "").unwrap();
+            write_block_text(&meta, "raw twin residue").unwrap();
+            doc.commit();
+        }
+        assert_eq!(
+            duplicate_block_ids(&server.doc_for_note_mut(note).await).len(),
+            1,
+            "fixture setup must actually produce a standing twin for A \
+             before the race"
+        );
+
+        // A peer concurrently authors a genuinely NEW block (disjoint from
+        // A) on the SAME note — the concurrent inbound import this races
+        // against the heal.
+        let pdev = DeviceId::from_bytes([0x7f; 16]);
+        let peer = LoroEngine::new(pdev, Arc::new(Hlc::new(pdev)));
+        peer.record_local(OpPayload::BlockUpsert {
+            block_id: C_BID_BYTES,
+            note_id: note,
+            parent_block_id: None,
+            order_key: "00000000".into(),
+            indent_level: 0,
+            text: "Peer concurrent block C".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+        let peer_frame = peer.export_doc_update(note, None).await.unwrap();
+
+        // Race: `heal_disjoint_twins()` (sweeping every resident note,
+        // including this one) concurrently with `import_doc_update` for the
+        // SAME note. Pre-fix (heal running unlocked) this could interleave
+        // heal's tombstone against the import's own plan/tombstone; post-fix
+        // (this bead) both take the SAME per-note `apply_locks` guard, so
+        // they serialize into SOME total order — never mid-sequence. Either
+        // order is valid (whichever wins the lock first may incidentally
+        // collapse A's twin itself, since `tombstone_duplicate_twins` is
+        // doc-wide) — this test asserts the invariant that holds under
+        // EITHER order, not a specific winner.
+        let heal_task = {
+            let server = server.clone();
+            tokio::spawn(async move { server.heal_disjoint_twins().await })
+        };
+        let import_task = {
+            let server = server.clone();
+            tokio::spawn(async move { server.import_doc_update(note, &peer_frame).await })
+        };
+        heal_task.await.expect("heal task must not panic");
+        import_task
+            .await
+            .expect("import task must not panic")
+            .expect("concurrent import_doc_update must not error");
+
+        {
+            let docs = server.inner.docs.read().await;
+            let doc = docs.get(&note).expect("note resident after the race");
+            assert!(
+                duplicate_block_ids(doc).is_empty(),
+                "heal_disjoint_twins racing a concurrent apply_import for the \
+                 SAME note must still converge to a single surviving node per \
+                 block_id — a leftover twin means the two sequences \
+                 interleaved (the tesela-4ju REVIEW REJECT finding this test \
+                 guards)"
+            );
+        }
+
+        let a = block_text(&server, note, A_BID_BYTES).await;
+        let c = block_text(&server, note, C_BID_BYTES).await;
+        assert!(
+            a.is_some(),
+            "block A must survive the heal, not vanish entirely"
+        );
+        assert_eq!(
+            c.as_deref(),
+            Some("Peer concurrent block C"),
+            "the concurrent import's genuinely new block C must land intact, \
+             not be corrupted/dropped by the racing heal"
         );
     }
 }
