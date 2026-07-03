@@ -93,14 +93,21 @@ type DateHit = { from: number; to: number; endWord: number; date: string; time: 
 
 /**
  * Literal ranges on the first line that detection must never lift tokens out
- * of: `[[wiki links]]`, markdown links/images `[text](url)`, bare URLs, and
- * inline `` `code` `` spans. Pre-claimed in `detectTokens` so a trigger word
- * inside a link target / code span is never detected — and therefore never
- * stripped by the blur lift (`detectTaskTokens`), which would otherwise
- * rewrite the link target ("p1" excised from a URL, a date word lifted out of
- * a `[[wiki link]]`). Because cm-decorations' highlight layer renders from the
- * same `detectTokens`, highlight and lift stay consistent by construction.
- * Exported for unit tests.
+ * of: `[[wiki links]]`, markdown links/images `[text](url)`, bare URLs,
+ * inline `` `code` `` spans, and `#hashtag` tokens. Pre-claimed in
+ * `detectTokens` so a trigger word inside a link target / code span is never
+ * detected — and therefore never stripped by the blur lift
+ * (`detectTaskTokens`), which would otherwise rewrite the link target ("p1"
+ * excised from a URL, a date word lifted out of a `[[wiki link]]`). The
+ * hashtag case additionally protects the bare-trailing-date rule: a legacy
+ * inline `#tag` following a bare date on the SAME line (iOS's block editor
+ * always keeps a block's tags on the same line as its prose, unlike web's
+ * canonical separate `tags::` line) must not defeat the trailing-position
+ * gate below — see `nlp-lift-conformance.json`'s
+ * `bare_trailing_lift_before_trailing_hashtag` case (tesela-j7g). Because
+ * cm-decorations' highlight layer renders from the same `detectTokens`,
+ * highlight and lift stay consistent by construction. Exported for unit
+ * tests.
  */
 export function literalRanges(line0: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
@@ -113,6 +120,7 @@ export function literalRanges(line0: string): Array<[number, number]> {
   collect(/!?\[[^\]]*\]\([^)]*\)/g); // markdown links + images
   collect(/`[^`]*`/g); // inline code spans
   collect(/\bhttps?:\/\/\S+/g); // bare URLs (also covers link targets)
+  collect(/#[A-Za-z0-9_/-]+/g); // hashtags (also covers legacy inline #tags)
   return ranges;
 }
 

@@ -392,14 +392,30 @@ static WIKI_LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[[^\]]*\
 static MD_LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\([^)]*\)").unwrap());
 static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`]*`").unwrap());
 static BARE_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bhttps?://\S+").unwrap());
+// Matches both clients' inline hashtag conventions (iOS `splitInlineTags`'s
+// `#[A-Za-z0-9_-]+`; web `block-tags.ts`'s `#[A-Za-z0-9_/-]+`, which also
+// allows `/` for hierarchical tags) — the union is intentionally permissive
+// since a hashtag is never itself a valid lift source either way.
+static HASHTAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#[A-Za-z0-9_/-]+").unwrap());
 static WORD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\S+").unwrap());
 
 /// Literal ranges (byte offsets into `line0`) that detection must never lift
-/// a token out of: `[[wiki links]]`, markdown links/images, bare URLs, and
-/// inline `` `code` `` spans.
+/// a token out of: `[[wiki links]]`, markdown links/images, bare URLs,
+/// inline `` `code` `` spans, and `#hashtag` tokens. The hashtag case matters
+/// for the bare-trailing-date rule below: iOS's block editor keeps a block's
+/// `#tag` tokens on the SAME line as its prose (`BlockRow.combinedEditableText`
+/// joins body + tags with a space) rather than on a separate `tags::` line
+/// like web's canonical storage, so "call dentist tomorrow #task" would
+/// otherwise see the trailing `#task` as non-whitespace content after the
+/// date phrase and fail the trailing-position gate — this is the
+/// `tesela-j7g` regression: a block tagged `#Task` inline never lifted its
+/// bare trailing date on blur. Seeding hashtags into `claimed` here fixes it
+/// at the shared root: `is_trailing_from` (below) already skips whitespace
+/// AND claimed spans, so a trailing tag cluster is now treated as boundary
+/// noise, not prose that blocks the date from counting as trailing.
 fn literal_ranges(line0: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
-    for re in [&*WIKI_LINK_RE, &*MD_LINK_RE, &*INLINE_CODE_RE, &*BARE_URL_RE] {
+    for re in [&*WIKI_LINK_RE, &*MD_LINK_RE, &*INLINE_CODE_RE, &*BARE_URL_RE, &*HASHTAG_RE] {
         for m in re.find_iter(line0) {
             ranges.push((m.start(), m.end()));
         }
@@ -758,6 +774,34 @@ mod tests {
         let result =
             detect_task_tokens("call her tomorrow about the launch", &fixture_registry(), today());
         assert_eq!(result.stripped, "call her tomorrow about the launch");
+        assert!(result.props.is_empty());
+    }
+
+    /// tesela-j7g regression: iOS's `combinedEditableText` puts the block's
+    /// `#tag` cluster on the SAME line as the prose (unlike web's separate
+    /// `tags::` line), so a trailing bare date must still lift even with a
+    /// hashtag trailing IT — the tag is boundary noise, not prose content
+    /// that defeats the trailing-position gate.
+    #[test]
+    fn trailing_date_lifts_before_a_trailing_hashtag() {
+        let result =
+            detect_task_tokens("Call dentist tomorrow #Task", &fixture_registry(), today());
+        assert_eq!(result.stripped, "Call dentist #Task");
+        assert_eq!(result.props.len(), 1);
+        assert_eq!(result.props[0].key, "deadline");
+        assert_eq!(result.props[0].value, "2026-05-23");
+    }
+
+    /// A hashtag mid-prose (not trailing) must not itself break the
+    /// mid-prose intent-word gate for a bare date that follows it.
+    #[test]
+    fn midprose_hashtag_does_not_grant_trailing_status() {
+        let result = detect_task_tokens(
+            "call her #urgent tomorrow about the launch",
+            &fixture_registry(),
+            today(),
+        );
+        assert_eq!(result.stripped, "call her #urgent tomorrow about the launch");
         assert!(result.props.is_empty());
     }
 

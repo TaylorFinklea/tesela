@@ -122,3 +122,23 @@ test("detection stays first-line-only (second-line URL irrelevant, second-line t
   assert.equal(det.stripped, "fix\nsee https://x.com/p2 and p3");
   assert.deepEqual(det.props, [{ key: "priority", value: "p1" }]);
 });
+
+// tesela-j7g regression: a trailing `#tag` on the SAME line as the prose
+// (iOS's block editor always keeps tags inline, unlike web's canonical
+// separate `tags::` line) must not defeat the bare-trailing-date rule.
+test("bare trailing date lifts before a trailing hashtag", () => {
+  const text = "call dentist tomorrow #task";
+  const tokens = detectTokens(text, SPEC);
+  assert.deepEqual(keys(tokens), ["scheduled"]);
+  const det = detectTaskTokens(text, SPEC);
+  assert.equal(det.stripped, "call dentist #task");
+  assert.equal(det.props.length, 1);
+  assert.equal(det.props[0].key, "scheduled");
+});
+
+test("a hashtag mid-prose does not grant trailing status to a later bare date", () => {
+  const text = "call her #urgent tomorrow about the launch";
+  const det = detectTaskTokens(text, SPEC);
+  assert.equal(det.stripped, text, "nothing lifts without an intent word");
+  assert.deepEqual(det.props, []);
+});

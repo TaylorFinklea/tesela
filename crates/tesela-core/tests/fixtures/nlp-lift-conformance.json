@@ -234,6 +234,27 @@
           }
         ]
       }
+    },
+    {
+      "name": "bare_trailing_lift_before_trailing_hashtag",
+      "text": "Call dentist tomorrow #Task",
+      "expected": {
+        "stripped": "Call dentist #Task",
+        "props": [
+          {
+            "key": "deadline",
+            "value": "2026-05-23"
+          }
+        ]
+      }
+    },
+    {
+      "name": "midprose_hashtag_does_not_grant_trailing",
+      "text": "call her #urgent tomorrow about the launch",
+      "expected": {
+        "stripped": "call her #urgent tomorrow about the launch",
+        "props": []
+      }
     }
   ]
 }

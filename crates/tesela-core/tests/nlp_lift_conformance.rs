@@ -222,6 +222,26 @@ fn raw_cases() -> Vec<(&'static str, &'static str, &'static str, Vec<(&'static s
             "buy milk",
             vec![("priority", "p2"), ("deadline", "2026-05-23")],
         ),
+        (
+            // tesela-j7g regression: iOS's block editor keeps a block's
+            // `#tag` cluster on the SAME line as its prose (unlike web's
+            // separate `tags::` line) — a trailing bare date must still
+            // lift with a hashtag trailing it; the tag is boundary noise,
+            // not prose that defeats the trailing-position gate.
+            "bare_trailing_lift_before_trailing_hashtag",
+            "Call dentist tomorrow #Task",
+            "Call dentist #Task",
+            vec![("deadline", "2026-05-23")],
+        ),
+        (
+            // A hashtag mid-prose must not itself grant trailing status to
+            // a bare date that follows it — the mid-prose intent-word gate
+            // still applies.
+            "midprose_hashtag_does_not_grant_trailing",
+            "call her #urgent tomorrow about the launch",
+            "call her #urgent tomorrow about the launch",
+            vec![],
+        ),
     ]
 }
 
