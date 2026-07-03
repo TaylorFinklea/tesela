@@ -30,7 +30,10 @@
 //! stable for a week per the cutover plan.
 
 use crate::device::DeviceId;
-use crate::engine::{cursor::PeerCursor, LocalCursor, RelayApplyReport, SyncEngine};
+use crate::engine::{
+    cursor::PeerCursor, LocalCursor, PendingImport, RelayApplyReport, SyncEngine,
+    CATCHUP_BACKOFF_SHIFT_CAP, MAX_CATCHUP_ATTEMPTS,
+};
 use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload, PropOp};
@@ -59,6 +62,67 @@ fn unique_tmp(path: &Path) -> PathBuf {
 
 fn hex_id(id: &[u8; 16]) -> String {
     hex::encode(id)
+}
+
+/// Best-effort list of the Loro PeerIDs whose ops a relay update frame
+/// carries, decoded from the frame's blob metadata (tesela-c7s item 2 — the
+/// "from_peer" a pending causal-gap ledger entry records). Returns empty on a
+/// frame whose metadata won't decode; never fails. Checksum verification is
+/// skipped (`false`) — this is metadata for a log/ledger, not a trust
+/// boundary, and the bytes already imported into Loro before we ask.
+fn peers_of_update(bytes: &[u8]) -> Vec<u64> {
+    match LoroDoc::decode_import_blob_meta(bytes, false) {
+        Ok(meta) => meta.partial_end_vv.iter().map(|(peer, _)| *peer).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Is a DIRTY note's outbound broadcast cursor stranded — i.e. would shipping
+/// `updates(cursor)` produce an empty / no-op frame instead of a real delta?
+/// (tesela-c7s item 3.) The caller establishes the note is dirty (cursor bytes
+/// != `current_enc`); this classifies WHY the incremental export can't carry
+/// content:
+/// - undecodable cursor (2026-06-25 class) → stranded;
+/// - cursor whose VV COVERS the doc's current version (stale-ahead, 2026-06-29
+///   class — e.g. an authoritative import rebased current 'backward') →
+///   stranded;
+/// - a cursor that is behind or DISJOINT from current → NOT stranded (it ships
+///   a genuine delta).
+/// `since == None` (never broadcast) is a first-snapshot, not a strand.
+fn outbound_cursor_stranded(since: Option<&[u8]>, current_enc: &[u8]) -> bool {
+    let Some(since_bytes) = since else {
+        return false;
+    };
+    let Ok(current_vv) = VersionVector::decode(current_enc) else {
+        return false;
+    };
+    match VersionVector::decode(since_bytes) {
+        Err(_) => true,
+        Ok(since_vv) => since_vv.includes_vv(&current_vv),
+    }
+}
+
+/// Should the outbound cursor be REWOUND to a just-deposited snapshot's
+/// version (tesela-c7s item 4)? Only when the current cursor is genuinely
+/// STRANDED relative to that snapshot — undecodable, or covering (at-or-ahead
+/// of) the snapshot version so the next incremental export would be empty.
+/// A cursor equal to, behind, or disjoint from the snapshot is NOT stranded:
+/// repairing it would rewind a healthy cursor and force a redundant
+/// re-broadcast, so it is left alone. `None` (never broadcast) is never
+/// repaired — the first real broadcast establishes the cursor.
+fn broadcast_cursor_needs_repair(existing: Option<&[u8]>, snap_vv_enc: &[u8]) -> bool {
+    let Some(existing_bytes) = existing else {
+        return false;
+    };
+    let Ok(snap_vv) = VersionVector::decode(snap_vv_enc) else {
+        return false;
+    };
+    match VersionVector::decode(existing_bytes) {
+        Err(_) => true,
+        // Cursor covers the snapshot and isn't identical to it → stale-ahead
+        // strand → rewind. Identical → already anchored, nothing to heal.
+        Ok(cur_vv) => cur_vv != snap_vv && cur_vv.includes_vv(&snap_vv),
+    }
 }
 
 /// Schema version of the index doc's entry shape. Bump whenever the
@@ -345,6 +409,34 @@ struct Inner {
     /// would deadlock trying to re-acquire the SAME note's non-reentrant
     /// guard.
     apply_locks: RwLock<HashMap<[u8; 16], Arc<tokio::sync::Mutex<()>>>>,
+    /// Durable causal-gap ledger (tesela-c7s item 2): note_id → the
+    /// [`PendingImport`] record for a note whose inbound relay update Loro
+    /// left PENDING (referenced ops the doc is missing). Recorded here
+    /// STRUCTURALLY by `apply_relay_updates` — not merely `tracing::warn`'d —
+    /// so the strand is observable ([`pending_import_notes`]) and self-healing
+    /// ([`notes_needing_snapshot_catchup`] drives an auto snapshot catch-up).
+    /// Cleared when a later delta OR an authoritative snapshot fully
+    /// integrates the note. Persisted to `<snapshot_dir>/_pending_imports.bin`
+    /// (mirrors the broadcast cursor) so a restart doesn't forget an
+    /// unresolved gap.
+    ///
+    /// [`pending_import_notes`]: LoroEngine::pending_import_notes
+    /// [`notes_needing_snapshot_catchup`]: LoroEngine::notes_needing_snapshot_catchup
+    pending_imports: RwLock<HashMap<[u8; 16], PendingImport>>,
+    /// Monotonic "inbound apply pass" counter — bumped once per
+    /// `apply_relay_updates` batch. One batch = one tick's worth of inbound
+    /// relay updates; a pending note whose `first_seen_pass` is strictly below
+    /// this has survived at least one whole pass still stuck (the "past one
+    /// tick" auto-heal boundary).
+    import_pass: AtomicU64,
+    /// Count of OUTBOUND STRAND ALARMS (tesela-c7s item 3): incremented by
+    /// `produce_relay_updates` every time a note that is dirty since its last
+    /// confirmed PUT could NOT ship an incremental delta — its broadcast
+    /// cursor is stale-ahead of (covers) the doc's current version, or it
+    /// won't decode — so we fall back to a full snapshot instead of shipping a
+    /// content-less/empty frame. A rising count is the live signature of the
+    /// deposit-strand class; surfaced for the server/FFI tick to log.
+    outbound_strand_alarms: AtomicU64,
 }
 
 /// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
@@ -414,6 +506,9 @@ impl LoroEngine {
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
                 apply_locks: RwLock::new(HashMap::new()),
+                pending_imports: RwLock::new(HashMap::new()),
+                import_pass: AtomicU64::new(0),
+                outbound_strand_alarms: AtomicU64::new(0),
             }),
         }
     }
@@ -436,6 +531,9 @@ impl LoroEngine {
                 materialize_dir: None,
                 migrate_in_text: true,
                 apply_locks: RwLock::new(HashMap::new()),
+                pending_imports: RwLock::new(HashMap::new()),
+                import_pass: AtomicU64::new(0),
+                outbound_strand_alarms: AtomicU64::new(0),
             }),
         }
     }
@@ -515,6 +613,9 @@ impl LoroEngine {
         // Restore per-note broadcast cursors so a restart doesn't re-emit
         // every note's full state on the next relay tick (best-effort).
         let broadcast_cursor = load_broadcast_cursors(&snapshot_dir).await;
+        // Restore the causal-gap ledger so a restart doesn't forget a note
+        // that was still pending a snapshot catch-up (tesela-c7s item 2).
+        let pending_imports = load_pending_imports(&snapshot_dir).await;
         let engine = Self {
             inner: Arc::new(Inner {
                 docs: RwLock::new(docs),
@@ -527,6 +628,9 @@ impl LoroEngine {
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
                 apply_locks: RwLock::new(HashMap::new()),
+                pending_imports: RwLock::new(pending_imports),
+                import_pass: AtomicU64::new(0),
+                outbound_strand_alarms: AtomicU64::new(0),
             }),
         };
         if needs_rebuild {
@@ -863,9 +967,19 @@ impl LoroEngine {
         note_id: [u8; 16],
         bytes: &[u8],
     ) -> SyncResult<()> {
-        self.apply_import(note_id, bytes, ImportMode::Authoritative)
+        let outcome = self
+            .apply_import(note_id, bytes, ImportMode::Authoritative)
             .await
-            .map(|_| ())
+            .map(|_| ());
+        // This IS the causal-gap heal (tesela-c7s item 2): a note queued for
+        // snapshot catch-up because a live delta landed pending has now
+        // re-based on the relay's authoritative full state, so its gap is
+        // closed — clear it from the ledger. Only on success; a failed import
+        // leaves it queued for the next attempt.
+        if outcome.is_ok() {
+            self.clear_pending_import(note_id).await;
+        }
+        outcome
     }
 
     /// One-shot LOCAL repair scan (tesela-49d): report every note's DISJOINT
@@ -1348,6 +1462,31 @@ impl LoroEngine {
             if since.as_deref() == Some(current.as_slice()) {
                 continue;
             }
+            // OUTBOUND STRAND ALARM (tesela-c7s item 3). We are here because
+            // the note is DIRTY (its cursor != its current version). If the
+            // cursor is stale-AHEAD of current (it already covers every op the
+            // doc holds) or won't decode, an incremental `updates(cursor)` is
+            // an empty / no-op frame — the deposit-strand class (2026-06-25
+            // undecodable, 2026-06-29 stale-ahead). `export_doc_update`
+            // already rescues correctness by falling back to a full snapshot,
+            // but a dirty note that could not ship an incremental delta is a
+            // BUG worth shouting about, not a silent snapshot every tick: log
+            // loudly + bump the alarm so the server/FFI tick surfaces it and
+            // the class is observable on the live fleet (where it presented as
+            // "ZERO PUT /ops despite fresh edits"). A DISJOINT cursor (neither
+            // covers the other) is NOT a strand — it ships a real delta — so
+            // it must not raise the alarm.
+            if outbound_cursor_stranded(since.as_deref(), &current) {
+                self.inner
+                    .outbound_strand_alarms
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    "tesela-sync/loro: OUTBOUND STRAND for {} — dirty note's broadcast \
+                     cursor is stale-ahead/undecodable; shipping a full-snapshot fallback \
+                     instead of an empty delta (deposit-strand class, tesela-c7s)",
+                    hex_id(&note_id)
+                );
+            }
             if let Some(bytes) = self.export_doc_update(note_id, since.as_deref()).await {
                 out.push((note_id, bytes, current));
             }
@@ -1375,6 +1514,62 @@ impl LoroEngine {
         self.save_broadcast_cursors().await;
     }
 
+    /// HEAL a stranded outbound cursor after a note's full snapshot was
+    /// CONFIRMED deposited to the relay (tesela-c7s item 4). Each pair is
+    /// `(note_id, vv_at_snapshot_time)` — the doc's version vector captured at
+    /// the moment its snapshot was EXPORTED, NOT re-read at confirm time.
+    ///
+    /// Why this exists: a stale-ahead / undecodable outbound cursor makes the
+    /// broadcast producer ship a snapshot every tick and NEVER re-anchor to an
+    /// incremental delta, and the relay snapshot deposit — while it carries the
+    /// content — is invisible to peers that only poll `GET ops?since=N`
+    /// (they read snapshots only on bootstrap/catch-up). So the fallback that
+    /// SUCCEEDED at durability left the strand intact and looped forever. This
+    /// re-anchors the cursor to the deposited snapshot's version so the NEXT
+    /// local edit ships a real incremental delta over the ops stream again —
+    /// the fallback HEALS the strand instead of masking it.
+    ///
+    /// SAFE by construction (the "snapshot time, not confirm time" rule):
+    /// - It only ever moves a STRANDED cursor (undecodable, or one that COVERS
+    ///   the snapshot version) DOWN to the snapshot version. A cursor that is
+    ///   behind or disjoint from the snapshot is left untouched — the normal
+    ///   `produce`/`commit` path owns it and would ship the missing ops as a
+    ///   delta; rewinding it would just re-broadcast.
+    /// - Because the vv is captured at snapshot-EXPORT time, any local edit
+    ///   recorded AFTER the snapshot was cut but before this confirm is NOT
+    ///   swallowed: it advances `current` past the snapshot vv, so after the
+    ///   repair the cursor (= snapshot vv) is strictly behind `current` and the
+    ///   next `produce` ships that edit incrementally. (Re-reading the vv at
+    ///   confirm time would instead skip it.)
+    pub async fn repair_broadcast_cursors_after_snapshot(
+        &self,
+        committed: &[([u8; 16], Vec<u8>)],
+    ) {
+        if committed.is_empty() {
+            return;
+        }
+        let mut repaired = false;
+        {
+            let mut cur = self.inner.broadcast_cursor.write().await;
+            for (note_id, snap_vv) in committed {
+                let existing = cur.get(note_id).map(|v| v.as_slice());
+                if broadcast_cursor_needs_repair(existing, snap_vv) {
+                    cur.insert(*note_id, snap_vv.clone());
+                    repaired = true;
+                    tracing::warn!(
+                        "tesela-sync/loro: REPAIRED outbound cursor for {} to its \
+                         snapshot-time version after a confirmed snapshot deposit \
+                         (healing the deposit-strand, tesela-c7s)",
+                        hex_id(note_id)
+                    );
+                }
+            }
+        }
+        if repaired {
+            self.save_broadcast_cursors().await;
+        }
+    }
+
     /// Apply a batch of broadcast per-note Loro updates (the inbound
     /// relay tick). Idempotent + commutative — duplicate / out-of-order
     /// batches are safe. Returns a per-note [`RelayApplyReport`]: which
@@ -1384,6 +1579,10 @@ impl LoroEngine {
     /// is also warn-logged here, so even a caller that drops the report
     /// leaves a trace (audit A4).
     pub async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
+        // One inbound relay BATCH = one apply pass = one "tick" for the
+        // causal-gap ledger's "past one tick" auto-heal boundary (tesela-c7s
+        // item 2). Bump once per batch, before any per-note record.
+        let pass = self.inner.import_pass.fetch_add(1, Ordering::Relaxed) + 1;
         let mut report = RelayApplyReport::default();
         for (note_id, bytes) in updates {
             // Fully-qualified call: `apply_doc_update_status` also exists on
@@ -1395,13 +1594,21 @@ impl LoroEngine {
             // `import_doc_update` but additionally surfaces Loro's pending
             // status instead of discarding it.
             match LoroEngine::apply_doc_update_status(self, *note_id, bytes).await {
-                Ok(false) => report.applied.push(*note_id),
+                Ok(false) => {
+                    report.applied.push(*note_id);
+                    // A clean apply HEALED any prior causal gap for this note
+                    // (the missing base arrived) — drop it from the ledger.
+                    self.clear_pending_import(*note_id).await;
+                }
                 Ok(true) => {
                     tracing::warn!(
                         "tesela-sync/loro: relay update for {} imported PENDING \
-                         (causal gap) — needs snapshot catch-up",
+                         (causal gap) — recording in ledger + needs snapshot catch-up",
                         hex_id(note_id)
                     );
+                    // DURABLE record (tesela-c7s item 2): not just this warn.
+                    self.record_pending_import(*note_id, pass, peers_of_update(bytes))
+                        .await;
                     report.pending.push(*note_id);
                 }
                 Err(e) => {
@@ -1726,8 +1933,24 @@ impl LoroEngine {
     /// Stamp this engine's PeerID on a doc so its subsequent local ops
     /// are attributed to this device. Idempotent; safe on a loaded or
     /// imported doc (sets the peer for FUTURE ops only).
+    ///
+    /// Also turns ON change-timestamp recording (tesela-c7s item 1): every
+    /// REAL local authoring op this device commits carries a wall-clock
+    /// Unix-seconds stamp, so a stranded/undecodable-cursor investigation can
+    /// see WHEN a note last actually changed and any future recency-aware
+    /// twin resolution has a signal. This is the "real local authoring only"
+    /// scope: `set_doc_peer` is called at doc create/load for per-note docs +
+    /// the index + the views registry — never on the deterministic
+    /// `builtin_views_seed_update` scratch doc, which builds with a fresh
+    /// `LoroDoc` and pins `set_record_timestamp(false)` so its ops stay
+    /// byte-identical across devices (the fresh-device-clobber invariant).
+    /// Timestamps are runtime-only metadata (`set_record_timestamp`'s own
+    /// docs: "not serialized into updates or snapshots"; must be reapplied per
+    /// doc) and do NOT feed Loro's map/text LWW (that is `(lamport, peer)`),
+    /// so enabling this changes observability, never merge/convergence.
     fn set_doc_peer(&self, doc: &LoroDoc) {
         let _ = doc.set_peer_id(self.peer_id());
+        doc.set_record_timestamp(true);
     }
 
     /// Get-or-create this note's apply-serialization lock (tesela-4ju). See
@@ -2026,6 +2249,165 @@ impl LoroEngine {
         } else {
             let _ = tokio::fs::remove_file(&tmp).await;
         }
+    }
+
+    /// Persist the causal-gap ledger to `<snapshot_dir>/_pending_imports.bin`
+    /// (postcard of `Vec<PendingImport>`; tesela-c7s item 2). Best-effort —
+    /// a lost ledger only costs re-detecting the gap on the next inbound
+    /// pending frame, so a failed write is swallowed (mirrors the broadcast
+    /// cursor's crash-safety posture).
+    async fn save_pending_imports(&self) {
+        let Some(dir) = self.inner.snapshot_dir.as_ref() else {
+            return;
+        };
+        let entries: Vec<PendingImport> = self
+            .inner
+            .pending_imports
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        let bytes = match postcard::to_allocvec(&entries) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("tesela-sync/loro: pending-import ledger encode: {e}");
+                return;
+            }
+        };
+        let path = dir.join("_pending_imports.bin");
+        let tmp = unique_tmp(&path);
+        if tokio::fs::write(&tmp, &bytes).await.is_ok() {
+            if tokio::fs::rename(&tmp, &path).await.is_err() {
+                let _ = tokio::fs::remove_file(&tmp).await;
+            }
+        } else {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+    }
+
+    /// Record that `note_id`'s inbound update landed PENDING at the current
+    /// apply pass (tesela-c7s item 2). Preserves the `first_seen_pass` of an
+    /// existing entry (so "past one tick" is measured from the FIRST stall,
+    /// not the latest re-observation), refreshes `last_seen_pass`, and unions
+    /// in the frame's peers. Persists the ledger. No-op-safe to call twice.
+    async fn record_pending_import(&self, note_id: [u8; 16], pass: u64, from_peers: Vec<u64>) {
+        {
+            let mut ledger = self.inner.pending_imports.write().await;
+            let entry = ledger.entry(note_id).or_insert_with(|| PendingImport {
+                note_id,
+                first_seen_pass: pass,
+                last_seen_pass: pass,
+                from_peers: Vec::new(),
+                ..Default::default()
+            });
+            entry.last_seen_pass = pass;
+            for p in from_peers {
+                if !entry.from_peers.contains(&p) {
+                    entry.from_peers.push(p);
+                }
+            }
+        }
+        self.save_pending_imports().await;
+    }
+
+    /// Clear `note_id` from the causal-gap ledger — a later delta OR an
+    /// authoritative snapshot fully integrated it, so the gap healed
+    /// (tesela-c7s item 2). Persists only when something was actually removed.
+    async fn clear_pending_import(&self, note_id: [u8; 16]) {
+        let removed = self.inner.pending_imports.write().await.remove(&note_id);
+        if removed.is_some() {
+            self.save_pending_imports().await;
+        }
+    }
+
+    /// Snapshot of the causal-gap ledger for observability (tesela-c7s item 2)
+    /// — every note whose inbound update is currently stuck behind a missing
+    /// base, with when it first stalled and which peers' ops it carried.
+    pub async fn pending_import_notes(&self) -> Vec<PendingImport> {
+        self.inner.pending_imports.read().await.values().cloned().collect()
+    }
+
+    /// Notes that have stayed pending past one full inbound apply pass and so
+    /// need an AUTHORITATIVE SNAPSHOT catch-up to heal the causal gap
+    /// (tesela-c7s item 2). "Past one tick": a note whose `first_seen_pass` is
+    /// strictly below the current pass survived a whole batch still stuck, so
+    /// it will not self-heal from buffered deltas — the caller (server / FFI
+    /// relay tick) fetches + imports the relay's authoritative snapshot for
+    /// exactly these, which clears them via [`clear_pending_import`]. A note
+    /// that only JUST went pending this pass is deliberately withheld one pass
+    /// so a same-session missing-base delta can still integrate it first.
+    ///
+    /// BOUNDED (tesela-c7s F3): a note whose snapshot no peer ever deposits can
+    /// never heal, so escalating it on EVERY pass forever is pure waste (a relay
+    /// `fetch_snapshots` per tick that always comes back empty for it). This is
+    /// self-mutating accounting: each returned note's `catchup_attempts` is
+    /// incremented and its `last_catchup_pass` stamped, escalations are spaced by
+    /// EXPONENTIAL BACKOFF (the Nth is due `min(2^N, 2^CATCHUP_BACKOFF_SHIFT_CAP)`
+    /// passes after the previous), and once `catchup_attempts` reaches
+    /// [`MAX_CATCHUP_ATTEMPTS`] the note is declared a PERMANENT gap
+    /// (`catchup_exhausted = true`, a loud terminal log fires once) and is never
+    /// escalated again. It stays in the ledger so [`pending_import_notes`] /
+    /// the sync-health surface can show it; only a real heal clears it.
+    pub async fn notes_needing_snapshot_catchup(&self) -> Vec<[u8; 16]> {
+        let pass = self.inner.import_pass.load(Ordering::Relaxed);
+        let mut due = Vec::new();
+        let mut changed = false;
+        {
+            let mut ledger = self.inner.pending_imports.write().await;
+            for entry in ledger.values_mut() {
+                // One-pass grace: a note that only just went pending this pass
+                // may still integrate from a same-session buffered base.
+                if entry.first_seen_pass >= pass {
+                    continue;
+                }
+                // Terminal: a permanent gap no longer re-escalates.
+                if entry.catchup_exhausted {
+                    continue;
+                }
+                // Exponential backoff between escalations. Before the first
+                // escalation the reference is `first_seen_pass`; after, it is the
+                // last escalation pass — so a note is due only once `backoff`
+                // passes have elapsed since it was last tried.
+                let reference = if entry.catchup_attempts == 0 {
+                    entry.first_seen_pass
+                } else {
+                    entry.last_catchup_pass
+                };
+                let backoff = 1u64 << entry.catchup_attempts.min(CATCHUP_BACKOFF_SHIFT_CAP);
+                if pass.saturating_sub(reference) < backoff {
+                    continue;
+                }
+                entry.catchup_attempts += 1;
+                entry.last_catchup_pass = pass;
+                changed = true;
+                if entry.catchup_attempts >= MAX_CATCHUP_ATTEMPTS {
+                    entry.catchup_exhausted = true;
+                    tracing::error!(
+                        "tesela-sync/loro: note {} is a PERMANENT causal gap — {} \
+                         authoritative-snapshot catch-up escalations never healed it (no peer \
+                         has deposited its snapshot). Marking terminal in the pending-import \
+                         ledger for the sync-health surface; it will not re-escalate until a \
+                         real base/snapshot arrives.",
+                        hex_id(&entry.note_id),
+                        entry.catchup_attempts
+                    );
+                }
+                due.push(entry.note_id);
+            }
+        }
+        if changed {
+            self.save_pending_imports().await;
+        }
+        due
+    }
+
+    /// Count of outbound strand alarms raised so far (tesela-c7s item 3) — a
+    /// monotonic counter the server / FFI relay tick reads to log when a
+    /// dirty note could not ship an incremental delta and fell back to a
+    /// snapshot. See [`Inner::outbound_strand_alarms`].
+    pub fn outbound_strand_alarm_count(&self) -> u64 {
+        self.inner.outbound_strand_alarms.load(Ordering::Relaxed)
     }
 
     /// Reseed every note's Loro doc from the authoritative `.md` files in
@@ -2353,6 +2735,23 @@ async fn load_broadcast_cursors(dir: &Path) -> HashMap<[u8; 16], Vec<u8>> {
             Ok(entries) => entries.into_iter().collect(),
             Err(e) => {
                 tracing::warn!("tesela-sync/loro: broadcast cursor decode: {e}");
+                HashMap::new()
+            }
+        },
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Load the causal-gap ledger persisted by
+/// `LoroEngine::save_pending_imports` (tesela-c7s item 2). Missing/corrupt →
+/// empty (the gap re-surfaces on the next inbound pending frame).
+async fn load_pending_imports(dir: &Path) -> HashMap<[u8; 16], PendingImport> {
+    let path = dir.join("_pending_imports.bin");
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => match postcard::from_bytes::<Vec<PendingImport>>(&bytes) {
+            Ok(entries) => entries.into_iter().map(|p| (p.note_id, p)).collect(),
+            Err(e) => {
+                tracing::warn!("tesela-sync/loro: pending-import ledger decode: {e}");
                 HashMap::new()
             }
         },
@@ -4260,6 +4659,18 @@ impl SyncEngine for LoroEngine {
 
     async fn commit_broadcast_cursors(&self, committed: &[([u8; 16], Vec<u8>)]) {
         LoroEngine::commit_broadcast_cursors(self, committed).await
+    }
+
+    async fn repair_broadcast_cursors_after_snapshot(&self, committed: &[([u8; 16], Vec<u8>)]) {
+        LoroEngine::repair_broadcast_cursors_after_snapshot(self, committed).await
+    }
+
+    async fn notes_needing_snapshot_catchup(&self) -> Vec<[u8; 16]> {
+        LoroEngine::notes_needing_snapshot_catchup(self).await
+    }
+
+    async fn outbound_strand_alarm_count(&self) -> u64 {
+        LoroEngine::outbound_strand_alarm_count(self)
     }
 
     async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
@@ -8051,6 +8462,53 @@ mod tests {
         assert!(
             engine.produce_relay_updates().await.is_empty(),
             "committed cursor suppresses re-broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_edits_carry_timestamps_but_the_builtin_views_seed_stays_ts0() {
+        // tesela-c7s item 1, precisely scoped. Two invariants that MUST hold
+        // together:
+        //  (a) a REAL local authoring op carries a wall-clock timestamp (> 0),
+        //      so a strand investigation can see when a note last changed;
+        //  (b) the DETERMINISTIC `builtin_views_seed_update` stays ts == 0, so
+        //      its bytes are byte-identical on every device (the fresh-device-
+        //      clobber invariant — two independent seeds must author the SAME
+        //      op ids, which a per-device wall-clock stamp would break).
+        //
+        // REVERT-DISCRIMINATING both ways: removing `set_record_timestamp(true)`
+        // from `set_doc_peer` drops (a) to ts == 0; flipping the seed builder to
+        // `set_record_timestamp(true)` raises (b) above 0 (and would also break
+        // `views_seed_update_is_deterministic`).
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let note = blake3_note_id("stamped");
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("stamped".into()),
+                title: "S".into(),
+                content: "- hi <!-- bid:e5e5e5e5-e5e5-e5e5-e5e5-e5e5e5e5e5e5 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        let snapshot = engine.export_doc_update(note, None).await.unwrap();
+        let meta = LoroDoc::decode_import_blob_meta(&snapshot, false).unwrap();
+        assert!(
+            meta.end_timestamp > 0,
+            "a real local edit must record a wall-clock change timestamp; got {}",
+            meta.end_timestamp
+        );
+
+        let seed = builtin_views_seed_update().unwrap();
+        let seed_meta = LoroDoc::decode_import_blob_meta(&seed, false).unwrap();
+        assert_eq!(
+            seed_meta.end_timestamp, 0,
+            "the deterministic builtin-views seed MUST stay ts=0 (byte-identical \
+             across devices); got {}",
+            seed_meta.end_timestamp
         );
     }
 

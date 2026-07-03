@@ -524,6 +524,32 @@ pub async fn tick(
     }
     let mut state = handle.state.write().await;
 
+    // ─── Causal-gap ledger auto-issue (tesela-c7s item 2) ────────────
+    // The engine records EVERY note whose inbound update Loro left pending
+    // (causal gap) in a durable ledger. Drain the notes that have stayed
+    // pending past one full apply pass into the catch-up queue: a same-session
+    // missing-base delta is given one pass to self-heal, and anything still
+    // stuck is escalated to an authoritative-snapshot catch-up. Additive to
+    // the immediate `report.pending` queueing above — it also covers a note
+    // still stuck across ticks / restart (the ledger is persisted), so the
+    // gap can never be forgotten as a bare log line.
+    let ledger_catchup = engine.notes_needing_snapshot_catchup().await;
+    if !ledger_catchup.is_empty() {
+        // These heal via the relay's authoritative snapshot, not their raw
+        // ops, so protecting the op log from GC below them isn't needed — bound
+        // at the current inbound cursor (never 0, which would freeze group
+        // compaction) so an already-`report.pending`-queued note keeps its
+        // tighter seq (`or_insert` won't overwrite).
+        let floor = state.inbound_cursor.max(1);
+        for id in ledger_catchup {
+            let hex_id = hex::encode(id);
+            state.catchup_since_seq.entry(hex_id.clone()).or_insert(floor);
+            if !state.catchup_notes.contains(&hex_id) {
+                state.catchup_notes.push(hex_id);
+            }
+        }
+    }
+
     // ─── Targeted snapshot catch-up ──────────────────────────────────
     // Heal notes whose inbound apply failed or landed PENDING (and notes a
     // partially-failed bootstrap queued): authoritatively re-import each
@@ -557,7 +583,23 @@ pub async fn tick(
     // produce_relay_updates returns (note_id, update_bytes, captured_vv).
     // The cursor is NOT yet advanced — we commit it only after the PUT is
     // confirmed, so a failed send is retried next tick rather than dropped.
+    let strand_alarms_before = engine.outbound_strand_alarm_count().await;
     let updates = engine.produce_relay_updates().await;
+    // Surface the deposit-strand class at tick granularity (tesela-c7s item
+    // 3): if producing this tick's broadcast had to fall back from an
+    // incremental delta to a full snapshot for any dirty note (stale-ahead /
+    // undecodable cursor), shout it here too — this is the live signature of
+    // the wedge ("fresh edits, ZERO incremental PUT /ops"). The confirmed
+    // snapshot deposit above then re-anchors the cursor (item 4).
+    let strand_alarms_after = engine.outbound_strand_alarm_count().await;
+    if strand_alarms_after > strand_alarms_before {
+        tracing::warn!(
+            "relay: {} outbound strand alarm(s) this tick — dirty note(s) shipped a \
+             snapshot fallback instead of an incremental delta (deposit-strand class, \
+             tesela-c7s)",
+            strand_alarms_after - strand_alarms_before
+        );
+    }
     // Chunk into size-bounded batches so each PUT fits the relay body limit —
     // the canonical bootstrap broadcasts every note's full state and would
     // otherwise 413. Commit each batch's cursors only after its PUT confirms;
@@ -617,6 +659,23 @@ pub async fn tick(
     // local-authored / cleanly-applied notes. Being independent of the gated
     // compaction, healthy notes also heal even when another note is stuck (the
     // deadlock). Additive — never touches the merge/apply path; best-effort.
+    //
+    // NO CURSOR REPAIR HERE (tesela-c7s F1, round 2). Every id in
+    // `broadcast_note_ids` was just PUT as a broadcast op and its cursor
+    // advanced by `commit_broadcast_cursors` above — for a note that was
+    // stranded (stale-ahead / undecodable cursor), `produce_relay_updates`
+    // already shipped a full-snapshot FALLBACK as that broadcast op (so peers
+    // polling `GET ops?since=N` DO receive the content — the real convergence
+    // fix), and the commit re-anchored the cursor to the vv captured at export
+    // time. So by the time this heal-deposit runs, the strand is ALREADY
+    // healed with the exact "snapshot-time vv, never swallow a concurrent edit"
+    // semantics the repair primitive provides — a `repair_broadcast_cursors_
+    // after_snapshot` call here would find every cursor already at the
+    // identical version and change nothing (the round-1 no-op). The single,
+    // shared cursor-repair mechanism instead lives at the SNAPSHOT-DEPOSIT
+    // sites that can land a note's content WITHOUT a prior broadcast+commit —
+    // `deposit_snapshots` below (server) and `RelayTicker.depositSnapshotsIfDue`
+    // (iOS) — where a stranded cursor is NOT otherwise re-anchored.
     if !broadcast_note_ids.is_empty() {
         let mut heal: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         // (note_id, content hash) pairs to record AFTER a successful deposit,
@@ -856,10 +915,23 @@ async fn deposit_snapshots(
     // mirrors the heal-deposit's crash-safety pattern (a failed PUT must
     // re-try, not be silently marked as covered).
     let mut pending_hashes: Vec<([u8; 16], u64)> = Vec::new();
+    // (note_id, vv AT SNAPSHOT-EXPORT TIME) — the SINGLE, shared cursor-repair
+    // mechanism (tesela-c7s F1, round 2). This is the deposit path that can
+    // land a note's content WITHOUT a prior broadcast+commit re-anchoring its
+    // cursor (e.g. a note whose broadcast PUT FAILED but whose chunked deposit
+    // here succeeds — commit never ran, so the strand persists), so it is the
+    // load-bearing home of `repair_broadcast_cursors_after_snapshot`, not the
+    // broadcast heal-deposit above (where commit already healed). The vv is
+    // captured BEFORE the export so it is never AHEAD of the deposited content
+    // — repairing to it can only rewind a genuinely stale-ahead / undecodable
+    // cursor, never swallow a concurrent edit that landed after the cut, and it
+    // leaves a healthy or behind cursor untouched (`broadcast_cursor_needs_repair`).
+    let mut repair_pairs: Vec<([u8; 16], Vec<u8>)> = Vec::new();
     for id in note_ids {
         if excluded_notes.contains(&hex::encode(id)) {
             continue; // clobber guard — content not genuinely held
         }
+        let snap_vv = engine.doc_version(id).await;
         // `export_doc_update(id, None)` = the note's full compact snapshot.
         if let Some(bytes) = engine.export_doc_update(id, None).await {
             let h = export_snapshot_hash(&bytes);
@@ -867,6 +939,9 @@ async fn deposit_snapshots(
                 continue; // unchanged since the last deposit (either path)
             }
             pending_hashes.push((id, h));
+            if let Some(vv) = snap_vv {
+                repair_pairs.push((id, vv));
+            }
             snapshots.push((id.to_vec(), bytes));
         }
     }
@@ -896,6 +971,15 @@ async fn deposit_snapshots(
             deposit_hashes.insert(id, h);
         }
     }
+    // Re-anchor any stranded outbound cursor to its snapshot-time version for
+    // every note the relay ACCEPTED (skip the oversize-skipped ones — their
+    // content never landed, so a peer catch-up can't reach it and the cursor
+    // must keep re-producing). A no-op for healthy / behind cursors. This is
+    // the load-bearing cursor-repair call site the F2 integration test drives.
+    repair_pairs.retain(|(id, _)| !report.skipped_streams.iter().any(|s| s.as_slice() == id));
+    engine
+        .repair_broadcast_cursors_after_snapshot(&repair_pairs)
+        .await;
     Ok(report)
 }
 
@@ -2152,6 +2236,228 @@ mod tests {
             engine_b.render_note(NID_GAMMA).await,
             gamma_before,
             "GAMMA stable on the no-op tick"
+        );
+    }
+
+    /// Strand a note's broadcast cursor with an UNDECODABLE value — the
+    /// loro-free strand class (`outbound_cursor_stranded` / `export_doc_update`
+    /// both take their `Err(_)` arm), net-equivalent to the stale-ahead class
+    /// for the cursor-repair guard. The note is left dirty: `produce` ships a
+    /// full-snapshot fallback until the cursor is re-anchored.
+    async fn strand_cursor_undecodable(engine: &LoroEngine, note: [u8; 16]) {
+        engine
+            .commit_broadcast_cursors(&[(note, vec![0xff, 0xff, 0xff, 0xff])])
+            .await;
+    }
+
+    /// tesela-c7s F1 (round 2): the SINGLE, shared cursor-repair mechanism is
+    /// wired at the SNAPSHOT-DEPOSIT production call site (`deposit_snapshots`),
+    /// NOT the broadcast heal-deposit (where `commit_broadcast_cursors` already
+    /// healed). This exercises that exact production call site: a stranded note
+    /// deposited WITHOUT a prior broadcast+commit must have its cursor
+    /// re-anchored by the repair INSIDE `deposit_snapshots`, so it stops looping
+    /// the snapshot fallback and resumes incremental deltas.
+    ///
+    /// REVERT-DISCRIMINATING: neutralize the
+    /// `engine.repair_broadcast_cursors_after_snapshot(&repair_pairs)` call at
+    /// the end of `deposit_snapshots` (or make `broadcast_cursor_needs_repair`
+    /// always return false) and the post-deposit `produce` still finds the note
+    /// dirty (stranded) — the "produce is now EMPTY" assertion fails.
+    #[tokio::test]
+    async fn deposit_snapshots_repairs_stranded_cursor_at_production_site() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        const NID: [u8; 16] = [0x5a; 16];
+
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa5; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        engine_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID,
+                display_alias: Some("strand".into()),
+                title: "strand".into(),
+                content: "- base body\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // Strand WITHOUT ever broadcasting: the note's cursor is garbage but no
+        // op ever hit the relay, so nothing (not commit, not the heal-deposit)
+        // has re-anchored it. `deposit_snapshots` is the only path that can.
+        strand_cursor_undecodable(&engine_a, NID).await;
+        assert_eq!(
+            engine_a.produce_relay_updates().await.len(),
+            1,
+            "stranded: the dirty note re-exports (snapshot fallback), never nothing"
+        );
+
+        let client_a = RelayClient::new(base_url.clone(), group, dev_a, key.clone());
+        client_a.register_or_recover().await.expect("a register");
+
+        // Direct call to the production `deposit_snapshots` fn (inert deposit).
+        let mut hashes = std::collections::HashMap::new();
+        deposit_snapshots(&engine_a, &client_a, 0, &[], &mut hashes)
+            .await
+            .expect("deposit");
+
+        // HEALED at the production call site: cursor re-anchored to the
+        // snapshot-time version, so with no new edits `produce` ships NOTHING.
+        assert!(
+            engine_a.produce_relay_updates().await.is_empty(),
+            "deposit_snapshots' repair re-anchored the stranded cursor → strand healed"
+        );
+
+        // And the next edit ships a real INCREMENTAL delta a base-less peer
+        // cannot apply cleanly (proving it is NOT a full snapshot).
+        engine_a
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x5b; 16],
+                note_id: NID,
+                parent_block_id: None,
+                order_key: "z".into(),
+                indent_level: 0,
+                text: "after-heal".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let out = engine_a.produce_relay_updates().await;
+        assert_eq!(out.len(), 1, "the post-heal edit ships");
+        let (_id, delta, _vv) = &out[0];
+        let fresh = engine_in(&tempfile::tempdir().unwrap(), DeviceId::from_bytes([0x5c; 16])).await;
+        let report = fresh.apply_relay_updates(&[(NID, delta.clone())]).await;
+        assert_eq!(
+            report.pending,
+            vec![NID],
+            "the post-heal broadcast is an INCREMENTAL delta (base-less peer leaves it pending), \
+             not a self-contained snapshot — the strand is truly gone"
+        );
+    }
+
+    /// tesela-c7s F2 (round 2), CONVERGENCE-CRITICAL, integration repro at the
+    /// production call sites: a sender with a dirty, STRANDED note (its content
+    /// reaches the relay only as a deposited snapshot, never as a pollable op)
+    /// deposits + REPAIRS its cursor (`deposit_snapshots`), resumes INCREMENTAL
+    /// ops, and a fresh peer converges WITHOUT any restart / bootstrap-from-
+    /// scratch: it polls the incremental resume, hits the causal gap, and the
+    /// pending-ledger auto snapshot catch-up (inside the receiver's real `tick`)
+    /// heals it from the deposited snapshot.
+    ///
+    /// REVERT-DISCRIMINATING against BOTH new mechanisms:
+    ///  - CURSOR REPAIR (F1): neutralize the repair in `deposit_snapshots` and
+    ///    the sender's resume ships a full SNAPSHOT instead of an incremental
+    ///    delta — the "base-less peer leaves the resume pending" assertion fails
+    ///    (the receiver would then converge directly, no gap, no catch-up).
+    ///  - AUTO CATCH-UP (item 2): neutralize `catchup_from_snapshots` (or the
+    ///    `report.pending` → `catchup_notes` queueing) and the receiver's tail
+    ///    stays pending forever — it never gets the base, so the convergence
+    ///    assertion fails.
+    #[tokio::test]
+    async fn strand_deposit_repair_resume_incremental_converges_peer_via_catchup() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+        const NID: [u8; 16] = [0x6c; 16];
+
+        // ── Sender S authors a base, then its cursor is stranded WITHOUT the
+        //    base ever being broadcast as an op (the post-authoritative-import
+        //    strand shape: the note's content lives only as a deposited
+        //    snapshot, the op log has nothing for it). ──
+        let s_tmp = tempfile::tempdir().unwrap();
+        let dev_s = DeviceId::from_bytes([0x51; 16]);
+        let engine_s = engine_in(&s_tmp, dev_s).await;
+        engine_s
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID,
+                display_alias: Some("conv".into()),
+                title: "conv".into(),
+                content: "- alpha <!-- bid:11111111-1111-1111-1111-111111111111 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        strand_cursor_undecodable(&engine_s, NID).await;
+
+        let client_s = RelayClient::new(base_url.clone(), group, dev_s, key.clone());
+        client_s.register_or_recover().await.expect("s register");
+
+        // S DEPOSITS its snapshot (inert) + REPAIRS the stranded cursor — the
+        // production call site under test. After this, S's cursor sits at the
+        // base version, so the NEXT edit ships incrementally.
+        let mut hashes = std::collections::HashMap::new();
+        deposit_snapshots(&engine_s, &client_s, 0, &[], &mut hashes)
+            .await
+            .expect("deposit base snapshot + repair cursor");
+
+        // S resumes: a small tail edit → produce a genuine INCREMENTAL delta.
+        engine_s
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x62; 16],
+                note_id: NID,
+                parent_block_id: None,
+                order_key: "z".into(),
+                indent_level: 0,
+                text: "beta-resume".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let out = engine_s.produce_relay_updates().await;
+        assert_eq!(out.len(), 1, "S ships its resumed edit");
+        let (_id, resume_delta, _vv) = out.into_iter().next().unwrap();
+
+        // REPAIR DISCRIMINATOR: the resume is an INCREMENTAL delta — a base-less
+        // peer cannot apply it cleanly (Loro leaves it PENDING behind the base).
+        // Without the F1 repair this would be a self-contained snapshot instead.
+        let probe = engine_in(&tempfile::tempdir().unwrap(), DeviceId::from_bytes([0x63; 16])).await;
+        let probe_report = probe.apply_relay_updates(&[(NID, resume_delta.clone())]).await;
+        assert_eq!(
+            probe_report.pending,
+            vec![NID],
+            "S's resume is incremental (references the base only on the relay as a snapshot) — \
+             the F1 cursor repair is load-bearing here"
+        );
+
+        // S broadcasts the incremental resume as a relay op.
+        put_loro_envelope(&client_s, dev_s, group, &[(NID, resume_delta)]).await;
+
+        // ── Receiver R (fresh) runs its REAL tick: polls the incremental resume,
+        //    hits the causal gap, and the auto snapshot catch-up heals it from
+        //    S's deposited snapshot — converging without any bootstrap-from-
+        //    scratch. ──
+        let r_tmp = tempfile::tempdir().unwrap();
+        let dev_r = DeviceId::from_bytes([0x71; 16]);
+        let engine_r = engine_in(&r_tmp, dev_r).await;
+        let handle_r = handle_for(&base_url, group, dev_r, key.clone(), r_tmp.path().to_path_buf());
+        bring_up(&handle_r).await.expect("R bring-up");
+
+        tick(&engine_r, &ident, &handle_r).await.unwrap();
+
+        // CATCH-UP DISCRIMINATOR + convergence: R has BOTH the base (from the
+        // deposited-snapshot catch-up) and the resumed tail (the polled
+        // incremental delta, integrated once its base arrived).
+        let rendered = engine_r.render_note(NID).await.unwrap_or_default();
+        assert!(
+            rendered.contains("alpha"),
+            "R recovered the base from the deposited snapshot (auto catch-up): {rendered:?}"
+        );
+        assert!(
+            rendered.contains("beta-resume"),
+            "R integrated S's incremental resume once the base arrived: {rendered:?}"
+        );
+        assert_eq!(
+            engine_r.render_note(NID).await,
+            engine_s.render_note(NID).await,
+            "peer converged to the sender's content with no restart / bootstrap-from-scratch"
+        );
+        assert!(
+            handle_r.state.read().await.catchup_notes.is_empty(),
+            "the healed note left the catch-up queue"
         );
     }
 }

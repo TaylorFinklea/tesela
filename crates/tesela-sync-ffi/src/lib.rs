@@ -1195,14 +1195,47 @@ impl SyncEngineHandle {
         let ids = self.inner.tracked_note_ids().await;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
+            // Capture the version BEFORE the export so it is never ahead of the
+            // snapshot's content — repairing to it can only rewind a stranded
+            // cursor, never swallow a concurrent edit (tesela-c7s item 4).
+            let version_vv = self.inner.doc_version(id).await.unwrap_or_default();
             if let Some(payload) = self.inner.export_doc_update(id, None).await {
                 out.push(NoteSnapshotRecord {
                     note_id: id.to_vec(),
                     payload,
+                    version_vv,
                 });
             }
         }
         out
+    }
+
+    /// Re-anchor stranded outbound cursors after the caller CONFIRMED the
+    /// deposit of `deposited`'s snapshots to the relay (tesela-c7s item 4 — the
+    /// iOS analogue of the server heal-deposit's repair). Pass back the SAME
+    /// [`NoteSnapshotRecord`]s returned by
+    /// [`export_all_note_snapshots`](Self::export_all_note_snapshots) after
+    /// `RelayClientHandle::put_snapshots_chunked` succeeds; each record's
+    /// `version_vv` (captured at export time) is used, so an edit made during
+    /// the deposit is preserved. Only a genuinely stale-ahead / undecodable
+    /// cursor is rewound; healthy cursors are left untouched. No-op on records
+    /// whose note id or version is malformed/empty.
+    pub async fn repair_broadcast_cursors_after_snapshot(
+        &self,
+        deposited: Vec<NoteSnapshotRecord>,
+    ) {
+        let committed: Vec<([u8; 16], Vec<u8>)> = deposited
+            .into_iter()
+            .filter(|r| !r.version_vv.is_empty())
+            .filter_map(|r| {
+                <[u8; 16]>::try_from(r.note_id.as_slice())
+                    .ok()
+                    .map(|id| (id, r.version_vv))
+            })
+            .collect();
+        self.inner
+            .repair_broadcast_cursors_after_snapshot(&committed)
+            .await;
     }
 
     /// All saved views from the synced views registry, sorted by
@@ -1432,7 +1465,23 @@ impl SyncCoordinator {
         // vectors), advanced via commit_broadcast_cursors ONLY after a
         // confirmed PUT — so a failed send retries the same delta. Mirrors
         // `tesela_server::sync_relay::tick`.
+        let strand_alarms_before = self.engine.inner.outbound_strand_alarm_count().await;
         let updates = self.engine.inner.produce_relay_updates().await;
+        // OUTBOUND STRAND ALARM parity with the server tick (tesela-c7s item
+        // 3): the iPhone runs the SAME engine `produce_relay_updates` /
+        // `export_doc_update` guards, so a stale-ahead / undecodable broadcast
+        // cursor here also falls back to a snapshot instead of shipping an
+        // empty frame. Surface it loudly (this is the class that stranded iOS
+        // edits: "splice applied=1 but tick_outbound ships 0 effective ops").
+        let strand_alarms_after = self.engine.inner.outbound_strand_alarm_count().await;
+        if strand_alarms_after > strand_alarms_before {
+            eprintln!(
+                "tesela-sync-ffi: {} outbound strand alarm(s) this tick — dirty note(s) \
+                 shipped a snapshot fallback instead of an incremental delta (deposit-strand \
+                 class, tesela-c7s)",
+                strand_alarms_after - strand_alarms_before
+            );
+        }
         // Chunk into size-bounded batches so each PUT fits the relay body
         // limit (the canonical bootstrap would otherwise 413). Commit each
         // batch's cursors only after its PUT confirms; skip a failed batch so
@@ -1965,6 +2014,16 @@ pub struct NoteSnapshotRecord {
     pub note_id: Vec<u8>,
     /// Full compact Loro snapshot bytes for this note.
     pub payload: Vec<u8>,
+    /// Encoded doc version vector captured at snapshot-EXPORT time
+    /// (tesela-c7s item 4). After the caller CONFIRMS this snapshot reached
+    /// the relay, it passes the record back to
+    /// [`SyncEngineHandle::repair_broadcast_cursors_after_snapshot`] so a
+    /// stranded outbound cursor is re-anchored to this version — the next
+    /// local edit then ships an incremental delta over the ops stream instead
+    /// of another snapshot the peers' poll never reads. Captured at export
+    /// time (not confirm time) so an edit recorded during the deposit is not
+    /// swallowed. Empty when the note's version could not be read.
+    pub version_vv: Vec<u8>,
 }
 
 /// Outcome of a chunked snapshot deposit — see

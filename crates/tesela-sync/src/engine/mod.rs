@@ -41,6 +41,64 @@ impl RelayApplyReport {
     }
 }
 
+/// One entry in the engine's durable causal-gap ledger (tesela-c7s item 2):
+/// a note whose inbound relay update Loro left PENDING because it referenced
+/// ops the doc is missing (a disjoint-lineage / missing-base signal). Recorded
+/// STRUCTURALLY (not just `tracing::warn`'d and forgotten) so the strand is
+/// observable and the engine can auto-issue a snapshot catch-up for any note
+/// that stays pending past one apply pass. Cleared when a later delta OR an
+/// authoritative snapshot fully integrates the note.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingImport {
+    /// The note whose update is stuck behind a causal gap.
+    pub note_id: [u8; 16],
+    /// The engine `apply_relay_updates` pass at which this note FIRST went
+    /// pending. A note whose `first_seen_pass` is strictly below the current
+    /// pass has survived at least one full inbound batch still pending — the
+    /// auto-heal (`notes_needing_snapshot_catchup`) trigger.
+    pub first_seen_pass: u64,
+    /// The most recent pass at which this note was still pending.
+    pub last_seen_pass: u64,
+    /// Loro PeerIDs whose ops the stuck frame carried (best-effort, decoded
+    /// from the frame's blob metadata) — the "from_peer" of the missing base.
+    pub from_peers: Vec<u64>,
+    /// Number of times this note has been ESCALATED to an authoritative-snapshot
+    /// catch-up (tesela-c7s F3). Bounds the escalation so a PERMANENTLY-gapped
+    /// note (no peer ever deposits its snapshot) can't re-escalate every pass
+    /// forever: escalations are spaced by exponential backoff and stop once this
+    /// reaches [`MAX_CATCHUP_ATTEMPTS`], after which `catchup_exhausted` is set.
+    #[serde(default)]
+    pub catchup_attempts: u32,
+    /// The import pass at which this note was last escalated to a catch-up —
+    /// the reference point for the exponential backoff window between escalations
+    /// (tesela-c7s F3). `0` before the first escalation (then `first_seen_pass`
+    /// is used as the reference).
+    #[serde(default)]
+    pub last_catchup_pass: u64,
+    /// Set once `catchup_attempts` hits [`MAX_CATCHUP_ATTEMPTS`] with no heal —
+    /// the note is a PERMANENT gap. It stays in the ledger (so the sync-health
+    /// surface can show it) but is EXCLUDED from further escalation. Cleared only
+    /// by an actual heal (a clean delta apply or an authoritative snapshot, both
+    /// of which drop the whole entry via `clear_pending_import`). tesela-c7s F3.
+    #[serde(default)]
+    pub catchup_exhausted: bool,
+}
+
+/// Max authoritative-snapshot catch-up escalations for one stuck note before it
+/// is declared a PERMANENT gap and stops re-escalating (tesela-c7s F3). Bounds
+/// the "escalate every pass forever" loop a note with no recoverable snapshot
+/// anywhere in the group would otherwise drive. Deliberately small so the bound
+/// is reachable in a test; with the exponential backoff below the last
+/// escalation lands O(2^N) passes out, which for an active group is many
+/// minutes of real time — ample room for a genuinely-recoverable note to heal
+/// first.
+pub const MAX_CATCHUP_ATTEMPTS: u32 = 6;
+
+/// Cap on the backoff SHIFT so the window between escalations doesn't overflow /
+/// grow without bound: escalation N is due `min(2^N, 2^CATCHUP_BACKOFF_SHIFT_CAP)`
+/// passes after the previous one (tesela-c7s F3).
+pub const CATCHUP_BACKOFF_SHIFT_CAP: u32 = 4;
+
 /// The core sync engine trait. Post-flag-day (2026-05-29) the only
 /// implementation is [`LoroEngine`]; the trait remains as the boundary
 /// the server's `Arc<dyn SyncEngine>` and the FFI hold. The legacy
@@ -105,6 +163,31 @@ pub trait SyncEngine: Send + Sync {
     /// Advance + persist the broadcast cursor for notes confirmed sent
     /// (paired with `produce_relay_updates`' `captured_vv`). Default no-op.
     async fn commit_broadcast_cursors(&self, _committed: &[([u8; 16], Vec<u8>)]) {}
+
+    /// Heal a stranded outbound cursor after a note's full snapshot was
+    /// CONFIRMED deposited to the relay (tesela-c7s item 4). Each pair is
+    /// `(note_id, vv_at_snapshot_export_time)`. Only rewinds a stale-ahead /
+    /// undecodable cursor down to the snapshot version so the next local edit
+    /// ships an incremental delta over the ops stream again; leaves healthy
+    /// cursors alone. Default no-op.
+    async fn repair_broadcast_cursors_after_snapshot(&self, _committed: &[([u8; 16], Vec<u8>)]) {}
+
+    /// Notes whose inbound relay update stayed PENDING (causal gap) past one
+    /// full apply pass and so need an authoritative-snapshot catch-up to heal
+    /// (tesela-c7s item 2). The relay tick fetches + imports the relay's
+    /// snapshot for exactly these. Default empty.
+    async fn notes_needing_snapshot_catchup(&self) -> Vec<[u8; 16]> {
+        Vec::new()
+    }
+
+    /// Monotonic count of outbound STRAND ALARMS raised so far (tesela-c7s
+    /// item 3): a dirty note whose broadcast cursor was stale-ahead /
+    /// undecodable and had to fall back to a full snapshot instead of an
+    /// incremental delta. The relay tick reads this to log the deposit-strand
+    /// class when it fires. Default 0.
+    async fn outbound_strand_alarm_count(&self) -> u64 {
+        0
+    }
 
     /// Apply a batch of inbound per-note Loro updates from the relay
     /// (idempotent + commutative). Returns a per-note [`RelayApplyReport`]

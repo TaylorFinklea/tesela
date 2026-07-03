@@ -1574,6 +1574,20 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64) async throws  -> String
     
     /**
+     * Re-anchor stranded outbound cursors after the caller CONFIRMED the
+     * deposit of `deposited`'s snapshots to the relay (tesela-c7s item 4 — the
+     * iOS analogue of the server heal-deposit's repair). Pass back the SAME
+     * [`NoteSnapshotRecord`]s returned by
+     * [`export_all_note_snapshots`](Self::export_all_note_snapshots) after
+     * `RelayClientHandle::put_snapshots_chunked` succeeds; each record's
+     * `version_vv` (captured at export time) is used, so an edit made during
+     * the deposit is preserved. Only a genuinely stale-ahead / undecodable
+     * cursor is rewound; healthy cursors are left untouched. No-op on records
+     * whose note id or version is malformed/empty.
+     */
+    func repairBroadcastCursorsAfterSnapshot(deposited: [NoteSnapshotRecord]) async 
+    
+    /**
      * Resolve an encoded cursor (from a peer's presence) to its CURRENT utf16
      * offset in this engine's copy of the note. `None` if it can't be placed
      * (e.g. the block was deleted). The CALLER pairs this with the peer's
@@ -2206,6 +2220,36 @@ open func recordNoteUpsertBySlug(slug: String, title: String, content: String, c
 }
     
     /**
+     * Re-anchor stranded outbound cursors after the caller CONFIRMED the
+     * deposit of `deposited`'s snapshots to the relay (tesela-c7s item 4 — the
+     * iOS analogue of the server heal-deposit's repair). Pass back the SAME
+     * [`NoteSnapshotRecord`]s returned by
+     * [`export_all_note_snapshots`](Self::export_all_note_snapshots) after
+     * `RelayClientHandle::put_snapshots_chunked` succeeds; each record's
+     * `version_vv` (captured at export time) is used, so an edit made during
+     * the deposit is preserved. Only a genuinely stale-ahead / undecodable
+     * cursor is rewound; healthy cursors are left untouched. No-op on records
+     * whose note id or version is malformed/empty.
+     */
+open func repairBroadcastCursorsAfterSnapshot(deposited: [NoteSnapshotRecord])async   {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_repair_broadcast_cursors_after_snapshot(
+                    self.uniffiCloneHandle(),
+                    FfiConverterSequenceTypeNoteSnapshotRecord.lower(deposited)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
      * Resolve an encoded cursor (from a peer's presence) to its CURRENT utf16
      * offset in this engine's copy of the note. `None` if it can't be placed
      * (e.g. the block was deleted). The CALLER pairs this with the peer's
@@ -2773,6 +2817,18 @@ public struct NoteSnapshotRecord: Equatable, Hashable {
      * Full compact Loro snapshot bytes for this note.
      */
     public var payload: Data
+    /**
+     * Encoded doc version vector captured at snapshot-EXPORT time
+     * (tesela-c7s item 4). After the caller CONFIRMS this snapshot reached
+     * the relay, it passes the record back to
+     * [`SyncEngineHandle::repair_broadcast_cursors_after_snapshot`] so a
+     * stranded outbound cursor is re-anchored to this version — the next
+     * local edit then ships an incremental delta over the ops stream instead
+     * of another snapshot the peers' poll never reads. Captured at export
+     * time (not confirm time) so an edit recorded during the deposit is not
+     * swallowed. Empty when the note's version could not be read.
+     */
+    public var versionVv: Data
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2782,9 +2838,21 @@ public struct NoteSnapshotRecord: Equatable, Hashable {
          */noteId: Data, 
         /**
          * Full compact Loro snapshot bytes for this note.
-         */payload: Data) {
+         */payload: Data, 
+        /**
+         * Encoded doc version vector captured at snapshot-EXPORT time
+         * (tesela-c7s item 4). After the caller CONFIRMS this snapshot reached
+         * the relay, it passes the record back to
+         * [`SyncEngineHandle::repair_broadcast_cursors_after_snapshot`] so a
+         * stranded outbound cursor is re-anchored to this version — the next
+         * local edit then ships an incremental delta over the ops stream instead
+         * of another snapshot the peers' poll never reads. Captured at export
+         * time (not confirm time) so an edit recorded during the deposit is not
+         * swallowed. Empty when the note's version could not be read.
+         */versionVv: Data) {
         self.noteId = noteId
         self.payload = payload
+        self.versionVv = versionVv
     }
 
     
@@ -2804,13 +2872,15 @@ public struct FfiConverterTypeNoteSnapshotRecord: FfiConverterRustBuffer {
         return
             try NoteSnapshotRecord(
                 noteId: FfiConverterData.read(from: &buf), 
-                payload: FfiConverterData.read(from: &buf)
+                payload: FfiConverterData.read(from: &buf), 
+                versionVv: FfiConverterData.read(from: &buf)
         )
     }
 
     public static func write(_ value: NoteSnapshotRecord, into buf: inout [UInt8]) {
         FfiConverterData.write(value.noteId, into: &buf)
         FfiConverterData.write(value.payload, into: &buf)
+        FfiConverterData.write(value.versionVv, into: &buf)
     }
 }
 
@@ -4509,6 +4579,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert_by_slug() != 28447) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_repair_broadcast_cursors_after_snapshot() != 49347) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_resolve_cursor() != 11381) {

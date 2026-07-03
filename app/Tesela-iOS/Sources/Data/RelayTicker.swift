@@ -1730,6 +1730,20 @@ final class RelayTicker: ObservableObject {
                 snapshots: snapshots,
                 budgetBytes: Self.snapshotDepositBudgetBytes
             )
+            // tesela-c7s F1: the deposit durably landed each note's snapshot on
+            // the relay — re-anchor any STRANDED outbound cursor to its
+            // snapshot-time version (forwarded verbatim from the records just
+            // deposited, each carrying its export-time `versionVv`) so the next
+            // local edit ships an INCREMENTAL delta over the ops stream instead
+            // of another snapshot the peers' `?since=` poll never reads. This is
+            // the iOS half of the single, shared cursor-repair mechanism (the
+            // server wires it into `deposit_snapshots`): `tickOutbound`'s
+            // produce→commit heals the common case, and this deposit backstops a
+            // note whose broadcast PUT failed while its chunked deposit here
+            // succeeded. Only a genuinely stale-ahead / undecodable cursor is
+            // rewound; healthy cursors are untouched (engine-side
+            // `broadcast_cursor_needs_repair`).
+            await engine.repairBroadcastCursorsAfterSnapshot(deposited: snapshots)
             let depositedAt = Date()
             UserDefaults.standard.set(depositedAt.timeIntervalSince1970, forKey: key)
             lastDepositAt = depositedAt
