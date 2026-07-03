@@ -135,10 +135,57 @@ pub fn apply_post_save_bumps_with_info(
     next: &str,
     note_id: &str,
 ) -> (String, Vec<BumpInfo>) {
+    apply_post_save_bumps_core(prev, next, note_id, false)
+}
+
+/// Engine-path variant of [`apply_post_save_bumps_with_info`] with the
+/// idempotence guard turned ON (tesela-ows.1 step 2, Lead constraint (a)).
+///
+/// Every writer's engine-side apply (WS live-apply, relay import, iOS `.relay`
+/// import) — not just the single-writer HTTP PUT — runs this so a `done` flip
+/// arriving over the wire triggers the recurrence bump. Unlike the HTTP path,
+/// the engine can see the SAME occurrence's done-flip more than once (two peers
+/// completing concurrently before either has seen the other, a re-delivered
+/// frame, or a disjoint-twin duplicate), so each candidate block is bumped ONLY
+/// when [`occurrence_uncompleted`] holds — its `last_completed::` is absent or
+/// strictly before the COMPLETED occurrence's anchor. Once a bump stamps
+/// `last_completed`, a re-arriving completion of the same occurrence sees the
+/// same anchor and skips: the series is self-limiting and never double-advances.
+///
+/// The HTTP path ([`apply_post_save_bumps_with_info`], guard OFF) is unchanged —
+/// this variant only differs by the guard, so the HTTP behavior is byte-for-byte
+/// identical.
+pub fn apply_post_save_bumps_guarded(
+    prev: &str,
+    next: &str,
+    note_id: &str,
+) -> (String, Vec<BumpInfo>) {
+    apply_post_save_bumps_core(prev, next, note_id, true)
+}
+
+fn apply_post_save_bumps_core(
+    prev: &str,
+    next: &str,
+    note_id: &str,
+    guard: bool,
+) -> (String, Vec<BumpInfo>) {
     let flipped = detect_status_flips_to_done(prev, next);
     let mut content = next.to_string();
     let mut bumps = Vec::new();
     for block_id in flipped {
+        // Idempotence guard (engine path only): skip the bump when the
+        // occurrence this done-flip is COMPLETING has already been recorded, so
+        // a concurrently- or re-delivered completion can't double-advance the
+        // series. The anchor is the EARLIER of `prev`'s and `next`'s occurrence
+        // dates ([`completed_occurrence_anchor`]) — whichever side a concurrent
+        // peer roll in the same merged frame advanced shows the later date, but
+        // the occurrence actually being completed is the earlier one.
+        if guard {
+            let completed_anchor = completed_occurrence_anchor(prev, next, &block_id);
+            if !occurrence_uncompleted(&content, &block_id, completed_anchor) {
+                continue;
+            }
+        }
         // try_bump_block uses the note-id prefix from `block_id` and parses
         // body blocks against that prefix. Our block_id here came from a
         // `__diff__` parse, so try_bump_block will still find a match
@@ -161,6 +208,236 @@ pub fn apply_post_save_bumps_with_info(
         }
     }
     (content, bumps)
+}
+
+/// Anchor date of a block's CURRENT occurrence: its `deadline::` (else
+/// `scheduled::`) parsed to a date, ignoring any time suffix. `None` when the
+/// block carries no parseable anchor.
+fn block_anchor_date(block: &ParsedBlock) -> Option<chrono::NaiveDate> {
+    let from_deadline = block
+        .properties
+        .get("deadline")
+        .and_then(|v| parse_deadline_value(v))
+        .map(|(d, _)| d);
+    let from_scheduled = block
+        .properties
+        .get("scheduled")
+        .and_then(|v| parse_deadline_value(v))
+        .map(|(d, _)| d);
+    from_deadline.or(from_scheduled)
+}
+
+/// Idempotence guard (tesela-ows.1 step 2, Lead constraint (a)): `true` when the
+/// block identified by `block_id` in `content` has NOT yet recorded a completion
+/// for the occurrence this done-flip is COMPLETING — i.e. `last_completed::` is
+/// absent or strictly before `completed_anchor`. A block with no parseable
+/// recurrence/anchor also returns `true` (the bump itself no-ops, so the guard
+/// must not mask it). Used only on the engine path, where the same done-flip can
+/// be seen more than once.
+///
+/// `completed_anchor` (from [`completed_occurrence_anchor`]) is the EARLIER of
+/// the pre-import (`prev`) and post-import (`next`) occurrence dates. Anchoring
+/// on the earlier date is what makes the guard robust to a concurrent peer's
+/// roll delivered in the SAME merged frame: that roll advances ONE side's
+/// deadline past the occurrence being completed, and taking the minimum recovers
+/// the completed occurrence regardless of which side (prev or next) carries the
+/// advanced value. Falls back to `content`'s own anchor when the caller could
+/// not recover a completed occurrence (a brand-new done block with no `prev`
+/// counterpart).
+fn occurrence_uncompleted(
+    content: &str,
+    block_id: &str,
+    completed_anchor: Option<chrono::NaiveDate>,
+) -> bool {
+    let Some((note_id_str, _)) = block_id.rsplit_once(':') else {
+        return true;
+    };
+    let Ok((_meta, body)) = parse_frontmatter(content) else {
+        return true;
+    };
+    let blocks = parse_blocks(note_id_str, &body);
+    let Some(block) = blocks.iter().find(|b| b.id == block_id) else {
+        return true;
+    };
+    let Some(step) = compute_recurrence_step(block) else {
+        return true;
+    };
+    let anchor = completed_anchor.unwrap_or(step.anchor_date);
+    match block
+        .properties
+        .get("last_completed")
+        .and_then(|v| parse_deadline_value(v))
+        .map(|(d, _)| d)
+    {
+        Some(last) => last < anchor,
+        None => true,
+    }
+}
+
+/// The anchor of the occurrence a done-flip is COMPLETING: the EARLIER of the
+/// flipped block's occurrence date in the PRE-import (`prev`) note and in the
+/// post-import (`next`) note. `block_id` is the `next`-side id
+/// [`detect_status_flips_to_done`] returned; the matching `prev` block is found
+/// by canonical `bid` (stable across property edits), with a display-`text`
+/// fallback for the pre-`bid` / test-fixture case.
+///
+/// The minimum is deliberate. A concurrent peer's roll present in the same
+/// merged frame advances ONE side's `deadline::`/`scheduled::` past the
+/// occurrence actually being completed (the advance can land on `next` — the
+/// pre-import peer is behind — OR on `prev` — the pre-import peer already rolled
+/// and is importing a stale disjoint-twin completion). Taking the earlier date
+/// recovers the completed occurrence in BOTH directions; anchoring on either
+/// side alone double-bumps the other. `None` when neither side has a parseable
+/// anchor — the caller then falls back to `content`'s own date.
+fn completed_occurrence_anchor(
+    prev: &str,
+    next: &str,
+    block_id: &str,
+) -> Option<chrono::NaiveDate> {
+    let (note_id_str, _) = block_id.rsplit_once(':')?;
+    let (_m, next_body) = parse_frontmatter(next).ok()?;
+    let next_blocks = parse_blocks(note_id_str, &next_body);
+    let nb = next_blocks.iter().find(|b| b.id == block_id)?;
+    let next_anchor = block_anchor_date(nb);
+
+    let (_m2, prev_body) = parse_frontmatter(prev).ok()?;
+    let prev_blocks = parse_blocks(note_id_str, &prev_body);
+    let prev_anchor = nb
+        .bid
+        .as_ref()
+        .and_then(|bid| prev_blocks.iter().find(|b| b.bid.as_ref() == Some(bid)))
+        .or_else(|| prev_blocks.iter().find(|b| b.text == nb.text))
+        .and_then(block_anchor_date);
+
+    match (prev_anchor, next_anchor) {
+        (Some(p), Some(n)) => Some(p.min(n)),
+        (Some(p), None) => Some(p),
+        (None, Some(n)) => Some(n),
+        (None, None) => None,
+    }
+}
+
+/// One recurring/dependency roll for a single block, expressed as CONTAINER
+/// property SETS — the engine-path output (tesela-ows.1 step 2, Lead constraint
+/// (a)). The engine authors each `(key, value)` as a `BlockPropertySet` onto the
+/// block's typed props container, so lifecycle state (`last_completed`,
+/// `recurrence_done`, the rolled dates, `status`) STAYS in the container where
+/// disjoint-twin heal's per-key union protects it. It is NEVER evicted to an
+/// in-text `key:: value` line: attempt 2 cleared the container and wrote in-text
+/// so the roll would render, but twin-heal unions CONTAINER props only, so a
+/// max-`TreeID` pick landing on the non-rolling twin silently WIPED completion
+/// memory (a new data-loss class). Keeping the roll in the container renders
+/// correctly for free (the container value wins render-time dedup) with no
+/// clearing.
+#[derive(Debug, Clone)]
+pub struct BlockLifecycleRoll {
+    /// Canonical block id (`<!-- bid:UUID -->`, hyphenated), used by the engine
+    /// to address the container node. `None` for an unstamped block — the engine
+    /// skips it (a container set is addressed by bid).
+    pub bid: Option<String>,
+    /// `<note_id>:<line>` id (parity with [`BumpInfo`]; logging).
+    pub block_id: String,
+    /// The block's display text (title), for logging / WS parity.
+    pub title: String,
+    /// `Some(iso)` next-deadline when this roll advanced a recurrence (WS
+    /// `RecurringRolled` parity), else `None` (a pure dependency unblock).
+    pub next_deadline: Option<String>,
+    /// Container props to SET, in render-canonical string form (`[[YYYY-MM-DD]]`,
+    /// `todo`, `1`, …). Only the lifecycle-owned keys whose value CHANGED vs
+    /// `next` — never a removal (the roll only sets/advances).
+    pub props: Vec<(String, String)>,
+}
+
+/// Block-property keys the engine-path lifecycle roll may rewrite: the
+/// recurrence bump ([`try_bump_block`]) touches every one; the dependency
+/// unblock ([`apply_dependency_cycles`]) touches `status`. Diffed between `next`
+/// (post-import, pre-lifecycle) and the post-lifecycle markdown to derive the
+/// container sets.
+const LIFECYCLE_ROLL_KEYS: [&str; 5] = [
+    "status",
+    "deadline",
+    "scheduled",
+    "recurrence_done",
+    "last_completed",
+];
+
+/// Engine-path lifecycle (tesela-ows.1 step 2, Lead constraint (a)): compute the
+/// per-block CONTAINER property changes a `done` flip should apply — the
+/// idempotence-GUARDED recurrence bump plus the same-note dependency unblock —
+/// WITHOUT rewriting markdown. The engine authors each returned change as a
+/// `BlockPropertySet` on the typed props container (see [`BlockLifecycleRoll`]),
+/// so lifecycle state stays in the container.
+///
+/// `prev` is the note's full markdown BEFORE the import; `next` is the full
+/// markdown AFTER the import + disjoint-twin heal (rendered from the merged doc).
+/// Returns an empty vec when nothing rolls or unblocks (the guard tripped, the
+/// flip was non-recurring, or there was nothing to unblock) — the common
+/// text-edit delta pays nothing.
+///
+/// This runs the SAME pure pipeline the HTTP PUT path runs
+/// ([`apply_post_save_bumps_guarded`] then [`apply_dependency_cycles`]); the only
+/// difference is that the RESULT is diffed back into per-key container sets
+/// instead of a rewritten body.
+pub fn compute_lifecycle_container_sets(
+    prev: &str,
+    next: &str,
+    note_id: &str,
+) -> Vec<BlockLifecycleRoll> {
+    let (bumped, bumps) = apply_post_save_bumps_guarded(prev, next, note_id);
+    let (final_md, _unblocked) = apply_dependency_cycles(prev, &bumped, note_id);
+    if final_md == next {
+        // Guard tripped, non-recurring flip, or nothing to unblock.
+        return Vec::new();
+    }
+
+    // block_id (`<note_id>:<line>`) → next-deadline ISO, for WS parity.
+    let deadline_by_id: std::collections::HashMap<&str, &str> = bumps
+        .iter()
+        .map(|b| (b.block_id.as_str(), b.next_deadline.as_str()))
+        .collect();
+
+    let Ok((_pm, next_body)) = parse_frontmatter(next) else {
+        return Vec::new();
+    };
+    let Ok((_fm, final_body)) = parse_frontmatter(&final_md) else {
+        return Vec::new();
+    };
+    let next_blocks = parse_blocks(note_id, &next_body);
+    let final_blocks = parse_blocks(note_id, &final_body);
+
+    let mut rolls = Vec::new();
+    for fb in &final_blocks {
+        // Match the pre-lifecycle counterpart by canonical bid (stable across
+        // the roll — the bump only rewrites continuation property lines, never
+        // the bullet's first line), with a display-text fallback.
+        let nb = fb
+            .bid
+            .as_ref()
+            .and_then(|bid| next_blocks.iter().find(|b| b.bid.as_ref() == Some(bid)))
+            .or_else(|| next_blocks.iter().find(|b| b.text == fb.text));
+        let mut props = Vec::new();
+        for key in LIFECYCLE_ROLL_KEYS {
+            let final_val = fb.properties.get(key);
+            let next_val = nb.and_then(|b| b.properties.get(key));
+            if let Some(fv) = final_val {
+                if next_val != Some(fv) {
+                    props.push((key.to_string(), fv.clone()));
+                }
+            }
+        }
+        if props.is_empty() {
+            continue;
+        }
+        let next_deadline = deadline_by_id.get(fb.id.as_str()).map(|s| s.to_string());
+        rolls.push(BlockLifecycleRoll {
+            bid: fb.bid.clone(),
+            block_id: fb.id.clone(),
+            title: fb.text.clone(),
+            next_deadline,
+            props,
+        });
+    }
+    rolls
 }
 
 #[derive(Debug, Clone)]
@@ -1021,6 +1298,236 @@ mod recurrence_tests {
             get_prop(&bumped, BLOCK_ID, "recurrence_done").as_deref(),
             Some("1")
         );
+    }
+}
+
+#[cfg(test)]
+mod idempotence_guard_tests {
+    //! tesela-ows.1 step 2, Lead constraint (a): the engine-path
+    //! [`apply_post_save_bumps_guarded`] must bump a genuine first/next
+    //! completion but SKIP an occurrence whose completion is already recorded
+    //! (a concurrently- or re-delivered done-flip). The guard anchors on the
+    //! EARLIER of `prev`'s and `next`'s occurrence date, so it is robust whether
+    //! a concurrent peer's roll advanced `next`'s deadline (the pre-import peer
+    //! is behind) OR `prev`'s deadline (the pre-import peer already rolled and is
+    //! importing a stale duplicate completion).
+    use super::*;
+
+    fn get_prop(content: &str, key: &str) -> Option<String> {
+        let (_meta, body) = parse_frontmatter(content).ok()?;
+        let blocks = parse_blocks("note", &body);
+        blocks.first()?.properties.get(key).cloned()
+    }
+
+    /// Body line 0 holds the recurring bullet; extra props append after it.
+    fn note(extra: &[(&str, &str)], status: &str) -> String {
+        let mut lines = vec![
+            "---".to_string(),
+            "title: \"T\"".to_string(),
+            "tags: []".to_string(),
+            "---".to_string(),
+            "- task".to_string(),
+            "  recurring:: daily count 3".to_string(),
+            "  deadline:: [[2026-05-07]]".to_string(),
+            format!("  status:: {status}"),
+        ];
+        for (k, v) in extra {
+            lines.push(format!("  {k}:: {v}"));
+        }
+        lines.join("\n") + "\n"
+    }
+
+    #[test]
+    fn guarded_bumps_first_completion_no_last_completed() {
+        let prev = note(&[], "todo");
+        let next = note(&[], "done");
+        let (out, bumps) = apply_post_save_bumps_guarded(&prev, &next, "note");
+        assert_eq!(bumps.len(), 1, "first completion bumps");
+        assert_eq!(get_prop(&out, "deadline").as_deref(), Some("[[2026-05-08]]"));
+        assert_eq!(get_prop(&out, "recurrence_done").as_deref(), Some("1"));
+        assert_eq!(get_prop(&out, "status").as_deref(), Some("todo"));
+        assert_eq!(
+            get_prop(&out, "last_completed").as_deref(),
+            Some("[[2026-05-07]]")
+        );
+    }
+
+    #[test]
+    fn guarded_skips_occurrence_already_completed() {
+        // `last_completed` already equals the current deadline anchor: this
+        // occurrence is done. A re-delivered done-flip must NOT re-bump.
+        let prev = note(&[("last_completed", "[[2026-05-07]]")], "todo");
+        let next = note(&[("last_completed", "[[2026-05-07]]")], "done");
+        let (out, bumps) = apply_post_save_bumps_guarded(&prev, &next, "note");
+        assert!(bumps.is_empty(), "guard blocks the already-completed bump");
+        assert_eq!(out, next, "content unchanged when the guard trips");
+        // Sanity: the UNGUARDED path WOULD bump (proving the guard is what
+        // suppressed it, not a missing flip).
+        let (unguarded, u_bumps) = apply_post_save_bumps_with_info(&prev, &next, "note");
+        assert_eq!(u_bumps.len(), 1);
+        assert_ne!(unguarded, next);
+    }
+
+    #[test]
+    fn guarded_bumps_next_occurrence_after_prior_completion() {
+        // `last_completed` (2026-05-06) strictly precedes the current deadline
+        // anchor (2026-05-07): a genuine NEXT completion — must bump.
+        let prev = note(&[("last_completed", "[[2026-05-06]]")], "todo");
+        let next = note(&[("last_completed", "[[2026-05-06]]")], "done");
+        let (out, bumps) = apply_post_save_bumps_guarded(&prev, &next, "note");
+        assert_eq!(bumps.len(), 1, "next occurrence bumps");
+        assert_eq!(get_prop(&out, "deadline").as_deref(), Some("[[2026-05-08]]"));
+        assert_eq!(
+            get_prop(&out, "last_completed").as_deref(),
+            Some("[[2026-05-07]]")
+        );
+    }
+
+    #[test]
+    fn guarded_skips_when_next_deadline_already_advanced_by_concurrent_roll() {
+        // A crossed duplicate completion of the SAME occurrence must NOT
+        // double-advance. `prev` is the pre-import peer at occurrence O1
+        // (deadline 05-07, no last_completed). The merged `next` frame carries a
+        // CONCURRENT peer's roll — already advanced the deadline to 05-08 and
+        // stamped last_completed 05-07 — PLUS a fresh done-flip. The occurrence
+        // actually being completed is O1 (05-07), already covered.
+        //
+        // Anchoring on `next`'s ADVANCED deadline (05-08) would see 05-07 < 05-08
+        // → "uncompleted" → bump AGAIN (to 05-09). The min-anchor picks O1
+        // (05-07 from prev) and no-ops.
+        let prev = note(&[], "todo");
+        let next = {
+            let base = note(&[("last_completed", "[[2026-05-07]]")], "done");
+            base.replace("deadline:: [[2026-05-07]]", "deadline:: [[2026-05-08]]")
+        };
+        let (out, bumps) = apply_post_save_bumps_guarded(&prev, &next, "note");
+        assert!(
+            bumps.is_empty(),
+            "duplicate completion of the already-rolled occurrence must not bump"
+        );
+        assert_eq!(out, next, "content unchanged when the guard trips");
+        assert_eq!(
+            get_prop(&out, "deadline").as_deref(),
+            Some("[[2026-05-08]]"),
+            "series stays at O2 (05-08); no second advance to 05-09"
+        );
+        // Sanity: the UNGUARDED path WOULD double-advance to 05-09.
+        let (unguarded, u_bumps) = apply_post_save_bumps_with_info(&prev, &next, "note");
+        assert_eq!(u_bumps.len(), 1);
+        assert_eq!(
+            get_prop(&unguarded, "deadline").as_deref(),
+            Some("[[2026-05-09]]"),
+            "unguarded path double-advances (the bug the guard prevents)"
+        );
+    }
+
+    #[test]
+    fn guarded_skips_when_prev_deadline_already_advanced_by_local_roll() {
+        // The MIRROR of the above (the case eb0de36d's prev-only anchor got
+        // wrong): the pre-import peer ALREADY rolled to O2 (prev deadline 05-08,
+        // last_completed 05-07) and is importing a stale disjoint-twin completion
+        // of O1 that a twin-heal union surfaced as `next` (deadline 05-07, done,
+        // last_completed 05-07). The occurrence being completed is O1 (05-07),
+        // already covered.
+        //
+        // Anchoring on `prev`'s ADVANCED deadline (05-08) would see 05-07 < 05-08
+        // → "uncompleted" → bump AGAIN. The min-anchor picks O1 (05-07 from next)
+        // and no-ops.
+        let prev = {
+            let base = note(&[("last_completed", "[[2026-05-07]]")], "todo");
+            base.replace("deadline:: [[2026-05-07]]", "deadline:: [[2026-05-08]]")
+        };
+        let next = note(&[("last_completed", "[[2026-05-07]]")], "done");
+        let (out, bumps) = apply_post_save_bumps_guarded(&prev, &next, "note");
+        assert!(
+            bumps.is_empty(),
+            "stale duplicate completion of the already-rolled occurrence must not bump"
+        );
+        assert_eq!(out, next, "content unchanged when the guard trips");
+        assert_eq!(
+            get_prop(&out, "deadline").as_deref(),
+            Some("[[2026-05-07]]"),
+            "no advance past the completed occurrence"
+        );
+        // Sanity: the UNGUARDED path WOULD advance (05-07 → 05-08).
+        let (unguarded, u_bumps) = apply_post_save_bumps_with_info(&prev, &next, "note");
+        assert_eq!(u_bumps.len(), 1);
+        assert_eq!(
+            get_prop(&unguarded, "deadline").as_deref(),
+            Some("[[2026-05-08]]")
+        );
+    }
+}
+
+#[cfg(test)]
+mod engine_lifecycle_ops_tests {
+    //! tesela-ows.1 step 2, Lead constraint (a): [`compute_lifecycle_container_sets`]
+    //! returns the per-block CONTAINER prop sets a `done` flip should apply,
+    //! keyed by the block's canonical bid, WITHOUT rewriting markdown.
+    use super::*;
+
+    const BID: &str = "07070707-0707-0707-0707-070707070707";
+
+    fn note(status: &str, extra: &[(&str, &str)]) -> String {
+        let mut lines = vec![
+            "---".to_string(),
+            "title: \"T\"".to_string(),
+            "tags: []".to_string(),
+            "---".to_string(),
+            format!("- water plants <!-- bid:{BID} -->"),
+            "  recurring:: daily count 3".to_string(),
+            "  deadline:: [[2026-05-07]]".to_string(),
+            format!("  status:: {status}"),
+        ];
+        for (k, v) in extra {
+            lines.push(format!("  {k}:: {v}"));
+        }
+        lines.join("\n") + "\n"
+    }
+
+    #[test]
+    fn done_flip_yields_container_sets_for_the_roll() {
+        let prev = note("todo", &[]);
+        let next = note("done", &[]);
+        let rolls = compute_lifecycle_container_sets(&prev, &next, "note");
+        assert_eq!(rolls.len(), 1, "one block rolls");
+        let r = &rolls[0];
+        assert_eq!(r.bid.as_deref(), Some(BID), "carries the canonical bid");
+        let get = |k: &str| {
+            r.props
+                .iter()
+                .find(|(pk, _)| pk == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("status"), Some("todo"), "status rolls back to todo");
+        assert_eq!(get("deadline"), Some("[[2026-05-08]]"), "deadline advances");
+        assert_eq!(get("recurrence_done"), Some("1"), "counter stamped");
+        assert_eq!(
+            get("last_completed"),
+            Some("[[2026-05-07]]"),
+            "completion stamped"
+        );
+        assert_eq!(
+            r.next_deadline.as_deref(),
+            Some("2026-05-08"),
+            "next-deadline ISO carried for WS parity"
+        );
+    }
+
+    #[test]
+    fn non_flip_delta_yields_nothing() {
+        // A pure text edit (no status flip) produces no lifecycle ops.
+        let prev = note("todo", &[]);
+        let next = prev.replace("water plants", "water the plants");
+        assert!(compute_lifecycle_container_sets(&prev, &next, "note").is_empty());
+    }
+
+    #[test]
+    fn already_completed_occurrence_yields_nothing() {
+        // Guard trips (last_completed already covers the occurrence) → no ops.
+        let prev = note("todo", &[("last_completed", "[[2026-05-07]]")]);
+        let next = note("done", &[("last_completed", "[[2026-05-07]]")]);
+        assert!(compute_lifecycle_container_sets(&prev, &next, "note").is_empty());
     }
 }
 

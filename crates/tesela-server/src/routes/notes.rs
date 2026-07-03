@@ -12,8 +12,8 @@ use tesela_core::{
     block::parse_blocks,
     daily::DailyNoteConfig,
     lifecycle::{
-        apply_dependency_cycles, apply_post_save_bumps_with_info, property_kv, try_bump_block,
-        try_skip_block,
+        apply_dependency_cycles, apply_post_save_bumps_with_info, compute_lifecycle_container_sets,
+        property_kv, try_bump_block, try_skip_block, BumpInfo,
     },
     link::{GraphEdge, Link, LinkType},
     note::NoteId,
@@ -348,7 +348,15 @@ pub async fn update_note(
     // flipped to `done` in this PUT and bump its deadline before saving.
     // Single-source-of-truth so all three web write paths (KanbanBoard,
     // BottomDrawer, BlockOutliner status cycle) trigger consistently.
-    let (new_content, bumps) = apply_post_save_bumps_with_info(&prev_content, &req.content, &id);
+    // `_bumps` here is the UNGUARDED bump info (this markdown rewrite has no
+    // idempotence guard). It is intentionally discarded for WS notification —
+    // the `RecurringRolled` event is fired below from the GUARDED
+    // `persist_lifecycle_rolls` result so the event matches the roll actually
+    // persisted to the container (a guard-tripped re-completion authors nothing
+    // and must emit nothing). `new_content` — the rolled markdown — is still
+    // used: it persists via `record_sync_update` and renders identically to the
+    // container roll for a not-yet-container-resident block.
+    let (new_content, _bumps) = apply_post_save_bumps_with_info(&prev_content, &req.content, &id);
     // Phase 12.4 — same-note dependency unblock: if a block's blocker just
     // flipped to done and the block is currently `backlog`, advance it to
     // `todo`. Cross-note dependencies are out of v1 scope; users can
@@ -398,6 +406,22 @@ pub async fn update_note(
     // like create) falls back to the historical server-file→new diff.
     let stamped_base = req.base_content.as_deref().map(stamp_block_ids);
     record_sync_update(&s, &prev_content, stamped_base.as_deref(), &note).await?;
+    // Persist the lifecycle roll (recurrence bump + same-note dependency
+    // unblock) as CONTAINER property sets so it lands authoritatively even when
+    // the block's lifecycle keys are already container-resident — the engine
+    // hook makes them so on any relay/WS-delivered completion (tesela-ows.1
+    // step 2, Lead constraint (a); parity with `set_block_property` + the
+    // engine hook). Without this, `record_sync_update` above persists the roll
+    // ONLY as in-text markdown, which render-time dedup shadows under the stale
+    // container values — the completion is a silent no-op on a container-
+    // resident block. The rolled-markdown persistence above stays: it renders
+    // identically for a not-yet-container-resident block and agrees with these
+    // sets, which are the single authoritative writer of lifecycle state. The
+    // roll is computed against `req.content` (the pre-roll client body), the
+    // same input the WS `bumps` above were derived from. `delta_note_id` is the
+    // note's doc id (== `stable_uuid_from_slug`).
+    let rolled_bumps =
+        persist_lifecycle_rolls(&s, delta_note_id, &id, &prev_content, &req.content).await;
     // Re-read to get fresh parsed metadata and checksum from the
     // file the engine just wrote. The engine's serialization is the
     // canonical form; downstream indexing should index THAT, not the
@@ -462,9 +486,13 @@ pub async fn update_note(
             Err(e) => tracing::warn!("ws: encode live delta for {} failed: {}", id, e),
         }
     }
-    // Phase 12.3 — fire RecurringRolled per bumped block so the client
-    // can surface "rolled to next month" notifications.
-    for info in bumps {
+    // Phase 12.3 — fire RecurringRolled per bumped block so the client can
+    // surface "rolled to next month" notifications. Fired from the GUARDED
+    // `persist_lifecycle_rolls` result (round 3, t5): a guard-tripped
+    // re-completion authors nothing to the container, so it must also emit no
+    // WS event — the event set now matches the persisted roll exactly (parity
+    // with `set_block_property`, which already fires from this same guarded set).
+    for info in rolled_bumps {
         let _ = s.ws_tx.send(WsEvent::RecurringRolled {
             block_id: info.block_id,
             title: info.title,
@@ -1519,6 +1547,100 @@ async fn body_preserving_noteupsert_content(
     }
 }
 
+/// Persist a lifecycle roll — the idempotence-GUARDED recurrence bump plus the
+/// same-note dependency unblock a `done` flip implies — as CONTAINER
+/// `BlockPropertySet` ops, the SAME single mechanism the engine hook
+/// ([`tesela_sync`]'s `apply_block_lifecycle`) uses (tesela-ows.1 step 2, Lead
+/// constraint (a)). Both HTTP writers (`update_note` PUT, `set_block_property`)
+/// route their roll through here so all THREE writers persist lifecycle state
+/// through ONE path: the typed props container, where disjoint-twin heal's
+/// per-key union protects it and render-time dedup makes it win.
+///
+/// Never rewrites markdown, never CLEARS the container. The predecessor code
+/// cleared only the single key it was invoked with and wrote the rest of the
+/// roll as in-text markdown; once the engine hook had made all lifecycle keys
+/// container-resident, that left the sibling keys
+/// (`deadline`/`recurrence_done`/`last_completed`) rendering their STALE
+/// container values while only `status` updated (and, on the PUT path, the
+/// whole completion silently shadowed). Routing every rolled key through a
+/// container set makes the roll authoritative regardless of prior residency.
+///
+/// `prev_md` is the note's markdown BEFORE the completion; `next_md` is the
+/// post-completion markdown the roll is computed against (the re-materialized
+/// view for `set_block_property`, the client's PUT body for `update_note`).
+/// Returns one [`BumpInfo`] per recurrence roll for the caller's
+/// `WsEvent::RecurringRolled`; a pure dependency unblock carries no
+/// `next_deadline` and emits no event.
+async fn persist_lifecycle_rolls(
+    s: &Arc<AppState>,
+    doc_note_id: [u8; 16],
+    note_id_str: &str,
+    prev_md: &str,
+    next_md: &str,
+) -> Vec<BumpInfo> {
+    let rolls = compute_lifecycle_container_sets(prev_md, next_md, note_id_str);
+    let mut bumps = Vec::new();
+    for roll in rolls {
+        // Address the container node by the block's canonical bid (parity with
+        // the engine hook). An unstamped block can't be addressed by bid — skip
+        // it; a resident note's blocks are always stamped.
+        let Some(block_id) = roll
+            .bid
+            .as_deref()
+            .and_then(|b| uuid::Uuid::parse_str(b).ok())
+            .map(|u| *u.as_bytes())
+        else {
+            continue;
+        };
+        for (key, value) in &roll.props {
+            // Representation alignment (tesela-ows.1 step 2, round 3): author the
+            // rolled key through the SAME registry-aware chooser `set_block_property`
+            // uses, so a completion's route write and its recurrence roll agree on
+            // the key's representation (free-text → `SetText`, else `SetScalar`).
+            // The predecessor hard-coded `SetScalar`, which flipped a Text-typed
+            // key (e.g. an unregistered `status`, which `set_block_property` writes
+            // as free text) scalar<->text on every completion — the collision that
+            // 500'd a second completion. The engine's write layer still tolerates
+            // any residual mix in a live doc.
+            //
+            // A lifecycle roll only SETS/advances state, never removes it
+            // (`BlockLifecycleRoll`: "never a removal"), and the Lead constraint
+            // forbids a `PropOp::Clear` of a lifecycle key (a Clear would evict it
+            // from the container and forfeit twin-heal protection). `Clear` only
+            // appears in the multi-value branch, which a single-scalar lifecycle
+            // key resolves to only under a pathological registration; skip it so
+            // the key stays container-resident.
+            for op in prop_ops_for_set(s, key, value).await {
+                if matches!(op, PropOp::Clear) {
+                    continue;
+                }
+                let payload = OpPayload::BlockPropertySet {
+                    note_id: doc_note_id,
+                    block_id,
+                    key: key.clone(),
+                    value: op,
+                };
+                if let Err(e) = s.sync_engine.record_local(payload).await {
+                    tracing::warn!(
+                        "sync: record_local lifecycle roll {}::{} failed for {}: {e}",
+                        note_id_str,
+                        key,
+                        roll.block_id
+                    );
+                }
+            }
+        }
+        if let Some(next_deadline) = roll.next_deadline {
+            bumps.push(BumpInfo {
+                block_id: roll.block_id,
+                title: roll.title,
+                next_deadline,
+            });
+        }
+    }
+    bumps
+}
+
 /// Parse `content`, stamp persistent block ids onto any unstamped
 /// bullets, and return the canonical serialized form. Returns
 /// `content` unchanged if every bullet already has a bid.
@@ -2088,47 +2210,20 @@ pub async fn set_block_property(
     let after_prop_content = after_prop.content.clone();
 
     // Run post-save bumps + dependency cycles against the re-materialized
-    // view (so they see the just-set property). When they rewrite content,
-    // persist that delta through the engine (diff re-materialized → final),
-    // matching the PUT path; a non-recurring block produces no change and we
-    // skip the redundant write.
-    let (rolled_content, bumps) =
-        apply_post_save_bumps_with_info(&prev_content, &after_prop_content, note_id_str);
-    let (rolled_content, _unblocked) =
-        apply_dependency_cycles(&prev_content, &rolled_content, note_id_str);
-
-    if rolled_content != after_prop_content {
-        // The recurring-roll / dependency-unblock rewrote the block's
-        // properties as in-text markdown (deadline/status/last_completed/…).
-        // To keep `key` single-sourced, clear it from the container BEFORE
-        // persisting the rolled markdown — otherwise the container's value
-        // and the rolled in-text line would both materialize, duplicating the
-        // property. The rolled markdown becomes authoritative for `key`.
-        let payload = OpPayload::BlockPropertySet {
-            note_id: doc_note_id,
-            block_id,
-            key: key.clone(),
-            value: PropOp::Clear,
-        };
-        if let Err(e) = s.sync_engine.record_local(payload).await {
-            tracing::warn!(
-                "sync: record_local post-roll Clear failed for {}: {e}",
-                req.block_id
-            );
-        }
-        // Re-read AFTER the clear so the diff base reflects the cleared
-        // container (no `key:: value` line), then diff → the rolled content.
-        let cleared = s.store.get(&note_id).await?.ok_or_else(|| {
-            AppError::NotFound(format!(
-                "Note not found after set-property: {}",
-                note_id_str
-            ))
-        })?;
-        let stamped = stamp_block_ids(&rolled_content);
-        let mut rolled_note = cleared.clone();
-        rolled_note.content = stamped;
-        record_sync_update(&s, &cleared.content, None, &rolled_note).await?;
-    }
+    // view (so they see the just-set property) and persist the roll as
+    // CONTAINER property sets — the SAME single mechanism the engine hook and
+    // the PUT path use (tesela-ows.1 step 2, Lead constraint (a)). The
+    // predecessor cleared ONLY the just-set `key` from the container and wrote
+    // the rest of the roll as in-text markdown; once the engine hook had made
+    // every lifecycle key container-resident, a second completion via this
+    // endpoint left deadline/recurrence_done/last_completed rendering their
+    // STALE container values (only `status` updated). Routing every rolled key
+    // through a container set makes the roll authoritative regardless of prior
+    // residency. A non-recurring / already-completed flip produces no roll and
+    // authors nothing.
+    let bumps =
+        persist_lifecycle_rolls(&s, doc_note_id, note_id_str, &prev_content, &after_prop_content)
+            .await;
 
     // Re-read the final materialized note for indexing + the response echo.
     let updated = s.store.get(&note_id).await?.ok_or_else(|| {
@@ -3115,6 +3210,425 @@ mod tests {
                 calls.lock().unwrap().as_slice(),
                 &["BlockPropertySet"],
                 "the container write must be attempted before any prose strip"
+            );
+        }
+    }
+
+    /// tesela-ows.1 step 2 (attempt #3) — REGRESSION for the review reject: the
+    /// two pre-existing HTTP write paths persisted their recurrence roll as
+    /// in-text markdown and relied on the lifecycle keys NOT being container-
+    /// resident. Once the engine hook (`apply_block_lifecycle`) makes
+    /// deadline/recurrence_done/last_completed/status container-resident after
+    /// ANY relay/WS-delivered completion, that assumption broke and the roll
+    /// rendered STALE (render-time dedup makes the container value win). The fix
+    /// routes BOTH handlers' roll persistence through
+    /// `compute_lifecycle_container_sets` + container `BlockPropertySet` ops
+    /// (Lead constraint (a)), the SAME mechanism the engine hook uses.
+    ///
+    /// Both tests seed a block whose lifecycle keys are ALREADY container-
+    /// resident (the post-engine-hook state), then complete it via the route
+    /// and assert the FULLY-rolled values render. They mirror the reviewer's
+    /// empirically-reproduced recipes and FAIL on base 337ac6d2: there
+    /// `set_block_property` cleared only `status` (leaving stale sibling keys)
+    /// and `update_note` cleared nothing (the whole completion shadowed).
+    mod lifecycle_container_roll {
+        use super::super::*;
+        use std::sync::Arc;
+
+        use tesela_core::{config::StorageConfig, storage::filesystem::FsNoteStore};
+        use tesela_sync::{
+            DeviceId, GroupId, GroupIdentity, GroupKey, Hlc, LoroEngine, OpPayload, PropOp,
+            SyncEngine,
+        };
+
+        // "07070707-…" parses to the 16-byte block id [0x07; 16], so the seed
+        // `<!-- bid:… -->` marker and the `BlockPropertySet` block_id address the
+        // same tree node (mirrors the engine acceptance test).
+        const BID_HEX: &str = "07070707-0707-0707-0707-070707070707";
+        const BLOCK: [u8; 16] = [0x07; 16];
+
+        /// Build an AppState over a REAL `LoroEngine` (materializing to
+        /// `notes/`), seed one recurring block, and drive its lifecycle keys
+        /// into the typed props CONTAINER via `BlockPropertySet` — the exact
+        /// post-engine-hook shape the reviewer seeded. `relay: None` so the
+        /// handlers' `bootstrap_note_if_needed` is a no-op.
+        async fn seeded_state(
+            tmp: &std::path::Path,
+            slug: &str,
+            container_props: &[(&str, &str)],
+        ) -> Arc<AppState> {
+            std::fs::create_dir_all(tmp.join("notes")).unwrap();
+            std::fs::create_dir_all(tmp.join(".tesela")).unwrap();
+            let device = DeviceId::from_bytes([0xc1; 16]);
+            let engine = LoroEngine::with_dirs(
+                device,
+                Arc::new(Hlc::new(device)),
+                tmp.join(".tesela").join("loro"),
+                Some(tmp.join("notes")),
+            )
+            .await
+            .expect("loro engine");
+
+            let note_id = stable_uuid_from_slug(slug);
+            engine
+                .record_local(OpPayload::NoteUpsert {
+                    note_id,
+                    display_alias: Some(slug.into()),
+                    title: slug.into(),
+                    content: format!("- water plants <!-- bid:{BID_HEX} -->\n"),
+                    created_at_millis: 1,
+                })
+                .await
+                .expect("seed NoteUpsert");
+            // Seed each key via `SetScalar` — the REALISTIC shape the engine
+            // lifecycle hook (`apply_block_lifecycle`) and pre-round-3 roll
+            // persisters actually author, and the shape Taylor's live docs hold.
+            // (Round 3 fixed the class where the route's `SetText` write then
+            // HARD-ERRORED over this scalar; the write layer now tolerates it, so
+            // seeding the production shape is both honest and revert-discriminating
+            // — this seed 500'd the route write on base/HEAD.) `status` is seeded
+            // LAST as `todo` so no status→done flip fires the roll during seeding.
+            for (k, v) in container_props {
+                engine
+                    .record_local(OpPayload::BlockPropertySet {
+                        note_id,
+                        block_id: BLOCK,
+                        key: (*k).into(),
+                        value: PropOp::SetScalar(tesela_sync::PropScalar::Text((*v).into())),
+                    })
+                    .await
+                    .expect("seed BlockPropertySet");
+            }
+
+            let engine: Arc<dyn SyncEngine> = Arc::new(engine);
+            let store = Arc::new(FsNoteStore::new(tmp.to_path_buf(), StorageConfig::default()));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&tmp.join(".tesela").join("test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = tokio::sync::broadcast::channel(16);
+            let (ws_delta_tx, _) = tokio::sync::broadcast::channel(16);
+            let group_identity = Arc::new(tokio::sync::RwLock::new(GroupIdentity {
+                group_id: GroupId::new_random(),
+                group_key: GroupKey::random(),
+            }));
+            Arc::new(AppState {
+                mosaic_root: tmp.to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(tmp),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine: engine,
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: None,
+                relay: None,
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
+            })
+        }
+
+        /// The seed: a `daily count 3` recurrence whose 2nd occurrence is due,
+        /// with completion memory from the 1st occurrence — all CONTAINER-
+        /// resident. Completing it must roll to occurrence #3.
+        fn resident_seed() -> Vec<(&'static str, &'static str)> {
+            vec![
+                ("recurring", "daily count 3"),
+                ("deadline", "[[2026-05-08]]"),
+                ("recurrence_done", "1"),
+                ("last_completed", "[[2026-05-07]]"),
+                ("status", "todo"),
+            ]
+        }
+
+        /// Reviewer repro (1): a SECOND completion via `set_block_property` must
+        /// render the FULLY-rolled values, not just `status`. On base 337ac6d2
+        /// the handler clears only the `status` key, leaving
+        /// deadline/recurrence_done/last_completed at their stale container
+        /// values (05-08 / 1 / 05-07).
+        #[tokio::test]
+        async fn set_block_property_second_completion_rolls_all_container_keys() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+
+            let res = set_block_property(
+                State(Arc::clone(&state)),
+                Json(SetBlockPropertyReq {
+                    block_id: format!("{slug}:{BID_HEX}"),
+                    key: "status".to_string(),
+                    value: "done".to_string(),
+                }),
+            )
+            .await;
+            if let Err(e) = res {
+                let status = e.into_response().status();
+                panic!("set_block_property failed with status {status}");
+            }
+
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("deadline:: [[2026-05-09]]"),
+                "deadline must advance to 05-09 (was stale 05-08 on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("recurrence_done:: 2"),
+                "recurrence_done must roll to 2 (was stale 1 on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("last_completed:: [[2026-05-08]]"),
+                "last_completed must stamp 05-08 (was stale 05-07 on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("status:: todo") && !rendered.contains("status:: done"),
+                "status must reset to todo; render:\n{rendered}"
+            );
+        }
+
+        /// Reviewer repro (2): a completion via `update_note` (PUT) on a
+        /// container-resident block must take effect. On base 337ac6d2 the PUT
+        /// clears nothing from the container, so render-time dedup shadows the
+        /// entire markdown roll under the stale container values — a silent
+        /// no-op (deadline stays 05-08, recurrence_done stays 1).
+        #[tokio::test]
+        async fn update_note_completion_rolls_on_container_resident_block() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+
+            // The client PUTs the materialized body with the block flipped to
+            // done (exactly what a status toggle sends over the whole-body PUT).
+            let before = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert_eq!(
+                before.matches("status:: todo").count(),
+                1,
+                "seed must have exactly one status line; render:\n{before}"
+            );
+            let flipped = before.replace("status:: todo", "status:: done");
+
+            let res = update_note(
+                Path(slug.to_string()),
+                State(Arc::clone(&state)),
+                Json(UpdateNoteReq {
+                    content: flipped,
+                    base_content: None,
+                }),
+            )
+            .await;
+            assert!(res.is_ok(), "update_note should succeed");
+
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("deadline:: [[2026-05-09]]"),
+                "deadline must advance to 05-09 (silent no-op on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("recurrence_done:: 2"),
+                "recurrence_done must roll to 2 (silent no-op on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("last_completed:: [[2026-05-08]]"),
+                "last_completed must stamp 05-08; render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("status:: todo") && !rendered.contains("status:: done"),
+                "status must render as the rolled todo, not the flipped done; render:\n{rendered}"
+            );
+        }
+
+        /// Round 3 (t2): a container seeded via `SetScalar` (the engine
+        /// lifecycle hook's real shape and Taylor's live-doc shape) then ONE
+        /// `set_block_property` completion. On base AND HEAD this 500s — a
+        /// PRE-EXISTING bug of the SAME representation-collision class: the
+        /// route's `SetText` write over the scalar seed hard-errors ("Expected
+        /// value type Text but found Value(String(todo))"). The representation-
+        /// tolerant write layer clears the incompatible scalar occupant and
+        /// mints the text child, so the completion succeeds and rolls.
+        #[tokio::test]
+        async fn set_block_property_completion_over_scalar_seed_succeeds() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+
+            let res = set_block_property(
+                State(Arc::clone(&state)),
+                Json(SetBlockPropertyReq {
+                    block_id: format!("{slug}:{BID_HEX}"),
+                    key: "status".to_string(),
+                    value: "done".to_string(),
+                }),
+            )
+            .await;
+            if let Err(e) = res {
+                let status = e.into_response().status();
+                panic!("completion over a scalar-seeded container must not 500; got {status}");
+            }
+
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("recurrence_done:: 2"),
+                "the roll must advance recurrence_done to 2; render:\n{rendered}"
+            );
+        }
+
+        /// Round 3 (t1): TWO consecutive `set_block_property(status=done)`
+        /// completions of ONE recurring block, single device, no relay. On
+        /// base/HEAD the SECOND completion 500s — the first completion's roll
+        /// leaves `status` a SCALAR, and round 2's `SetText` write over it
+        /// hard-errors, making a recurring completion a ONE-SHOT (the reviewer's
+        /// empirically-reproduced c1). With the representation-tolerant write
+        /// layer + the aligned roll writer, BOTH succeed and the recurrence
+        /// advances twice. This test FAILS at HEAD (it is inherently
+        /// revert-discriminating for the fix).
+        #[tokio::test]
+        async fn set_block_property_two_consecutive_completions_advance_recurrence() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            // A FRESH `daily count 5` block: `recurrence_done` defaults to 0, so
+            // two completions must reach 2. Seeded via `SetScalar` (production
+            // shape) — no `recurrence_done`/`last_completed` yet.
+            let fresh: Vec<(&str, &str)> = vec![
+                ("recurring", "daily count 5"),
+                ("deadline", "[[2026-05-08]]"),
+                ("status", "todo"),
+            ];
+            let state = seeded_state(tmp.path(), slug, &fresh).await;
+
+            for round in 1..=2 {
+                let res = set_block_property(
+                    State(Arc::clone(&state)),
+                    Json(SetBlockPropertyReq {
+                        block_id: format!("{slug}:{BID_HEX}"),
+                        key: "status".to_string(),
+                        value: "done".to_string(),
+                    }),
+                )
+                .await;
+                if let Err(e) = res {
+                    let status = e.into_response().status();
+                    panic!("completion round {round} must not 500; got {status}");
+                }
+            }
+
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("recurrence_done:: 2"),
+                "two completions must advance recurrence_done to 2; render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("status:: todo") && !rendered.contains("status:: done"),
+                "status must reset to todo after the second roll; render:\n{rendered}"
+            );
+        }
+
+        /// Round 3 (t5): `update_note` must fire `WsEvent::RecurringRolled` from
+        /// the GUARDED roll (`persist_lifecycle_rolls`), not the UNGUARDED
+        /// `apply_post_save_bumps_with_info` bumps. Seed an occurrence that is
+        /// ALREADY completed (`last_completed == deadline`) then re-flip it to
+        /// done: the idempotence guard trips, so NOTHING is persisted to the
+        /// container (recurrence_done stays 1 — the container value wins render
+        /// dedup) and therefore NO `RecurringRolled` event must be emitted. On
+        /// base/HEAD the event fires from the unguarded bump, contradicting the
+        /// persisted state.
+        #[tokio::test]
+        async fn update_note_recurring_rolled_event_matches_guarded_roll() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            // deadline == last_completed → this occurrence is already recorded,
+            // so a re-flip to done trips the idempotence guard.
+            let already_completed: Vec<(&str, &str)> = vec![
+                ("recurring", "daily count 3"),
+                ("deadline", "[[2026-05-08]]"),
+                ("recurrence_done", "1"),
+                ("last_completed", "[[2026-05-08]]"),
+                ("status", "todo"),
+            ];
+            let state = seeded_state(tmp.path(), slug, &already_completed).await;
+
+            let before = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            let flipped = before.replace("status:: todo", "status:: done");
+
+            let mut rx = state.ws_tx.subscribe();
+            let res = update_note(
+                Path(slug.to_string()),
+                State(Arc::clone(&state)),
+                Json(UpdateNoteReq {
+                    content: flipped,
+                    base_content: None,
+                }),
+            )
+            .await;
+            assert!(res.is_ok(), "update_note should succeed");
+
+            // Self-validation: the guard tripped, so the container roll authored
+            // nothing — recurrence_done must still render 1 (the stale in-text
+            // markdown bump loses render-time dedup to the container value).
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("recurrence_done:: 1") && !rendered.contains("recurrence_done:: 2"),
+                "guard-tripped re-completion must NOT advance the container; render:\n{rendered}"
+            );
+
+            // Revert-discrimination: no RecurringRolled event may be emitted for
+            // a roll that never touched the container.
+            let mut rolled_events = 0;
+            while let Ok(ev) = rx.try_recv() {
+                if matches!(ev, WsEvent::RecurringRolled { .. }) {
+                    rolled_events += 1;
+                }
+            }
+            assert_eq!(
+                rolled_events, 0,
+                "a guard-tripped completion must emit NO RecurringRolled event"
             );
         }
     }

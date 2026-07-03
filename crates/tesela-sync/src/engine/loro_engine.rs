@@ -620,10 +620,11 @@ impl LoroEngine {
 
     /// The single apply orchestrator (ADR-1, decisions.md 2026-07-01) behind
     /// `import_doc_update`, `apply_doc_update_status`, and
-    /// `import_authoritative_snapshot`. Runs the shared ~9-step sequence:
-    /// poison-probe → props plan ([`peer_genuine_block_changes`]) → `doc.import`
-    /// → max-`TreeID` twin tombstone ([`tombstone_duplicate_twins`]) → prop
-    /// re-assert → derived refresh →
+    /// `import_authoritative_snapshot`. Runs the shared sequence:
+    /// poison-probe → import plan ([`peer_import_plan`]: twins props union +
+    /// lifecycle status-flip gate) → `doc.import` → max-`TreeID` twin tombstone
+    /// ([`tombstone_duplicate_twins`]) → prop re-assert → derived refresh →
+    /// block lifecycle ([`Self::apply_block_lifecycle`], tesela-ows.1 step 2) →
     /// snapshot persist → materialize. `mode` selects ONLY the heal-plan
     /// residency gate + the poison-skip noun; the body is otherwise identical
     /// across the three public wrappers (see each for the per-path rationale).
@@ -703,8 +704,8 @@ impl LoroEngine {
             ImportMode::Authoritative => !is_views,
         };
         let plan = if plan_gate {
-            match peer_genuine_block_changes(&doc, bytes) {
-                Ok(changes) => Some(changes),
+            match peer_import_plan(&doc, bytes) {
+                Ok(p) => Some(p),
                 Err(e) => {
                     if matches!(mode, ImportMode::Delta) {
                         tracing::warn!(
@@ -750,11 +751,38 @@ impl LoroEngine {
         // through `record_local_locked` (this note's `apply_locks` guard is
         // already held here), which re-acquires the docs lock + re-fetches
         // the doc.
-        if let Some(changes) = &plan {
-            self.reassert_prop_heals(note_id, changes).await?;
+        if let Some(p) = &plan {
+            self.reassert_prop_heals(note_id, &p.twins).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
+
+        // ── Engine-side block lifecycle (tesela-ows.1 step 2) ────────────────
+        // A `done` flip reaching the engine over ANY writer that IMPORTS (WS
+        // live-apply, relay import, iOS `.relay` import) — not just an HTTP PUT
+        // — must trigger the recurrence bump + same-note dependency unblock that
+        // previously lived only in `tesela-server`'s route handlers. Gated
+        // (Lead constraint (b)) on a real non-done→done flip that
+        // [`peer_import_plan`] already detected while forking for the twins
+        // plan, so the common text-edit delta pays no extra render. `prev_md`
+        // is the pre-import full markdown; `doc` now holds the post-import,
+        // twin-healed state. The roll is authored as CONTAINER prop sets
+        // (constraint (a)) — never in-text, never clearing the container — so
+        // lifecycle state stays where twin-heal's union protects it.
+        //
+        // Hook point rationale (post-heal materialize, NOT `record_local`): the
+        // acceptance is a flip delivered via relay/import, and `apply_import` is
+        // the single orchestrator behind every import wrapper. `record_local`
+        // (the local author path) is deliberately NOT hooked — the HTTP handler
+        // already rolls there (zero-behavior-change requirement) and hooking it
+        // would double-fire; a locally-authored FFI flip rolls once a peer
+        // imports it (matches the acceptance test's "author does not self-roll").
+        if !is_views {
+            if let Some(prev_md) = plan.as_ref().and_then(|p| p.lifecycle_prev.as_deref()) {
+                self.apply_block_lifecycle(note_id, prev_md, &doc).await?;
+            }
+        }
+
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
         }
@@ -783,9 +811,9 @@ impl LoroEngine {
     ///
     /// The resolution has two halves when the server already holds this note:
     ///
-    /// 1. **Props plan (before mutating):** ask [`peer_genuine_block_changes`]
-    ///    for the per-key UNION of every disjoint-twin block's props, so the
-    ///    tombstoned loser's props aren't lost. Empty plan ⇒ no twins ⇒ nothing
+    /// 1. **Props plan (before mutating):** ask [`peer_import_plan`] for its
+    ///    `.twins` — the per-key UNION of every disjoint-twin block's props — so
+    ///    the tombstoned loser's props aren't lost. Empty plan ⇒ no twins ⇒ nothing
     ///    to heal. The surviving node/TEXT needs no plan — it is resolved purely
     ///    by the max-`TreeID` node keep (the higher-`TreeID` twin's text wins,
     ///    product-approved 2026-07-01, even a stale re-ship).
@@ -1047,6 +1075,107 @@ impl LoroEngine {
                 value,
             })
             .await?;
+        }
+        Ok(())
+    }
+
+    /// Engine-side block lifecycle (tesela-ows.1 step 2, Lead-tier). Invoked
+    /// from [`Self::apply_import`] ONLY when [`peer_import_plan`] detected a real
+    /// non-done→done status flip in the just-imported frame, so every writer
+    /// that IMPORTS (WS live-apply, relay import, iOS `.relay` import) — not just
+    /// the HTTP PUT — triggers the recurrence bump + same-note dependency unblock
+    /// that previously lived only in `tesela-server`'s route handlers.
+    ///
+    /// - `prev_md` is the note's full markdown BEFORE the import; the current
+    ///   `doc` holds the post-import, twin-HEALED state (tombstone + prop
+    ///   re-assert already ran), re-rendered here as `next_md`.
+    /// - The recurrence bump runs through the IDEMPOTENCE-GUARDED core
+    ///   ([`tesela_core::lifecycle::compute_lifecycle_container_sets`],
+    ///   constraint (a)): a concurrently- or re-delivered done-flip can't
+    ///   double-advance the series (the guard anchors on the completed
+    ///   occurrence — the EARLIER of prev/next — so it is robust to a concurrent
+    ///   peer's roll landing on either side of the merge).
+    ///
+    /// ## Constraint (a): lifecycle props STAY in the typed props container
+    /// The roll is authored as CONTAINER [`OpPayload::BlockPropertySet`] sets —
+    /// the SAME mechanism [`Self::reassert_prop_heals`] uses — NOT as an in-text
+    /// markdown rewrite, and the container is NEVER cleared. Lifecycle state
+    /// (`last_completed`, `recurrence_done`, the rolled dates, `status`) lives in
+    /// the container where disjoint-twin heal's per-key union
+    /// ([`reconcile_orphaned_prop_containers`]) protects it. Attempt 2 evicted
+    /// these to in-text lines (clearing the container so the roll would render);
+    /// because twin-heal unions CONTAINER props only, a max-`TreeID` pick landing
+    /// on the non-rolling twin then silently WIPED completion memory. Keeping the
+    /// roll in the container renders correctly for free — the container value
+    /// wins render-time dedup ([`dedup_intext_props_against_container`]) — with
+    /// no clearing and no render-side change.
+    ///
+    /// ## Recursive-reimport guard (idempotence when the roll propagates)
+    /// The bump authors `status:: todo`; when a peer imports the resulting frame
+    /// it sees a done→todo transition (LWW: the roll's HLC is later than the
+    /// original flip's), never a fresh flip TO done, so the flip gate does not
+    /// re-trigger. The idempotence guard is the backstop for any residual
+    /// re-delivery.
+    ///
+    /// ## Lock discipline (tesela-4ju)
+    /// Called from inside `apply_import`, which already holds this note's
+    /// `apply_locks` guard for its whole body. Authoring goes through
+    /// `record_local_locked` (NOT the public `record_local`, which would deadlock
+    /// re-acquiring the non-reentrant guard) — the same discipline as
+    /// `reassert_prop_heals`.
+    async fn apply_block_lifecycle(
+        &self,
+        note_id: [u8; 16],
+        prev_md: &str,
+        doc: &LoroDoc,
+    ) -> SyncResult<()> {
+        let next_md = doc_full_markdown(doc);
+        // Same note-id string the HTTP path passes to the lifecycle fns: the
+        // slug (so same-note `blocked_by::` refs resolve), falling back to the
+        // hex id when no slug is resident. `slug_for_note` is read-only — it
+        // does not acquire `apply_locks`, so it is safe under our guard.
+        let note_str = self
+            .slug_for_note(note_id)
+            .await
+            .unwrap_or_else(|| hex_id(&note_id));
+        let rolls =
+            tesela_core::lifecycle::compute_lifecycle_container_sets(prev_md, &next_md, &note_str);
+        for roll in rolls {
+            // Address the container node by the block's canonical bid. An
+            // unstamped block (no bid) can't be addressed — skip it (the engine
+            // tree always stamps a block_id, so resident notes always carry one).
+            let Some(block_id) = roll
+                .bid
+                .as_deref()
+                .and_then(|b| uuid::Uuid::parse_str(b).ok())
+                .map(|u| *u.as_bytes())
+            else {
+                continue;
+            };
+            for (key, value) in roll.props {
+                // Representation alignment (tesela-ows.1 step 2, round 3): author
+                // each rolled key in the representation the container ALREADY
+                // holds for it — a text-typed key (the route's free-text default)
+                // stays a `LoroText`; a scalar or not-yet-present key stays a
+                // scalar. The engine has no property registry, so it PRESERVES the
+                // established representation instead of guessing it. This stops
+                // the engine writer from flip-flopping a key scalar<->text on each
+                // inbound completion (which orphans the old child container). The
+                // write layer ([`prop_containers::clear_incompatible_child`])
+                // still tolerates any residual mix already in a live doc.
+                let value_op = if block_prop_is_text(doc, block_id, &key) {
+                    PropOp::SetText(value)
+                } else {
+                    PropOp::SetScalar(PropScalar::Text(value))
+                };
+                self.record_local_locked(OpPayload::BlockPropertySet {
+                    note_id,
+                    block_id,
+                    key,
+                    value: value_op,
+                })
+                .await?;
+            }
         }
         Ok(())
     }
@@ -2668,7 +2797,63 @@ mod prop_containers {
         r.map_err(|e| SyncError::Storage(format!("loro props insert: {e}")))
     }
 
+    /// Property-representation-collision guard (tesela-ows.1 step 2, round 3).
+    ///
+    /// A `props` map key can hold EITHER a primitive scalar (`SetScalar`) OR a
+    /// nested child container — a `LoroText` (free text) or a `LoroList`
+    /// (multi-value). The three lifecycle writers (the engine hook + the two
+    /// HTTP roll persisters) historically authored scalars, while the route's
+    /// free-text write authors a `LoroText`. When those representations collide
+    /// at one key, `get_or_create_container` HARD-ERRORS ("Expected value type
+    /// Text but found Value(String(..))") — surfacing as an HTTP 500 that turns
+    /// a recurring completion into a one-shot.
+    ///
+    /// The invariant this restores: WRITING A PROPERTY VALUE MUST NEVER FAIL
+    /// BECAUSE OF THE PRIOR REPRESENTATION OF THAT KEY. If `key` currently holds
+    /// an occupant that is NOT a child container of `want`'s kind (a scalar, or
+    /// a container of a different kind), delete it from `props` so the caller's
+    /// `get_or_create_container` mints a fresh child of the right kind. A
+    /// same-kind child, an absent key, or a `Null` are left untouched — the
+    /// caller adopts / creates them (`get_or_create_container` treats `Null` as
+    /// absent). Only `props` is touched; the key stays in `prop_keys`, so
+    /// first-seen render order is preserved across a representation switch.
+    ///
+    /// Why not `ensure_mergeable_text`/`_list`: those likewise reject a
+    /// non-mergeable occupant — a scalar OR a *regular op-id child* (the shape
+    /// every doc already in the wild holds) — with `ArgErr`, and adopting them
+    /// would change both the container identity of existing props and the
+    /// convergence semantics disjoint-twin healing depends on. Keeping the
+    /// regular-op-id-child discipline and clearing the incompatible occupant is
+    /// the representation-tolerant fix that leaves live-doc healing untouched.
+    ///
+    /// Concurrent convergence: two peers each clearing a scalar and creating a
+    /// regular child at the same key produce two op-id children; map conflict
+    /// resolution deterministically picks one (both peers agree) — it CONVERGES
+    /// without error, matching the existing `write_block_text`/prop discipline.
+    fn clear_incompatible_child(
+        props: &loro::LoroMap,
+        key: &str,
+        want: loro::ContainerType,
+    ) -> SyncResult<()> {
+        let compatible = match props.get(key) {
+            None => true,
+            Some(loro::ValueOrContainer::Container(c)) => c.get_type() == want,
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::Null)) => true,
+            Some(loro::ValueOrContainer::Value(_)) => false,
+        };
+        if !compatible {
+            props
+                .delete(key)
+                .map_err(|e| SyncError::Storage(format!("loro props clear {key}: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Set a single-value scalar property (primitive LoroValue; concurrent set = LWW).
+    ///
+    /// Representation-tolerant by construction: a `LoroMap` insert of a
+    /// primitive REPLACES whatever child (scalar or container) the key held, so
+    /// a scalar write over a prior `LoroText`/`LoroList` needs no explicit clear.
     pub(super) fn prop_set_scalar(
         props: &loro::LoroMap,
         prop_keys: &loro::LoroList,
@@ -2680,12 +2865,15 @@ mod prop_containers {
     }
 
     /// Set a free-text property as a nested LoroText (concurrent char-merge).
+    /// Tolerates any prior representation at `key` (scalar or a different
+    /// container kind) via [`clear_incompatible_child`].
     pub(super) fn prop_set_text(
         props: &loro::LoroMap,
         prop_keys: &loro::LoroList,
         key: &str,
         text: &str,
     ) -> SyncResult<()> {
+        clear_incompatible_child(props, key, loro::ContainerType::Text)?;
         let t: LoroText = props
             .get_or_create_container(key, LoroText::new())
             .map_err(|e| SyncError::Storage(format!("loro prop text get_or_create: {e}")))?;
@@ -2733,6 +2921,7 @@ mod prop_containers {
         key: &str,
         value: &PropScalar,
     ) -> SyncResult<()> {
+        clear_incompatible_child(props, key, loro::ContainerType::List)?;
         let list: loro::LoroList = props
             .get_or_create_container(key, loro::LoroList::new())
             .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
@@ -3480,6 +3669,30 @@ fn find_node_by_block_id(tree: &LoroTree, target_hex: &str) -> Option<TreeID> {
     None
 }
 
+/// True when block `block_id`'s typed-props container currently stores `key` as
+/// a nested `LoroText` child. Used by the engine lifecycle hook to author each
+/// rolled key in the representation the key ALREADY has (a text-typed key stays
+/// text; a scalar/absent key stays scalar) — so the engine writer never FLIPS a
+/// key's representation, which would orphan the old child container and churn
+/// the doc. Pure read (mirrors `read_block_text`'s non-minting `text_seq`
+/// inspection); `false` for an unknown note/block/key or a scalar occupant.
+fn block_prop_is_text(doc: &LoroDoc, block_id: [u8; 16], key: &str) -> bool {
+    let tree = doc.get_tree("blocks");
+    let Some(node) = find_node_by_block_id(&tree, &hex_id(&block_id)) else {
+        return false;
+    };
+    let Ok(meta) = tree.get_meta(node) else {
+        return false;
+    };
+    let Some((props, _prop_keys)) = prop_containers::read_node_prop_containers(&meta) else {
+        return false;
+    };
+    matches!(
+        props.get(key),
+        Some(loro::ValueOrContainer::Container(c)) if c.get_type() == loro::ContainerType::Text
+    )
+}
+
 /// Create a fresh `blocks`-tree node under root, honoring an optional
 /// positional `after_block_id` hint.
 ///
@@ -3827,7 +4040,28 @@ fn probe_import_poison(doc: &LoroDoc, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<PeerBlockChange>> {
+/// The pre-mutation analysis of an inbound frame, computed on a SINGLE fork of
+/// the auth doc (tesela-ows.1 step 2 folds the lifecycle status-flip gate into
+/// the existing disjoint-twin props plan so the common delta forks only once —
+/// Lead constraint (b): the common text-edit delta pays no extra markdown
+/// render).
+struct ImportPlan {
+    /// Per-block props union for every disjoint twin — re-asserted onto the
+    /// max-`TreeID` survivor after the merge (the unchanged twins-heal plan).
+    twins: Vec<PeerBlockChange>,
+    /// `Some(prev_markdown)` when this frame flips at least one block's status
+    /// from non-`done` → `done`: the note's full markdown BEFORE the import, so
+    /// [`LoroEngine::apply_block_lifecycle`] can diff prev→post. `None` in the
+    /// common case (no such flip), letting the caller skip the lifecycle and pay
+    /// no markdown render.
+    lifecycle_prev: Option<String>,
+}
+
+/// Fork `auth`, merge `frame`, and compute BOTH the disjoint-twin props plan and
+/// the status-flip-to-done signal in one pass. The fork is a full-history clone,
+/// so the auth doc is never touched. A frame that adds nothing causally new is an
+/// idempotent no-op (empty plan, no flip).
+fn peer_import_plan(auth: &LoroDoc, frame: &[u8]) -> SyncResult<ImportPlan> {
     let server_vv = auth.oplog_vv();
     // Fork (full-history clone) so the import never touches the auth doc.
     let fork = auth.fork();
@@ -3836,12 +4070,77 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
     let fork_vv = fork.oplog_vv();
     // Nothing causally new from the peer → idempotent no-op.
     if fork_vv == server_vv {
-        return Ok(Vec::new());
+        return Ok(ImportPlan {
+            twins: Vec::new(),
+            lifecycle_prev: None,
+        });
     }
 
     // The merged fork now holds both lineages; capture each disjoint twin's
     // props union so the max-`TreeID` node keep can't drop a loser's props.
-    Ok(twin_winners_for(&fork))
+    let twins = twin_winners_for(&fork);
+
+    // Lifecycle gate: only pay for a full markdown render when a block actually
+    // flipped non-done→done (`auth` = pre-merge, `fork` = post-merge). The
+    // common text-edit delta returns `None` here after a cheap per-block status
+    // scan and never renders markdown.
+    let lifecycle_prev = if any_status_flip_to_done(auth, &fork) {
+        Some(doc_full_markdown(auth))
+    } else {
+        None
+    };
+
+    Ok(ImportPlan {
+        twins,
+        lifecycle_prev,
+    })
+}
+
+/// A block's effective `status`: the typed `props` container value if present,
+/// else a legacy in-text `status:: value` continuation line. Mirrors render-time
+/// dedup (container wins), so the flip gate reads the SAME status the note
+/// materializes.
+fn block_status_of(fb: &tesela_core::note_tree::FlatBlock) -> Option<String> {
+    if let Some((_, v)) = fb.properties.iter().find(|(k, _)| k == "status") {
+        return Some(v.clone());
+    }
+    for line in fb.text.lines() {
+        if let Some((k, v)) = tesela_core::lifecycle::property_kv(line) {
+            if k == "status" {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// `true` when any block is `done` in `after` (post-merge) but was NOT `done` in
+/// `before` (pre-merge) — a genuine completion the engine lifecycle must act on.
+/// Reads status per block (container or in-text); pays no markdown render.
+fn any_status_flip_to_done(before: &LoroDoc, after: &LoroDoc) -> bool {
+    let after_tree = after.get_tree("blocks");
+    let before_tree = before.get_tree("blocks");
+    for node in after_tree.children(TreeParentId::Root).unwrap_or_default() {
+        if matches!(after_tree.is_node_deleted(&node), Ok(true)) {
+            continue;
+        }
+        let Some(fb) = flatblock_from_node(&after_tree, node) else {
+            continue;
+        };
+        if block_status_of(&fb).as_deref() != Some("done") {
+            continue;
+        }
+        let bid_hex = hex_id(fb.id.as_bytes());
+        let before_done = find_node_by_block_id(&before_tree, &bid_hex)
+            .and_then(|n| flatblock_from_node(&before_tree, n))
+            .and_then(|b| block_status_of(&b))
+            .as_deref()
+            == Some("done");
+        if !before_done {
+            return true;
+        }
+    }
+    false
 }
 
 /// Capture the PROPS-union plan for every DISJOINT twin (block_id with >1 live
@@ -4682,6 +4981,268 @@ mod tests {
                 (!t.is_empty()).then(|| t.to_string())
             })
             .collect()
+    }
+
+    /// tesela-ows.1 step 2 — ACCEPTANCE: a `status:: done` flip arriving over
+    /// the wire into the ENGINE (relay/WS/FFI `.relay` import path, NOT an HTTP
+    /// PUT) triggers the recurrence bump exactly ONCE on the receiving device,
+    /// and the rolled state converges to every peer without a second bump.
+    ///
+    /// Exercises the hardest realistic shape: the flip is authored as a
+    /// container `BlockPropertySet` (the FFI path), and the roll is authored
+    /// back as CONTAINER prop sets (Lead constraint (a)) — no container clear,
+    /// no in-text eviction. The container value wins render-time dedup, so the
+    /// rolled deadline/status render with no render-side change.
+    ///
+    /// Revert-discriminating: on pre-fix code (no engine hook) the import merges
+    /// `status:: done` with no roll, so the deadline / `recurrence_done` /
+    /// `status:: todo` assertions below FAIL.
+    #[tokio::test]
+    async fn relay_done_flip_triggers_recurrence_bump_once_and_converges() {
+        let dev1 = DeviceId::from_bytes([0xe1; 16]);
+        let e1 = LoroEngine::new(dev1, Arc::new(Hlc::new(dev1)));
+        let dev2 = DeviceId::from_bytes([0xe2; 16]);
+        let e2 = LoroEngine::new(dev2, Arc::new(Hlc::new(dev2)));
+
+        let note = [0x77; 16];
+        let block: [u8; 16] = [0x07; 16];
+        let bid_hex = "07070707-0707-0707-0707-070707070707";
+
+        // e1 seeds a note with one recurring todo block on a shared lineage.
+        e1.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("chores".into()),
+            title: "Chores".into(),
+            content: format!("- water plants <!-- bid:{bid_hex} -->\n"),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        for (k, v) in [
+            ("recurring", "daily count 3"),
+            ("deadline", "[[2026-05-07]]"),
+            ("status", "todo"),
+        ] {
+            e1.record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: block,
+                key: k.into(),
+                value: PropOp::SetScalar(PropScalar::Text(v.into())),
+            })
+            .await
+            .unwrap();
+        }
+
+        // e2 bootstraps from e1's full state (both share the block's lineage).
+        let base = e1.export_doc_update(note, None).await.unwrap();
+        e2.import_doc_update(note, &base).await.unwrap();
+        assert_eq!(
+            e1.render_note(note).await,
+            e2.render_note(note).await,
+            "bootstrapped equal"
+        );
+
+        // e2 (a non-lifecycle writer, e.g. iOS FFI) flips status → done. No bump
+        // is authored on e2 — `record_local` (the local author path) is NOT
+        // hooked; the roll happens when a peer IMPORTS this flip.
+        let e2_before_flip = e2.doc_version(note).await;
+        e2.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "status".into(),
+            value: PropOp::SetScalar(PropScalar::Text("done".into())),
+        })
+        .await
+        .unwrap();
+        let flip = e2
+            .export_doc_update(note, e2_before_flip.as_deref())
+            .await
+            .unwrap();
+        let e2_after_flip = e2.doc_version(note).await;
+        assert!(
+            e2.render_note(note).await.unwrap().contains("status:: done"),
+            "e2's own flip stays `done` until the bump comes back"
+        );
+
+        // Relay delivers e2's flip to e1 → e1's apply_import runs the lifecycle.
+        e1.import_doc_update(note, &flip).await.unwrap();
+        let r1 = e1.render_note(note).await.unwrap();
+        assert!(
+            r1.contains("deadline:: [[2026-05-08]]"),
+            "deadline advanced one day on e1: {r1:?}"
+        );
+        assert!(
+            r1.contains("status:: todo") && !r1.contains("status:: done"),
+            "status rolled back to todo on e1 (no residual done): {r1:?}"
+        );
+        assert!(
+            r1.contains("recurrence_done:: 1"),
+            "recurrence_done stamped on e1: {r1:?}"
+        );
+        assert!(
+            r1.contains("last_completed:: [[2026-05-07]]"),
+            "completion memory stamped in the CONTAINER on e1: {r1:?}"
+        );
+        assert_eq!(
+            r1.matches("recurrence_done::").count(),
+            1,
+            "exactly one recurrence_done line — no double bump: {r1:?}"
+        );
+
+        // The bump broadcasts back to e2. It converges AND does not re-bump
+        // (the frame carries a done→todo transition, never a fresh flip TO
+        // done — the recursive-reimport guard).
+        let bump = e1
+            .export_doc_update(note, e2_after_flip.as_deref())
+            .await
+            .unwrap();
+        e2.import_doc_update(note, &bump).await.unwrap();
+        let r2 = e2.render_note(note).await.unwrap();
+        assert_eq!(r1, r2, "e1 and e2 converge after the bump broadcast");
+        assert_eq!(
+            r2.matches("recurrence_done::").count(),
+            1,
+            "no double bump on e2 after importing the roll: {r2:?}"
+        );
+
+        // Re-delivering the ORIGINAL flip to e1 is idempotent — the frame adds
+        // nothing causally new (no flip gate) and the guard is the backstop.
+        e1.import_doc_update(note, &flip).await.unwrap();
+        let r1b = e1.render_note(note).await.unwrap();
+        assert_eq!(
+            r1b.matches("recurrence_done::").count(),
+            1,
+            "re-delivered flip must not advance the series again: {r1b:?}"
+        );
+        assert!(r1b.contains("deadline:: [[2026-05-08]]"), "{r1b:?}");
+    }
+
+    /// tesela-ows.1 step 2 — the data-loss-class REGRESSION (Lead constraint
+    /// (a), why attempt 2 died): two independent completions of the SAME
+    /// recurring occurrence authored on DISJOINT lineages and delivered crossed
+    /// must converge to EXACTLY ONE advance — AND the rolled peer's completion
+    /// memory (`recurrence_done` / `last_completed`) must SURVIVE the
+    /// disjoint-twin heal. It survives here precisely because the roll is
+    /// authored into the typed props CONTAINER, which twin-heal's per-key union
+    /// preserves; attempt 2 evicted it to in-text and a max-`TreeID` pick on the
+    /// non-rolling twin wiped it.
+    ///
+    /// Assertions are robust to the twin-heal union order (which twin's scalar
+    /// wins a same-key collision): the invariants are "exactly one bump", "no
+    /// double advance to 05-09", and "completion memory preserved" — never a
+    /// dependence on which node the max-`TreeID` rule kept.
+    #[tokio::test]
+    async fn crossed_duplicate_completions_converge_single_bump_no_dataloss() {
+        let mk = |b: u8| {
+            let d = DeviceId::from_bytes([b; 16]);
+            LoroEngine::new(d, Arc::new(Hlc::new(d)))
+        };
+        let e_author = mk(0xe0);
+        let e1 = mk(0xe1); // roller/target, shares lineage L1 with e_author
+        let e2 = mk(0xe2); // disjoint duplicate author (lineage L2)
+
+        let note = [0x77; 16];
+        let block: [u8; 16] = [0x07; 16];
+        let bid_hex = "07070707-0707-0707-0707-070707070707";
+
+        async fn seed(e: &LoroEngine, note: [u8; 16], block: [u8; 16], bid_hex: &str, status: &str) {
+            e.record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("chores".into()),
+                title: "Chores".into(),
+                content: format!("- water plants <!-- bid:{bid_hex} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+            for (k, v) in [
+                ("recurring", "daily count 5"),
+                ("deadline", "[[2026-05-07]]"),
+                ("status", status),
+            ] {
+                e.record_local(OpPayload::BlockPropertySet {
+                    note_id: note,
+                    block_id: block,
+                    key: k.into(),
+                    value: PropOp::SetScalar(PropScalar::Text(v.into())),
+                })
+                .await
+                .unwrap();
+            }
+        }
+
+        // Lineage L1: e_author seeds O1 todo; e1 bootstraps from it (SHARED).
+        seed(&e_author, note, block, bid_hex, "todo").await;
+        let base = e_author.export_doc_update(note, None).await.unwrap();
+        e1.import_doc_update(note, &base).await.unwrap();
+
+        // e_author completes O1 (FFI flip); e1 imports → e1 ROLLS O1→O2.
+        let before = e_author.doc_version(note).await;
+        e_author
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: block,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("done".into())),
+            })
+            .await
+            .unwrap();
+        let flip = e_author
+            .export_doc_update(note, before.as_deref())
+            .await
+            .unwrap();
+        e1.import_doc_update(note, &flip).await.unwrap();
+        let r1_roll = e1.render_note(note).await.unwrap();
+        assert!(
+            r1_roll.contains("deadline:: [[2026-05-08]]")
+                && r1_roll.contains("recurrence_done:: 1")
+                && r1_roll.contains("last_completed:: [[2026-05-07]]"),
+            "e1 rolled O1→O2 exactly once with completion memory: {r1_roll:?}"
+        );
+
+        // Lineage L2 (DISJOINT): e2 independently authored the SAME bid at O1 and
+        // completed it — a duplicate completion of the SAME occurrence O1.
+        seed(&e2, note, block, bid_hex, "done").await;
+        let dup = e2.export_doc_update(note, None).await.unwrap();
+
+        // e1 (at O2) imports the disjoint done-twin. It must NOT advance again,
+        // and the twin heal must NOT wipe e1's completion memory.
+        e1.import_doc_update(note, &dup).await.unwrap();
+        let r1 = e1.render_note(note).await.unwrap();
+        assert_eq!(
+            r1.matches("recurrence_done::").count(),
+            1,
+            "duplicate completion of O1 must not add a second bump: {r1:?}"
+        );
+        assert!(
+            r1.contains("recurrence_done:: 1") && r1.contains("last_completed:: [[2026-05-07]]"),
+            "completion memory PRESERVED through the disjoint-twin heal: {r1:?}"
+        );
+        assert!(
+            !r1.contains("[[2026-05-09]]"),
+            "no double advance to O3 (05-09): {r1:?}"
+        );
+
+        // All peers converge to the SAME single-bump state.
+        let e1_state = e1.export_doc_update(note, None).await.unwrap();
+        e_author.import_doc_update(note, &e1_state).await.unwrap();
+        e2.import_doc_update(note, &e1_state).await.unwrap();
+        let ra = e_author.render_note(note).await.unwrap();
+        let rb = e2.render_note(note).await.unwrap();
+        assert_eq!(
+            ra.matches("recurrence_done::").count(),
+            1,
+            "e_author converges to one bump: {ra:?}"
+        );
+        assert_eq!(
+            rb.matches("recurrence_done::").count(),
+            1,
+            "e2 converges to one bump: {rb:?}"
+        );
+        assert!(
+            !ra.contains("[[2026-05-09]]") && !rb.contains("[[2026-05-09]]"),
+            "no peer double-advanced: e_author={ra:?} e2={rb:?}"
+        );
     }
 
     // A new block with an `after_block_id` hint lands ADJACENT to its
