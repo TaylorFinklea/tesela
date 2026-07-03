@@ -4,6 +4,16 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-07-03 — Same-block convergence: keep-winner EXONERATED; the fix axis is delivery (c7s) + per-edit splice authoring (baa)
+
+The 2026-07-03 same-block data-loss incident (two devices typing in one block; minutes of divergence; one side destroyed) was adversarially investigated from full frozen doc history (probe: `probe_incident_9iy.rs`, branch `w7-conv`) + live relay traffic, second-opinioned by gpt-5.5 (approve-with-nits). Durable conclusions:
+
+- **NO disjoint twins spawned — the fte pure max-TreeID keep-winner rule never fired and is exonerated for this class.** Do NOT re-litigate keep-winner semantics on same-block loss reports; the losing side's ops never entered the shared doc at all.
+- **The dominant real-world loss class is OUTBOUND DEPOSIT STRANDING**, not CRDT merging: a stranded outbound cursor (documented 2026-06-25 undecodable / 2026-06-29 stale-ahead classes) ships empty frames forever; the build-57 snapshot fallback deposits but never repairs the cursor, and peers never read snapshots outside bootstrap/catch-up (= app restart). Live signature: steady `GET ops?since=N` from all devices with the head frozen, zero `PUT /ops`, looping `PUT /snapshot`.
+- **Fix architecture (bead tesela-c7s, in flight):** sender-side cursor repair after a confirmed snapshot deposit MUST interlock with a receiver-side DURABLE pending-import ledger + auto snapshot catch-up — an inert snapshot PUT is never delivery by itself; resumed incremental ops cause a causal gap on peers which auto-heals via catch-up. Acceptance = a peer converges WITHOUT restart from the strand state.
+- **Char-level same-block merging additionally REQUIRES per-edit splice authoring on web/desktop** (bead tesela-baa, Lead design, blocked on c7s): whole-block minimal-diff writes (`write_block_text`) preserve more than LWW but cannot give the "keystrokes interleave" product expectation. Delivery (c7s) is necessary; splice authoring is the sufficiency half.
+- Op timestamps turn on for real local authoring only — the builtin-views seed MUST stay `ts=0` deterministic (fresh-device-clobber invariant).
+
 ### 2026-07-02 — Engine-side block lifecycle (tesela-ows.1 step 2): roll into the CONTAINER, hook in apply_import, guard on the earlier occurrence
 
 Wired the recurrence bump + same-note dependency unblock into the engine apply path so every writer that IMPORTS a `done` flip (WS live-apply, relay, iOS `.relay`) triggers them — previously only `tesela-server`'s HTTP PUT handler did. Step-1 shipped the pure fns in `tesela-core::lifecycle`; step 2 is the engine wiring. Attempts 1–2 died on a data-loss class + a vacuous test; this is attempt 3 under Lead constraints.
