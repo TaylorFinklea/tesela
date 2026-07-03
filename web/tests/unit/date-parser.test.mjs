@@ -62,3 +62,11 @@ test("parseDateAndRecurrenceInput — keyword-less bare recurrence anchors to to
   assert.equal(parseDateAndRecurrenceInput("weekdays", fixed)?.recurrence, "weekdays");
   assert.equal(parseDateAndRecurrenceInput("every 3 days", fixed)?.recurrence, "every 3 days");
 });
+
+test("parseDateAndRecurrenceInput rejects trailing recurrence with an unparseable prefix (tesela-fr1)", () => {
+  // A trailing recurrence tail extracted off a longer phrase must NOT make
+  // the whole phrase a "bare recurrence" match when the leading prose isn't
+  // itself a date — otherwise the caller (detectTaskTokens/longestDateFrom)
+  // treats the entire span, prose included, as consumed.
+  assert.equal(parseDateAndRecurrenceInput("Call the doctor every sun"), null);
+});

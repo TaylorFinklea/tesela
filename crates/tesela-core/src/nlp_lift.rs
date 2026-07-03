@@ -372,7 +372,18 @@ pub fn parse_date_and_recurrence_input(
     // The whole input may itself be a bare recurrence phrase with no date
     // ("every monday", "weekdays", "deadline every day"). Recurrence-only
     // input anchors to today so the engine has a date to bump from.
-    let bare_rec = recurrence.or_else(|| recurrence::recognize(&after_field));
+    //
+    // Must re-check against the UNSTRIPPED after_field (not short-circuit on
+    // `recurrence` from extract_recurrence above) — extract_recurrence can
+    // strip a *trailing* recurrence tail off a longer phrase that still has
+    // unparseable prose in front (e.g. "call the doctor every sun" → tail
+    // "every sun", rest "call the doctor"). That tail match alone doesn't
+    // mean the WHOLE input is a bare recurrence phrase; only accept it here
+    // when after_field itself is nothing but the recurrence phrase —
+    // otherwise the caller (`longest_date_from`) would treat the entire
+    // candidate span (prose included) as consumed, eating the prose
+    // (tesela-fr1).
+    let bare_rec = recurrence::recognize(&after_field);
     if let Some(bare_rec) = bare_rec {
         return Some(ParsedDateTimeRecurrence {
             date: fmt_date(today),
@@ -803,6 +814,13 @@ mod tests {
         );
         assert_eq!(result.stripped, "call her #urgent tomorrow about the launch");
         assert!(result.props.is_empty());
+    }
+
+    #[test]
+    fn date_parser_rejects_trailing_recurrence_with_unparseable_prefix() {
+        let parsed = parse_date_and_recurrence_input("Call the doctor every sun", today());
+
+        assert!(parsed.is_none(), "mixed prose prefix must not parse as recurrence-only");
     }
 
     #[test]

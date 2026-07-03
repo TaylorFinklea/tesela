@@ -242,6 +242,36 @@ fn raw_cases() -> Vec<(&'static str, &'static str, &'static str, Vec<(&'static s
             "call her #urgent tomorrow about the launch",
             vec![],
         ),
+        (
+            "recurring_leading_prose",
+            "Call the doctor every sun",
+            "Call the doctor",
+            vec![("deadline", "2026-05-22"), ("recurring", "every sun")],
+        ),
+        (
+            "recurring_and_priority",
+            "Water plants every mon p3",
+            "Water plants",
+            vec![("deadline", "2026-05-22"), ("priority", "p3"), ("recurring", "every mon")],
+        ),
+        (
+            "recurring_priority_and_trailing_date",
+            "Plan meds p1 tomorrow every sun",
+            "Plan meds",
+            vec![("priority", "p1"), ("deadline", "2026-05-23"), ("recurring", "every sun")],
+        ),
+        (
+            "recurring_only",
+            "every sun",
+            "",
+            vec![("deadline", "2026-05-22"), ("recurring", "every sun")],
+        ),
+        (
+            "taylor_repro_recurring_priority_preserves_prose",
+            "Call the doctor every sun p2",
+            "Call the doctor",
+            vec![("deadline", "2026-05-22"), ("priority", "p2"), ("recurring", "every sun")],
+        ),
     ]
 }
 
@@ -278,6 +308,7 @@ fn build_fixture() -> Fixture {
             "resolve identically.".to_string(),
             "".to_string(),
             "Case shape: { name, text, expected: { stripped, props: [{key, value}] } }".to_string(),
+            "Recurring phrases are token spans only: leading prose must survive; recurrence-only may strip to empty.".to_string(),
         ],
         registry: build_registry(),
         anchor_date: "2026-05-22".to_string(),
@@ -315,8 +346,8 @@ fn case_names_are_unique() {
 }
 
 /// The fixture covers the bead's required surface: today-noon, the
-/// URL-embedded no-lift guard, and the trailing-position rule (a positive
-/// AND a negative case).
+/// URL-embedded no-lift guard, the trailing-position rule (a positive
+/// AND a negative case), and recurring-token spans preserving prose.
 #[test]
 fn fixture_covers_required_surface() {
     let cases = raw_cases();
@@ -340,6 +371,26 @@ fn fixture_covers_required_surface() {
     let (_, midprose_text, midprose_stripped, midprose_props) = by_name("bare_midprose_not_lifted");
     assert!(midprose_props.is_empty(), "mid-prose bare date without an intent word must not lift");
     assert_eq!(midprose_stripped, midprose_text, "unchanged when nothing lifts");
+
+    // Recurrence token spans: only the recurrence/priority/date tokens are
+    // consumed. Leading prose survives unless the entire input is only the
+    // recurring token itself.
+    let (_, _, repro_stripped, repro_props) = by_name("taylor_repro_recurring_priority_preserves_prose");
+    assert_eq!(*repro_stripped, "Call the doctor");
+    assert_eq!(
+        repro_props,
+        &vec![
+            ("deadline", "2026-05-22"),
+            ("priority", "p2"),
+            ("recurring", "every sun"),
+        ]
+    );
+    let (_, _, recurring_only_stripped, recurring_only_props) = by_name("recurring_only");
+    assert!(recurring_only_stripped.is_empty(), "token-only recurrence strips to empty prose");
+    assert_eq!(
+        recurring_only_props,
+        &vec![("deadline", "2026-05-22"), ("recurring", "every sun")]
+    );
 }
 
 /// The Rust hoist (`tesela_core::nlp_lift::detect_task_tokens`,

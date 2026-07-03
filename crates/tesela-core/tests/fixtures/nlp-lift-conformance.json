@@ -15,7 +15,8 @@
     "the frozen \"now\" (2026-05-22, a Friday) both clients pass so relative phrases",
     "resolve identically.",
     "",
-    "Case shape: { name, text, expected: { stripped, props: [{key, value}] } }"
+    "Case shape: { name, text, expected: { stripped, props: [{key, value}] } }",
+    "Recurring phrases are token spans only: leading prose must survive; recurrence-only may strip to empty."
   ],
   "registry": {
     "default_date_property": "deadline",
@@ -254,6 +255,103 @@
       "expected": {
         "stripped": "call her #urgent tomorrow about the launch",
         "props": []
+      }
+    },
+    {
+      "name": "recurring_leading_prose",
+      "text": "Call the doctor every sun",
+      "expected": {
+        "stripped": "Call the doctor",
+        "props": [
+          {
+            "key": "deadline",
+            "value": "2026-05-22"
+          },
+          {
+            "key": "recurring",
+            "value": "every sun"
+          }
+        ]
+      }
+    },
+    {
+      "name": "recurring_and_priority",
+      "text": "Water plants every mon p3",
+      "expected": {
+        "stripped": "Water plants",
+        "props": [
+          {
+            "key": "deadline",
+            "value": "2026-05-22"
+          },
+          {
+            "key": "priority",
+            "value": "p3"
+          },
+          {
+            "key": "recurring",
+            "value": "every mon"
+          }
+        ]
+      }
+    },
+    {
+      "name": "recurring_priority_and_trailing_date",
+      "text": "Plan meds p1 tomorrow every sun",
+      "expected": {
+        "stripped": "Plan meds",
+        "props": [
+          {
+            "key": "priority",
+            "value": "p1"
+          },
+          {
+            "key": "deadline",
+            "value": "2026-05-23"
+          },
+          {
+            "key": "recurring",
+            "value": "every sun"
+          }
+        ]
+      }
+    },
+    {
+      "name": "recurring_only",
+      "text": "every sun",
+      "expected": {
+        "stripped": "",
+        "props": [
+          {
+            "key": "deadline",
+            "value": "2026-05-22"
+          },
+          {
+            "key": "recurring",
+            "value": "every sun"
+          }
+        ]
+      }
+    },
+    {
+      "name": "taylor_repro_recurring_priority_preserves_prose",
+      "text": "Call the doctor every sun p2",
+      "expected": {
+        "stripped": "Call the doctor",
+        "props": [
+          {
+            "key": "deadline",
+            "value": "2026-05-22"
+          },
+          {
+            "key": "priority",
+            "value": "p2"
+          },
+          {
+            "key": "recurring",
+            "value": "every sun"
+          }
+        ]
       }
     }
   ]

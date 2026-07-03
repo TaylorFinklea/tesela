@@ -4946,6 +4946,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn snapshot_export_import_preserves_props_only_empty_block() {
+        let dev1 = DeviceId::from_bytes([0xe1; 16]);
+        let e1 = LoroEngine::new(dev1, Arc::new(Hlc::new(dev1)));
+        let dev2 = DeviceId::from_bytes([0xe2; 16]);
+        let e2 = LoroEngine::new(dev2, Arc::new(Hlc::new(dev2)));
+        let note_id = [0x42; 16];
+        let block_id = [0x24; 16];
+
+        e1.record_local(OpPayload::BlockUpsert {
+            block_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "a0".into(),
+            indent_level: 0,
+            text: "".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+        e1.record_local(OpPayload::BlockPropertySet {
+            note_id,
+            block_id,
+            key: "priority".into(),
+            value: PropOp::SetScalar(PropScalar::Text("p2".into())),
+        })
+        .await
+        .unwrap();
+
+        let rendered = e1.render_note(note_id).await.unwrap();
+        assert_eq!(
+            rendered,
+            "- <!-- bid:24242424-2424-2424-2424-242424242424 -->\n  priority:: p2\n"
+        );
+
+        let snapshot = e1.export_doc_update(note_id, None).await.unwrap();
+        e2.import_doc_update(note_id, &snapshot).await.unwrap();
+
+        assert_eq!(e2.render_note(note_id).await.unwrap(), rendered);
+    }
+
     /// Helper: record a top-level BlockUpsert with an optional positional
     /// hint. Returns nothing — the caller renders to assert order.
     async fn upsert_block(

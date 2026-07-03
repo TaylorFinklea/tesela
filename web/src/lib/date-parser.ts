@@ -239,7 +239,15 @@ export function parseDateAndRecurrenceInput(
     // TRAILING_RECUR_RE needs leading whitespace so it won't match a bare
     // phrase; fall back to parsing afterField directly. Recurrence-only
     // input anchors to today so the engine has a date to bump from.
-    const bareRec = recExtracted.recurrence ?? parseRecurrenceInput(afterField);
+    //
+    // Must re-check against the UNSTRIPPED afterField (not short-circuit on
+    // recExtracted.recurrence) — extractRecurrence can strip a *trailing*
+    // recurrence tail off a longer phrase that still has unparseable prose
+    // in front (e.g. "call the doctor every sun" → tail "every sun", rest
+    // "call the doctor"). That tail match alone doesn't mean the WHOLE
+    // input is a bare recurrence phrase; only accept it here when afterField
+    // itself is nothing but the recurrence phrase.
+    const bareRec = parseRecurrenceInput(afterField);
     if (bareRec) {
       return { date: fmt(today), time: null, recurrence: bareRec, field };
     }

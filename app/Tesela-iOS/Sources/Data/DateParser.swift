@@ -358,8 +358,16 @@ enum DateParser {
                 field: field
             )
         }
-        // Bare recurrence (no date) — anchor to today
-        let bareRec = recExtracted.recurrence ?? parseRecurrenceInput(afterField)
+        // Bare recurrence (no date) — anchor to today. Must re-check against
+        // the UNSTRIPPED afterField (not short-circuit on
+        // recExtracted.recurrence) — extractRecurrence can strip a
+        // *trailing* recurrence tail off a longer phrase that still has
+        // unparseable prose in front (e.g. "call the doctor every sun" →
+        // tail "every sun", rest "call the doctor"). That tail match alone
+        // doesn't mean the WHOLE input is a bare recurrence phrase; only
+        // accept it here when afterField itself is nothing but the
+        // recurrence phrase.
+        let bareRec = parseRecurrenceInput(afterField)
         if let bareRec = bareRec {
             return ParsedDateTimeRecurrence(date: fmt(today), time: nil, recurrence: bareRec, field: field)
         }

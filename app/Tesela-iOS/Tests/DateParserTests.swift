@@ -77,6 +77,10 @@ final class DateParserTests: XCTestCase {
         XCTAssertEqual(DateParser.parse("every 3 days", today: fri)?.recurrence, "every 3 days")
     }
 
+    func testTrailingRecurrenceWithUnparseablePrefixDoesNotBecomeBareRecurrence() {
+        XCTAssertNil(DateParser.parse("Call the doctor every sun", today: fixed(2026, 5, 22)))
+    }
+
     func testEmptyAndUnrecognized() {
         XCTAssertNil(DateParser.parse("",           today: fixed(2026, 5, 22)))
         XCTAssertNil(DateParser.parse("not a date", today: fixed(2026, 5, 22)))
