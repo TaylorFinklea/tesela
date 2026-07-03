@@ -564,6 +564,8 @@ struct BlockRow: View {
                 return InlineNLP.detectHighlightRanges(in: text, tags: tags, registry: reg)
             },
             nlpHighlightColor: theme.accentPrimary,
+            nlpPriorityColors: theme.priorityColors,
+            nlpDateColor: theme.dateToken,
             onCaretMove: onCaretMove,
             remoteCarets: remoteCarets
         )

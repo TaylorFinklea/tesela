@@ -98,6 +98,20 @@ struct Theme: Equatable, Identifiable {
     let typeQuery: Color
     let typeTemplate: Color
 
+    // Semantic inline-NLP token colors (Taylor's locked direction,
+    // tesela-b1s): p1/p2/p3 are FIXED-meaning severity colors (red/yellow/
+    // blue), unlike the theme-flavored `type-*` set above — they carry
+    // signal (urgency) consistently across themes, so most themes share one
+    // literal palette; only `prismLight` deepens them for contrast on cream
+    // (mirrors the `type-*` light treatment). `dateToken` colors a detected
+    // date phrase (cyan, matching the desktop block editor). p4 has no
+    // stored slot — it's the muted/no-signal level, so it reads off
+    // `fgSubtle` directly (see `priorityP4` below).
+    let priorityP1: Color
+    let priorityP2: Color
+    let priorityP3: Color
+    let dateToken: Color
+
     /// Convenience: tints `color` with `pct%` opacity over transparent.
     /// Matches `color-mix(in srgb, <color> <pct>%, transparent)` in CSS.
     func tint(_ color: Color, _ pct: Double) -> Color {
@@ -119,6 +133,30 @@ struct Theme: Equatable, Identifiable {
         case "daily":    return accentPrimary
         default:         return fgMuted
         }
+    }
+
+    /// The "no strong signal" priority level — reads off the neutral
+    /// foreground scale (matches the web block editor's `p4` → `var(--muted-
+    /// foreground)` → `--fg-subtle` chain) rather than a stored hex, so it
+    /// automatically tracks every theme's muted tone with no per-theme edit.
+    var priorityP4: Color { fgSubtle }
+
+    /// Semantic priority color for inline-NLP token painting (`p1`…`p4`).
+    /// Levels outside 1...4 fall back to `priorityP4` (gray/no-signal).
+    func priorityColor(forLevel level: Int) -> Color {
+        switch level {
+        case 1: return priorityP1
+        case 2: return priorityP2
+        case 3: return priorityP3
+        default: return priorityP4
+        }
+    }
+
+    /// All four priority levels keyed 1...4 — the shape `InlineNLPHighlighter`
+    /// callers hand over so the painter can resolve a matched `.priority(n)`
+    /// span without re-deriving the mapping at each call site.
+    var priorityColors: [Int: Color] {
+        [1: priorityP1, 2: priorityP2, 3: priorityP3, 4: priorityP4]
     }
 
     /// Light-mode themes paint on a pale surface. Drives the app's
@@ -147,6 +185,7 @@ private struct ThemeHexes {
     let accentPrimary, accentSecondary: UInt32
     let typeTask, typeEvent, typeNote: UInt32
     let typeProject, typePerson, typeQuery, typeTemplate: UInt32
+    let priorityP1, priorityP2, priorityP3, dateToken: UInt32
 }
 
 private extension Theme {
@@ -173,6 +212,10 @@ private extension Theme {
         let cPerson    = Color(hex: hex.typePerson)
         let cQuery     = Color(hex: hex.typeQuery)
         let cTemplate  = Color(hex: hex.typeTemplate)
+        let cPriorityP1 = Color(hex: hex.priorityP1)
+        let cPriorityP2 = Color(hex: hex.priorityP2)
+        let cPriorityP3 = Color(hex: hex.priorityP3)
+        let cDateToken  = Color(hex: hex.dateToken)
 
         self.init(
             id: id,
@@ -183,7 +226,9 @@ private extension Theme {
             accentPrimary: cAccentP, accentSecondary: cAccentS,
             typeTask: cTask, typeEvent: cEvent, typeNote: cNote,
             typeProject: cProject, typePerson: cPerson,
-            typeQuery: cQuery, typeTemplate: cTemplate
+            typeQuery: cQuery, typeTemplate: cTemplate,
+            priorityP1: cPriorityP1, priorityP2: cPriorityP2,
+            priorityP3: cPriorityP3, dateToken: cDateToken
         )
     }
 }
@@ -204,7 +249,9 @@ extension Theme {
         accentPrimary: 0xE07A5F, accentSecondary: 0x81B29A,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
-        typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+        typeQuery: 0x88B85E, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     /// **Prism Spark.** Identical to Prism, but `accentSpark` lights up
     /// to the hot logo coral — an opt-in theme for users who want the
@@ -217,7 +264,9 @@ extension Theme {
         accentPrimary: 0xE07A5F, accentSecondary: 0x81B29A,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
-        typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+        typeQuery: 0x88B85E, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     /// **Prism Light.** The light variant of the brand theme — cream
     /// surface, slate ink, coral accent. Mirrors
@@ -232,7 +281,9 @@ extension Theme {
         accentPrimary: 0xBD5E40, accentSecondary: 0x5C9078,
         typeTask: 0xC2403F, typeEvent: 0x3C7E91, typeNote: 0x9A7430,
         typeProject: 0x3D6FC0, typePerson: 0x7E5BC0,
-        typeQuery: 0x5E8438, typeTemplate: 0x8C6B36))
+        typeQuery: 0x5E8438, typeTemplate: 0x8C6B36,
+        priorityP1: 0xC2403F, priorityP2: 0x9A7430, priorityP3: 0x3D6FC0,
+        dateToken: 0x3C7E91))
 
     static let tokyoNight = Theme(id: .tokyoNight, hex: ThemeHexes(
         bg: 0x1A1B26, bg2: 0x1F2335, bg3: 0x24283B, bg4: 0x2A2E42,
@@ -242,7 +293,9 @@ extension Theme {
         accentPrimary: 0xFF9E64, accentSecondary: 0xBB9AF7,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
-        typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+        typeQuery: 0x88B85E, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let tokyoNightStorm = Theme(id: .tokyoNightStorm, hex: ThemeHexes(
         bg: 0x24283B, bg2: 0x1F2335, bg3: 0x292E42, bg4: 0x313650,
@@ -252,7 +305,9 @@ extension Theme {
         accentPrimary: 0xFF9E64, accentSecondary: 0xBB9AF7,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
-        typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+        typeQuery: 0x88B85E, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let catppuccinMocha = Theme(id: .catppuccinMocha, hex: ThemeHexes(
         bg: 0x1E1E2E, bg2: 0x181825, bg3: 0x313244, bg4: 0x45475A,
@@ -262,7 +317,9 @@ extension Theme {
         accentPrimary: 0xFAB387, accentSecondary: 0xCBA6F7,
         typeTask: 0xE08097, typeEvent: 0x74C7EC, typeNote: 0xE5B572,
         typeProject: 0x89B4FA, typePerson: 0xB4A5E6,
-        typeQuery: 0x97C97A, typeTemplate: 0xC5A373))
+        typeQuery: 0x97C97A, typeTemplate: 0xC5A373,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let catppuccinMacchiato = Theme(id: .catppuccinMacchiato, hex: ThemeHexes(
         bg: 0x24273A, bg2: 0x1E2030, bg3: 0x363A4F, bg4: 0x494D64,
@@ -272,7 +329,9 @@ extension Theme {
         accentPrimary: 0xF5A97F, accentSecondary: 0xC6A0F6,
         typeTask: 0xE09199, typeEvent: 0x7DC4E4, typeNote: 0xE3B572,
         typeProject: 0x8AADF4, typePerson: 0xB3A4E8,
-        typeQuery: 0x98C67C, typeTemplate: 0xC4A373))
+        typeQuery: 0x98C67C, typeTemplate: 0xC4A373,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let rosePine = Theme(id: .rosePine, hex: ThemeHexes(
         bg: 0x191724, bg2: 0x1F1D2E, bg3: 0x26233A, bg4: 0x2A283E,
@@ -282,7 +341,9 @@ extension Theme {
         accentPrimary: 0xEBBCBA, accentSecondary: 0xC4A7E7,
         typeTask: 0xEB6F92, typeEvent: 0x9CCFD8, typeNote: 0xF6C177,
         typeProject: 0x31748F, typePerson: 0xC4A7E7,
-        typeQuery: 0x80A37A, typeTemplate: 0xC08A5A))
+        typeQuery: 0x80A37A, typeTemplate: 0xC08A5A,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let rosePineMoon = Theme(id: .rosePineMoon, hex: ThemeHexes(
         bg: 0x232136, bg2: 0x2A273F, bg3: 0x393552, bg4: 0x44415A,
@@ -292,7 +353,9 @@ extension Theme {
         accentPrimary: 0xEA9A97, accentSecondary: 0xC4A7E7,
         typeTask: 0xEB6F92, typeEvent: 0x9CCFD8, typeNote: 0xF6C177,
         typeProject: 0x3E8FB0, typePerson: 0xC4A7E7,
-        typeQuery: 0x80A37A, typeTemplate: 0xC08A5A))
+        typeQuery: 0x80A37A, typeTemplate: 0xC08A5A,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let kanagawaWave = Theme(id: .kanagawaWave, hex: ThemeHexes(
         bg: 0x1F1F28, bg2: 0x16161D, bg3: 0x2A2A37, bg4: 0x363646,
@@ -302,7 +365,9 @@ extension Theme {
         accentPrimary: 0xFFA066, accentSecondary: 0x957FB8,
         typeTask: 0xC34043, typeEvent: 0x7E9CD8, typeNote: 0xDCA561,
         typeProject: 0x7E9CD8, typePerson: 0x957FB8,
-        typeQuery: 0x76946A, typeTemplate: 0xC0A36E))
+        typeQuery: 0x76946A, typeTemplate: 0xC0A36E,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let kanagawaDragon = Theme(id: .kanagawaDragon, hex: ThemeHexes(
         bg: 0x181616, bg2: 0x0D0C0C, bg3: 0x282727, bg4: 0x393836,
@@ -312,7 +377,9 @@ extension Theme {
         accentPrimary: 0xB6927B, accentSecondary: 0xA292A3,
         typeTask: 0xC4746E, typeEvent: 0x8BA4B0, typeNote: 0xC4B28A,
         typeProject: 0x8BA4B0, typePerson: 0xA292A3,
-        typeQuery: 0x87A987, typeTemplate: 0xB28A66))
+        typeQuery: 0x87A987, typeTemplate: 0xB28A66,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let everforestDark = Theme(id: .everforestDark, hex: ThemeHexes(
         bg: 0x2D353B, bg2: 0x232A2E, bg3: 0x343F44, bg4: 0x3D484D,
@@ -322,7 +389,9 @@ extension Theme {
         accentPrimary: 0xE69875, accentSecondary: 0xD699B6,
         typeTask: 0xE67E80, typeEvent: 0x7FBBB3, typeNote: 0xDBBC7F,
         typeProject: 0x7FBBB3, typePerson: 0xD699B6,
-        typeQuery: 0xA7C080, typeTemplate: 0xC79B58))
+        typeQuery: 0xA7C080, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let gruvboxMaterial = Theme(id: .gruvboxMaterial, hex: ThemeHexes(
         bg: 0x1D2021, bg2: 0x282828, bg3: 0x32302F, bg4: 0x3C3836,
@@ -332,7 +401,9 @@ extension Theme {
         accentPrimary: 0xE78A4E, accentSecondary: 0xD3869B,
         typeTask: 0xEA6962, typeEvent: 0x89B482, typeNote: 0xD8A657,
         typeProject: 0x7DAEA3, typePerson: 0xC084C2,
-        typeQuery: 0xA9B665, typeTemplate: 0xB48A4A))
+        typeQuery: 0xA9B665, typeTemplate: 0xB48A4A,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let nord = Theme(id: .nord, hex: ThemeHexes(
         bg: 0x2E3440, bg2: 0x3B4252, bg3: 0x434C5E, bg4: 0x4C566A,
@@ -342,7 +413,9 @@ extension Theme {
         accentPrimary: 0x88C0D0, accentSecondary: 0xB48EAD,
         typeTask: 0xBF616A, typeEvent: 0x81A1C1, typeNote: 0xEBCB8B,
         typeProject: 0x5E81AC, typePerson: 0xB48EAD,
-        typeQuery: 0xA3BE8C, typeTemplate: 0xD08770))
+        typeQuery: 0xA3BE8C, typeTemplate: 0xD08770,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let dracula = Theme(id: .dracula, hex: ThemeHexes(
         bg: 0x282A36, bg2: 0x1E1F29, bg3: 0x44475A, bg4: 0x4E5067,
@@ -352,7 +425,9 @@ extension Theme {
         accentPrimary: 0xFF79C6, accentSecondary: 0xBD93F9,
         typeTask: 0xFF5555, typeEvent: 0x8BE9FD, typeNote: 0xF1FA8C,
         typeProject: 0xBD93F9, typePerson: 0xFFB86C,
-        typeQuery: 0x50FA7B, typeTemplate: 0xFFB86C))
+        typeQuery: 0x50FA7B, typeTemplate: 0xFFB86C,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let carbonfox = Theme(id: .carbonfox, hex: ThemeHexes(
         bg: 0x161616, bg2: 0x252525, bg3: 0x353535, bg4: 0x484848,
@@ -362,7 +437,9 @@ extension Theme {
         accentPrimary: 0xFF7EB6, accentSecondary: 0xBE95FF,
         typeTask: 0xEE5396, typeEvent: 0x33B1FF, typeNote: 0xFFB454,
         typeProject: 0x78A9FF, typePerson: 0xBE95FF,
-        typeQuery: 0x42BE65, typeTemplate: 0xC79B58))
+        typeQuery: 0x42BE65, typeTemplate: 0xC79B58,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let ayuDark = Theme(id: .ayuDark, hex: ThemeHexes(
         bg: 0x0B0E14, bg2: 0x0D1017, bg3: 0x131721, bg4: 0x1B1F2B,
@@ -372,7 +449,9 @@ extension Theme {
         accentPrimary: 0xFF8F40, accentSecondary: 0xD2A6FF,
         typeTask: 0xF07178, typeEvent: 0x39BAE6, typeNote: 0xFFB454,
         typeProject: 0x59C2FF, typePerson: 0xD2A6FF,
-        typeQuery: 0xAAD94C, typeTemplate: 0xCC9966))
+        typeQuery: 0xAAD94C, typeTemplate: 0xCC9966,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let monokaiPro = Theme(id: .monokaiPro, hex: ThemeHexes(
         bg: 0x2D2A2E, bg2: 0x221F22, bg3: 0x403E41, bg4: 0x5B595C,
@@ -382,7 +461,9 @@ extension Theme {
         accentPrimary: 0xFC9867, accentSecondary: 0xAB9DF2,
         typeTask: 0xFF6188, typeEvent: 0x78DCE8, typeNote: 0xFFD866,
         typeProject: 0xAB9DF2, typePerson: 0xAB9DF2,
-        typeQuery: 0xA9DC76, typeTemplate: 0xFFD866))
+        typeQuery: 0xA9DC76, typeTemplate: 0xFFD866,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     static let palenight = Theme(id: .palenight, hex: ThemeHexes(
         bg: 0x292D3E, bg2: 0x202331, bg3: 0x32374D, bg4: 0x3F4862,
@@ -392,7 +473,9 @@ extension Theme {
         accentPrimary: 0xF78C6C, accentSecondary: 0xC792EA,
         typeTask: 0xFF5370, typeEvent: 0x82AAFF, typeNote: 0xFFCB6B,
         typeProject: 0x82AAFF, typePerson: 0xC792EA,
-        typeQuery: 0xC3E88D, typeTemplate: 0xCC9966))
+        typeQuery: 0xC3E88D, typeTemplate: 0xCC9966,
+        priorityP1: 0xEB5C58, priorityP2: 0xE8A33D, priorityP3: 0x6B9AE0,
+        dateToken: 0x62B8CE))
 
     /// **Graphite.** The redesign foundation's dark palette (see
     /// `.docs/ai/design/graphite/tokens.json`). Maps the canonical Graphite
@@ -422,6 +505,12 @@ extension Theme {
         let cPerson    = Color(hex: 0xAE90E6)              // --person
         let cQuery     = Color(hex: 0x85BC63)              // --query
         let cTemplate  = Color(hex: 0xAE90E6)              // --person (no template token)
+        // Semantic inline-NLP priority/date tokens (tesela-b1s) — the same
+        // fixed red/yellow/blue/cyan set every other dark theme shares.
+        let cPriorityP1 = Color(hex: 0xEB5C58)
+        let cPriorityP2 = Color(hex: 0xE8A33D)
+        let cPriorityP3 = Color(hex: 0x6B9AE0)
+        let cDateToken  = Color(hex: 0x62B8CE)
         return Theme(
             id: .graphite,
             bg: cBg, bg2: cBg2, bg3: cBg3, bg4: cBg4,
@@ -431,7 +520,9 @@ extension Theme {
             accentPrimary: cAccentP, accentSecondary: cAccentS,
             typeTask: cTask, typeEvent: cEvent, typeNote: cNote,
             typeProject: cProject, typePerson: cPerson,
-            typeQuery: cQuery, typeTemplate: cTemplate
+            typeQuery: cQuery, typeTemplate: cTemplate,
+            priorityP1: cPriorityP1, priorityP2: cPriorityP2,
+            priorityP3: cPriorityP3, dateToken: cDateToken
         )
     }()
 

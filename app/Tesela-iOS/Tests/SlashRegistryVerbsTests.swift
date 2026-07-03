@@ -340,10 +340,30 @@ final class SlashRegistryVerbsTests: XCTestCase {
         let ranges = InlineNLP.detectHighlightRanges(
             in: text, tags: ["Task"], registry: registry, today: today)
         let ns = text as NSString
-        let matched = Set(ranges.map { ns.substring(with: $0) })
+        let matched = Set(ranges.map { ns.substring(with: $0.range) })
         XCTAssertTrue(matched.contains("p2"), "p2 span highlighted: \(matched)")
         XCTAssertTrue(matched.contains("due tomorrow"), "date phrase highlighted: \(matched)")
         XCTAssertEqual(ranges.count, 2)
+    }
+
+    /// Semantic coloring (tesela-b1s): each highlight span carries its
+    /// `HighlightKind` so the painter can color p2 yellow and the date phrase
+    /// cyan instead of one flat accent.
+    func testHighlightRangesCarrySemanticKind() {
+        let text = "Ship it p2 due tomorrow"
+        let spans = InlineNLP.detectHighlightRanges(
+            in: text, tags: ["Task"], registry: registry, today: today)
+        let ns = text as NSString
+        for span in spans {
+            let token = ns.substring(with: span.range)
+            if token == "p2" {
+                XCTAssertEqual(span.kind, .priority(2))
+            } else if token == "due tomorrow" {
+                XCTAssertEqual(span.kind, .date)
+            } else {
+                XCTFail("unexpected highlighted token: \(token)")
+            }
+        }
     }
 
     /// A bare TRAILING date now DOES lift (Taylor's locked decision), so it IS
@@ -353,7 +373,7 @@ final class SlashRegistryVerbsTests: XCTestCase {
         let ranges = InlineNLP.detectHighlightRanges(
             in: text, tags: ["Task"], registry: registry, today: today)
         let ns = text as NSString
-        let matched = Set(ranges.map { ns.substring(with: $0) })
+        let matched = Set(ranges.map { ns.substring(with: $0.range) })
         XCTAssertEqual(ranges.count, 2, "p2 + trailing tomorrow: \(matched)")
         XCTAssertTrue(matched.contains("p2"))
         XCTAssertTrue(matched.contains("tomorrow"))

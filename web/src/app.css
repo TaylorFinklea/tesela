@@ -49,6 +49,20 @@
   --type-query: #88b85e;
   --type-template: #c79b58;
 
+  /* Semantic inline-NLP token colors (block editor, tesela-b1s): p1/p2/p3
+     are FIXED-meaning severity colors (red/yellow/blue) that carry signal
+     consistently across themes, unlike the theme-flavored type-* set above
+     — so most themes share this one literal palette (mirrors iOS's Theme).
+     p4 has no var of its own; `cm-decorations.ts` reads `--muted-foreground`
+     directly for it (the "no signal" level tracks the neutral scale).
+     `--date-token` colors a detected date phrase (cyan) — same hue the
+     block editor already shipped. Only light themes override these (see
+     `themes.css`'s `[data-theme="prism-light"]`), same as type-*. */
+  --priority-p1: #eb5c58;
+  --priority-p2: #e8a33d;
+  --priority-p3: #6b9ae0;
+  --date-token: #62b8ce;
+
   /* Typography. Themes can override these via the same role tokens. */
   --theme-font-sans: "Geist", "Geist Sans", "Inter Tight", system-ui, sans-serif;
   --theme-font-mono: "JetBrains Mono", ui-monospace, monospace;

@@ -1308,14 +1308,20 @@ export const teselaDecorationTheme = EditorView.theme({
     fontWeight: "600",
     fontSize: "0.95em",
   },
-  ".cm-tesela-priority-1": { color: "#EB5C58" },
-  ".cm-tesela-priority-2": { color: "#E8A33D" },
-  ".cm-tesela-priority-3": { color: "#6B9AE0" },
+  // Priority levels read theme role tokens (`--priority-p1`…`p3` in
+  // app.css, mirroring `--type-*`) rather than hardcoded hex, so a theme
+  // can deepen them for contrast (see `[data-theme="prism-light"]` in
+  // themes.css) — the fallback keeps the original literal if the var is
+  // ever missing. p4 has no token of its own: it's the "no signal" level,
+  // so it reads the neutral `--muted-foreground` scale directly.
+  ".cm-tesela-priority-1": { color: "var(--priority-p1, #EB5C58)" },
+  ".cm-tesela-priority-2": { color: "var(--priority-p2, #E8A33D)" },
+  ".cm-tesela-priority-3": { color: "var(--priority-p3, #6B9AE0)" },
   ".cm-tesela-priority-4": { color: "var(--muted-foreground, #8A909C)" },
   ".cm-tesela-date": {
-    // Inline natural-language date token (scheduled/deadline) — teal, lifts to
-    // the below-strip on commit.
-    color: "#62B8CE",
+    // Inline natural-language date token (scheduled/deadline) — cyan, lifts
+    // to the below-strip on commit. Theme role token, same as priority.
+    color: "var(--date-token, #62B8CE)",
     fontSize: "0.95em",
   },
   ".cm-tesela-number": {

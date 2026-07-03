@@ -93,16 +93,25 @@ struct CollabTextView: UIViewRepresentable {
     /// content here is the only attachment point UIKit honors.
     var accessory: AnyView? = nil
 
-    /// Inline-NLP highlight (iOS surface parity): returns the UTF-16 ranges of
+    /// Inline-NLP highlight (iOS surface parity): returns the UTF-16 spans of
     /// the to-be-lifted tokens (`p2`, `due tomorrow`, …) in the current text so
     /// the editor can color them live as the user types — the same spans
     /// `InlineNLP.detectLifts` strips on commit. `nil` (or empty) → no
     /// highlight (plain prose / a block whose type declares no NLP). Read live
     /// each call so a type-page edit mid-session takes effect on the next change.
-    var nlpHighlightRanges: ((String) -> [NSRange])? = nil
-    /// Foreground color drawn over a matched NLP token span (defaults to the
-    /// tint accent). The non-token text uses `textColor`.
+    var nlpHighlightRanges: ((String) -> [InlineNLP.HighlightSpan])? = nil
+    /// Foreground color drawn over a matched non-priority/non-date NLP token
+    /// span (e.g. a `/status` verb) — the pre-existing single-accent
+    /// behavior. Defaults to the tint accent. The non-token text uses
+    /// `textColor`.
     var nlpHighlightColor: Color? = nil
+    /// Semantic priority colors keyed 1...4 (Taylor's locked direction,
+    /// tesela-b1s: p1 red, p2 yellow, p3 blue, p4 gray). Falls back to
+    /// `nlpHighlightColor` for a level with no entry.
+    var nlpPriorityColors: [Int: Color] = [:]
+    /// Color drawn over a matched date phrase (cyan, matching the desktop
+    /// block editor). Falls back to `nlpHighlightColor` when `nil`.
+    var nlpDateColor: Color? = nil
 
     /// Phase 3 presence: fires with the caret's utf16 offset whenever it moves
     /// (tap / arrow / typing). The owner publishes it as a presence frame.
@@ -340,12 +349,24 @@ struct CollabTextView: UIViewRepresentable {
         func applyNLPHighlight(_ tv: UITextView) {
             guard let detect = parent.nlpHighlightRanges else { return }
             let base = UIColor(parent.textColor)
-            let highlight = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
+            let fallback = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
+            let priorityColors = parent.nlpPriorityColors
+            let dateColor = parent.nlpDateColor.map(UIColor.init)
             // Shared painter (also used by the capture composer) so both
             // surfaces color identically. Preserves selection/typingAttributes
             // and skips IME composition — same as the prior inline body.
             InlineNLPHighlighter.apply(
-                to: tv, base: base, highlight: highlight, ranges: detect(tv.text ?? ""))
+                to: tv, base: base, spans: detect(tv.text ?? "")
+            ) { kind in
+                switch kind {
+                case .priority(let level):
+                    return priorityColors[level].map(UIColor.init) ?? fallback
+                case .date:
+                    return dateColor ?? fallback
+                case .other:
+                    return fallback
+                }
+            }
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {

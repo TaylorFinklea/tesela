@@ -456,6 +456,40 @@ enum InlineNLP {
         let suggestion: Suggestion
     }
 
+    /// Which semantic family a live-highlight span belongs to (Taylor's
+    /// locked direction, tesela-b1s): the painter uses this to color a
+    /// priority token red/yellow/blue/gray by level and a date phrase cyan,
+    /// instead of one flat accent. `.other` covers everything else this
+    /// detector highlights today (e.g. a `/status` verb like `done`) and
+    /// keeps painting the pre-existing single accent color.
+    enum HighlightKind: Equatable {
+        case priority(Int)
+        case date
+        case other
+    }
+
+    /// One live-highlight span: the UTF-16 range to paint plus which
+    /// `HighlightKind` it is.
+    struct HighlightSpan: Equatable {
+        let range: NSRange
+        let kind: HighlightKind
+    }
+
+    /// Classify a `Hit` into its `HighlightKind`. A date lift's `Suggestion.id`
+    /// is always prefixed `"nlp:date:"` (see the date branch of `detect`
+    /// below); a priority lift is a `.setProperty` whose key is `priority` and
+    /// whose value is one of the `Priority` property's own choices (`p1`…`p4`).
+    private static func highlightKind(for hit: Hit) -> HighlightKind {
+        if hit.suggestion.id.hasPrefix("nlp:date:") { return .date }
+        if case .setProperty(let key, let value) = hit.suggestion.action, key == "priority" {
+            let lower = value.lowercased()
+            if lower.hasPrefix("p"), let level = Int(lower.dropFirst()), (1...4).contains(level) {
+                return .priority(level)
+            }
+        }
+        return .other
+    }
+
     /// Detect a lift candidate ending at the caret. Returns the FIRST clear
     /// match found, preferring a property `nl_trigger` token (most specific)
     /// then a `DateParser` phrase over the current line's tail. `nil` when no
@@ -743,18 +777,20 @@ enum InlineNLP {
     /// Built on the identical gated `detect` + `firstLift` the lift uses, so the
     /// highlight and the eventual lift never disagree by construction.
     ///
-    /// Returns ranges in ORIGINAL-string coordinates: it finds the earliest
-    /// candidate, records its span, then MASKS that span with equal-length
-    /// spaces (offsets unchanged — spaces can't re-match a priority token or a
-    /// date parse) and re-scans, so multiple tokens (`p1 … due tomorrow`) all
-    /// surface. Empty when nothing would lift (plain prose / no liftable type).
+    /// Returns spans in ORIGINAL-string coordinates: it finds the earliest
+    /// candidate, records its span (tagged with its `HighlightKind` — priority
+    /// level or date, so the painter can color it semantically), then MASKS
+    /// that span with equal-length spaces (offsets unchanged — spaces can't
+    /// re-match a priority token or a date parse) and re-scans, so multiple
+    /// tokens (`p1 … due tomorrow`) all surface. Empty when nothing would lift
+    /// (plain prose / no liftable type).
     static func detectHighlightRanges(
         in text: String,
         tags: [String],
         registry: PropertyRegistry,
         today: Date = Date()
-    ) -> [NSRange] {
-        var ranges: [NSRange] = []
+    ) -> [HighlightSpan] {
+        var spans: [HighlightSpan] = []
         let mut = NSMutableString(string: text)
         var guardCount = 0
         while guardCount < 64 {
@@ -771,11 +807,11 @@ enum InlineNLP {
             // meaningful token before recording AND masking.
             let trimmed = Self.trimWhitespaceRange(NSRange(location: hit.start, length: hit.length), in: mut)
             guard trimmed.length > 0 else { break }
-            ranges.append(trimmed)
+            spans.append(HighlightSpan(range: trimmed, kind: highlightKind(for: hit)))
             let blanks = String(repeating: " ", count: trimmed.length)
             mut.replaceCharacters(in: trimmed, with: blanks)
         }
-        return ranges
+        return spans
     }
 
     /// Shrink `range` past leading/trailing whitespace (space/tab/newline) in

@@ -529,7 +529,9 @@ struct GrCaptureSheet: View {
                     tintColor: theme.accentPrimary,
                     placeholderColor: theme.fgSubtle,
                     nlpHighlightRanges: captureHighlightRanges,
-                    nlpHighlightColor: theme.accentPrimary
+                    nlpHighlightColor: theme.accentPrimary,
+                    nlpPriorityColors: theme.priorityColors,
+                    nlpDateColor: theme.dateToken
                 )
                 .frame(minHeight: 54, alignment: .top)
             }
@@ -542,7 +544,7 @@ struct GrCaptureSheet: View {
     /// built-ins when the live registry carries no liftable defs for the picked
     /// type — so a freshly picked Task/Project colors even before its Property
     /// pages have synced. No type picked → no spans → no coloring.
-    private func captureHighlightRanges(_ text: String) -> [NSRange] {
+    private func captureHighlightRanges(_ text: String) -> [InlineNLP.HighlightSpan] {
         guard let raw = composer.manualTag?.trimmingCharacters(in: .whitespaces),
               !raw.isEmpty else { return [] }
         let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"

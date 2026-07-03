@@ -597,6 +597,13 @@
   --type-person: #7e5bc0;
   --type-query: #5e8438;
   --type-template: #8c6b36;
+  /* Priority/date tokens deepened the same way — aliased to the type-*
+     hue they share (task-red, note-gold, project-blue, event-teal) so they
+     stay legible on cream instead of the :root literals' brighter shades. */
+  --priority-p1: var(--type-task);
+  --priority-p2: var(--type-note);
+  --priority-p3: var(--type-project);
+  --date-token: var(--type-event);
 }
 
 /* === Tokyo Night Day === */

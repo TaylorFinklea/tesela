@@ -162,7 +162,9 @@ struct CaptureBar: View {
             tintColor: theme.accentPrimary,
             placeholderColor: theme.fgFaint,
             nlpHighlightRanges: captureHighlightRanges,
-            nlpHighlightColor: theme.accentPrimary
+            nlpHighlightColor: theme.accentPrimary,
+            nlpPriorityColors: theme.priorityColors,
+            nlpDateColor: theme.dateToken
         )
         .onAppear {
             Task { @MainActor in
@@ -177,7 +179,7 @@ struct CaptureBar: View {
     /// picked, resolving against the live registry but FALLING BACK to the
     /// built-ins when the live registry carries no liftable defs for the picked
     /// type. No type picked → no spans → no coloring.
-    private func captureHighlightRanges(_ text: String) -> [NSRange] {
+    private func captureHighlightRanges(_ text: String) -> [InlineNLP.HighlightSpan] {
         guard let raw = composer.manualTag?.trimmingCharacters(in: .whitespaces),
               !raw.isEmpty else { return [] }
         let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"

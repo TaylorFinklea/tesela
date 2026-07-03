@@ -5,31 +5,39 @@ import UIKit
 /// editors (the block editor `CollabTextView` and the capture composer
 /// `CaptureTextView`), so both color the to-be-lifted tokens identically.
 ///
-/// Paints `base` everywhere and `highlight` over each matched token span —
-/// DISPLAY ONLY: it edits no characters (emits no splice), preserves the
-/// selection, and sets `typingAttributes` so text typed AFTER a token isn't
-/// painted in the highlight color. Skipped while IME marked text is active so
-/// it doesn't fight composition. `ranges` are UTF-16 NSRanges (from
-/// `InlineNLP.detectHighlightRanges`); they're re-validated to the text length
-/// here so a stale range can never crash `addAttribute`.
+/// Paints `base` everywhere and, over each matched token span, the color
+/// `colorForKind` resolves for that span's `InlineNLP.HighlightKind` —
+/// semantic (priority red/yellow/blue/gray, date cyan) rather than one flat
+/// accent (Taylor's locked direction, tesela-b1s). DISPLAY ONLY: it edits no
+/// characters (emits no splice), preserves the selection, and sets
+/// `typingAttributes` so text typed AFTER a token isn't painted in a
+/// highlight color. Skipped while IME marked text is active so it doesn't
+/// fight composition. `spans`' ranges are UTF-16 NSRanges (from
+/// `InlineNLP.detectHighlightRanges`); they're re-validated to the text
+/// length here so a stale range can never crash `addAttribute`.
 enum InlineNLPHighlighter {
     @MainActor
-    static func apply(to tv: UITextView, base: UIColor, highlight: UIColor, ranges: [NSRange]) {
+    static func apply(
+        to tv: UITextView,
+        base: UIColor,
+        spans: [InlineNLP.HighlightSpan],
+        colorForKind: (InlineNLP.HighlightKind) -> UIColor
+    ) {
         guard tv.markedTextRange == nil else { return }
         let storage = tv.textStorage
         let length = storage.length
         let full = NSRange(location: 0, length: length)
-        let valid = ranges.filter {
-            $0.location >= 0 && $0.length > 0 && $0.location + $0.length <= length
+        let valid = spans.filter {
+            $0.range.location >= 0 && $0.range.length > 0 && $0.range.location + $0.range.length <= length
         }
         // Default typing color so newly typed text after a token isn't painted
-        // in the highlight color.
+        // in a highlight color.
         tv.typingAttributes[.foregroundColor] = base
         let sel = tv.selectedRange
         storage.beginEditing()
         storage.addAttribute(.foregroundColor, value: base, range: full)
-        for r in valid {
-            storage.addAttribute(.foregroundColor, value: highlight, range: r)
+        for span in valid {
+            storage.addAttribute(.foregroundColor, value: colorForKind(span.kind), range: span.range)
         }
         storage.endEditing()
         tv.selectedRange = sel
@@ -72,9 +80,18 @@ struct CaptureTextView: UIViewRepresentable {
     /// capture type by the owner (no type picked → returns `[]` → no coloring).
     /// Read live each call so changing the type picker recolors on the next
     /// `updateUIView`. Must match the add-time lift's gating exactly.
-    var nlpHighlightRanges: (String) -> [NSRange]
-    /// Color drawn over a matched token span (defaults to `tintColor`).
+    var nlpHighlightRanges: (String) -> [InlineNLP.HighlightSpan]
+    /// Color drawn over a matched non-priority/non-date token span (e.g. a
+    /// `/status` verb) — the pre-existing single-accent behavior. Defaults to
+    /// `tintColor`.
     var nlpHighlightColor: Color? = nil
+    /// Semantic priority colors keyed 1...4 (Taylor's locked direction,
+    /// tesela-b1s: p1 red, p2 yellow, p3 blue, p4 gray). Falls back to
+    /// `nlpHighlightColor` for a level with no entry.
+    var nlpPriorityColors: [Int: Color] = [:]
+    /// Color drawn over a matched date phrase (cyan, matching the desktop
+    /// block editor). Falls back to `nlpHighlightColor` when `nil`.
+    var nlpDateColor: Color? = nil
 
     /// Visible lines before the field scrolls internally (mirrors the old
     /// `lineLimit(1...12)` cap so a long capture doesn't grow without bound).
@@ -175,10 +192,22 @@ struct CaptureTextView: UIViewRepresentable {
 
         func applyHighlight(_ tv: UITextView) {
             let base = UIColor(parent.textColor)
-            let highlight = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
+            let fallback = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
+            let priorityColors = parent.nlpPriorityColors
+            let dateColor = parent.nlpDateColor.map(UIColor.init)
             InlineNLPHighlighter.apply(
-                to: tv, base: base, highlight: highlight,
-                ranges: parent.nlpHighlightRanges(tv.text ?? ""))
+                to: tv, base: base,
+                spans: parent.nlpHighlightRanges(tv.text ?? "")
+            ) { kind in
+                switch kind {
+                case .priority(let level):
+                    return priorityColors[level].map(UIColor.init) ?? fallback
+                case .date:
+                    return dateColor ?? fallback
+                case .other:
+                    return fallback
+                }
+            }
         }
 
         func textViewDidChange(_ textView: UITextView) {
