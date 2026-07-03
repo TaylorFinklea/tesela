@@ -62,6 +62,19 @@ final class LiveSyncSocket: ObservableObject {
     /// iOS re-fetches, matching the note-event posture above.
     var onViewsChange: (() -> Void)?
 
+    /// Wall-clock of the last WS frame actually RECEIVED — any kind (note
+    /// event, binary Loro delta, presence, or an unrecognized text frame).
+    /// Sync-health observability (tesela-96y): distinct from `connected`,
+    /// which flips true optimistically right after `resume()` and stays
+    /// true until a `receive` completion fails — a socket can report
+    /// "connected" while the server-side handshake silently stalled and
+    /// nothing has actually arrived. In hub mode (`.http` backend) this is
+    /// the ONLY inbound sync path (`RelayTicker`'s poll loop is gated off
+    /// via `hubMode`), so a stale `lastEventAt` alongside `connected ==
+    /// true` is the on-device signal that hub-mode sync has gone quiet
+    /// even though nothing "errored" — Settings surfaces it read-only.
+    @Published private(set) var lastEventAt: Date? = nil
+
     private let session = URLSession(configuration: .default)
     private var task: URLSessionWebSocketTask?
     private var currentURL: URL?
@@ -138,6 +151,7 @@ final class LiveSyncSocket: ObservableObject {
                 guard let self, myGeneration == self.generation else { return }
                 switch result {
                 case .success(let message):
+                    self.lastEventAt = Date()
                     self.handle(message)
                     self.receive(on: task, generation: myGeneration)
                 case .failure:

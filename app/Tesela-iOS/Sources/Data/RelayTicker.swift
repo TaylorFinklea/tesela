@@ -2,6 +2,27 @@ import Foundation
 import Combine
 import UIKit
 
+/// Resume-once helper backing `RelayTicker.raceAgainstTimeout` (tesela-96y).
+/// `CheckedContinuation.resume` traps if called twice; two independent
+/// unstructured `Task`s (the real work + the timeout sleep) race to call
+/// `resume(_:)`, and this actor serializes those calls so only the FIRST
+/// one actually resumes the continuation — the loser's call is a safe
+/// no-op instead of a crash.
+private actor TickRaceOnce {
+    private var done = false
+    private let continuation: CheckedContinuation<Bool, Never>
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        guard !done else { return }
+        done = true
+        continuation.resume(returning: value)
+    }
+}
+
 /// Background poll loop driving the iOS-side WAN relay sync.
 ///
 /// Lives at the app shell level (one instance for the app's lifetime),
@@ -65,6 +86,44 @@ final class RelayTicker: ObservableObject {
     /// Is the ticker actively looping? False between `stop()` and
     /// the next `start()`.
     @Published private(set) var isRunning: Bool = false
+    /// Wall-clock of the last inbound POLL that completed WITHOUT
+    /// throwing — i.e. `coordinator.tickInbound()` returned, whether or
+    /// not it found new ops. Distinct from `lastTickAt` (set by
+    /// `noteOutboundOutcome`, which fires from several OUTBOUND call
+    /// sites too — recordAndPush/spliceAndPush/flushPendingOutbound —
+    /// not just the loop's own inbound half). Sync-health observability
+    /// (tesela-96y): a healthy loop advances this every ~`tickIntervalSeconds`;
+    /// a stale value while `isRunning` is true is the on-device signal that
+    /// the loop is wedged (stuck/abandoned tick, dead coordinator rebuild
+    /// loop, etc.) even though nothing "errored".
+    @Published private(set) var lastSuccessfulPollAt: Date? = nil
+    /// Wall-clock of the last inbound tick that actually applied ≥1 op
+    /// (`inbound.applied > 0`) — i.e. the last time this device's local
+    /// state genuinely changed from a peer's edit, as opposed to an empty
+    /// poll. Sync-health observability (tesela-96y): pairs with
+    /// `lastSuccessfulPollAt` — polling-but-never-applying against an
+    /// active peer is itself a diagnosable symptom (stuck apply retries,
+    /// needs-catchup notes piling up, etc).
+    @Published private(set) var lastAppliedAt: Date? = nil
+    /// Wall-clock of the last SUCCESSFUL snapshot deposit (`PUT
+    /// /snapshot`, see `depositSnapshotsIfDue`) — the periodic,
+    /// low-frequency (5-minute-cadence) durability push, distinct from
+    /// the per-tick `PUT /ops` push already tracked by
+    /// `lastSuccessfulPushAt`. Sync-health observability (tesela-96y):
+    /// called out explicitly because live fleet monitoring during the
+    /// iPad wedge showed "zero PUT /ops, one PUT /snapshot looping" — a
+    /// SEND-side symptom invisible on-device up to now. A failed deposit
+    /// leaves `depositSnapshotsIfDue`'s cadence stamp unset, so it retries
+    /// on every tick instead of every 5 minutes; a `lastDepositAt` that
+    /// never advances while deposits keep firing is the on-device signal
+    /// that this retry-storm is happening, instead of a silently-eaten
+    /// exception with no trace at all.
+    @Published private(set) var lastDepositAt: Date? = nil
+    /// Most recent snapshot-deposit failure string, cleared on the next
+    /// successful deposit. Deliberately separate from `lastError` (see
+    /// `depositSnapshotsIfDue`) — a deposit hiccup is best-effort and
+    /// should never flip the primary Sync status pill to "Sync error".
+    @Published private(set) var lastDepositError: String? = nil
 
     /// Hub-mode gate (multi-device convergence spec, Part E2). When the
     /// app is talking to a Mac server over the live `/ws` WebSocket, that
@@ -171,6 +230,41 @@ final class RelayTicker: ObservableObject {
     /// capped at 60s so the loop always wakes at least once a minute).
     /// Published so the UI can show "retrying…" while it backs off.
     @Published private(set) var consecutiveErrors: UInt32 = 0
+    /// Monotonic counter bumped once at the START of every `tickOnce()`
+    /// call (tesela-96y). Captured locally as a tick's "generation" so its
+    /// eventual result — success, failure, OR a blown `tickTimeoutSeconds`
+    /// ceiling — is only ever committed to `@Published` state / cursors
+    /// when `shouldCommitTick` still finds it current. Closes two related
+    /// hazards discovered chasing the iPad in-memory wedge:
+    ///   1. `wake()` (`stop()` then `start()`) does NOT actually halt an
+    ///      in-flight tick — Swift `Task` cancellation is cooperative and
+    ///      nothing in the FFI/network call chain checks it — so a
+    ///      scenePhase flap mid-tick (more likely during a heavy sync
+    ///      burst, where a single tick legitimately takes longer) can spin
+    ///      up a SECOND overlapping `runLoop`/tick. Without generation
+    ///      gating, whichever tick finishes LAST wins even if it started
+    ///      first — e.g. regressing `inboundCursorSeq` backward under a
+    ///      stale, since-superseded result.
+    ///   2. A single tick with no bound on how long its engine-apply work
+    ///      may take (see `tickTimeoutSeconds`) can wedge the ENTIRE
+    ///      serial loop forever with no error surfaced — `isRunning` stays
+    ///      true, nothing looks broken, but no later tick ever runs. The
+    ///      timeout path in `tickOnce()` abandons a tick that blows the
+    ///      ceiling so the loop keeps making forward progress instead of
+    ///      hanging until the user force-quits the app.
+    private var tickGeneration: UInt64 = 0
+    /// Hard ceiling on a single tick's total engine work (outbound +
+    /// inbound, including any catch-up/bootstrap it triggers). The relay
+    /// HTTP client already times out at 15s per request
+    /// (`RelayClient::new`), but that bounds only ONE network round trip —
+    /// nothing bounds the Rust engine's CPU-bound Loro apply/merge work
+    /// across a whole tick, and a heavy sync burst (large snapshot
+    /// imports, big batched updates) is exactly when that work is
+    /// biggest. 25s comfortably exceeds the HTTP layer's own 15s (so a
+    /// legitimately slow-but-alive network round trip isn't mistaken for
+    /// a wedge) while still keeping the loop self-healing within roughly
+    /// one backoff cycle instead of hanging indefinitely (tesela-96y).
+    static let tickTimeoutSeconds: UInt64 = 25
     /// Persisted-cursor UserDefaults keys, scoped per (relay URL, group
     /// id) — both derived from the pairing code (audit A5). Relay seqs
     /// are a per-relay, per-group namespace restarting at 1, so a global
@@ -235,6 +329,51 @@ final class RelayTicker: ObservableObject {
         let exponent = UInt64(min(consecutiveErrors, 16))
         let scaled = base << exponent
         return min(scaled, maxSeconds)
+    }
+    /// Pure predicate (tesela-96y): should a tick's outcome — success,
+    /// thrown error, or a blown `tickTimeoutSeconds` ceiling — be
+    /// committed to `@Published` state / persisted cursors? `false` when
+    /// a NEWER tick has since started (`currentGeneration` has moved past
+    /// `issuedGeneration`) — this tick was superseded, either by
+    /// `wake()` re-spinning the loop while it was still in flight, or by
+    /// its own timeout handler already having abandoned it. A superseded
+    /// result must be silently discarded, never applied on top of
+    /// whatever fresher state the newer tick already committed.
+    static func shouldCommitTick(issuedGeneration: UInt64, currentGeneration: UInt64) -> Bool {
+        issuedGeneration == currentGeneration
+    }
+    /// Race `work` against a `seconds`-long timeout. Returns `true` when
+    /// `work` finished before the timeout elapsed, `false` when the
+    /// timeout won.
+    ///
+    /// On a timeout, `work` is NOT cancelled or waited on further: Swift
+    /// `Task` cancellation is cooperative, and the FFI/network calls this
+    /// ticker makes inside `work` don't check it, so an abandoned `work`
+    /// may keep running in the background and complete arbitrarily later
+    /// (its result is discarded via `shouldCommitTick`, not awaited here).
+    /// Deliberately NOT built on `withTaskGroup`: a task group's scope
+    /// implicitly awaits every child before returning, even after
+    /// `cancelAll()`, which would defeat the whole point — the caller
+    /// needs to walk away from a stuck `work` immediately, not block on
+    /// it. Two independent unstructured `Task`s plus a resume-once actor
+    /// give a genuine race instead.
+    ///
+    /// Extracted standalone (no `SyncCoordinator`/engine dependency) so
+    /// the race itself — a slow `work` gets abandoned promptly, a fast
+    /// one wins cleanly — is unit-testable without a live relay/engine;
+    /// see `RelayTickTimeoutTests`.
+    static func raceAgainstTimeout(seconds: UInt64, work: @escaping () async -> Void) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let race = TickRaceOnce(continuation)
+            Task {
+                await work()
+                await race.resume(true)
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                await race.resume(false)
+            }
+        }
     }
     /// Stable key identifying THIS device's APNs-token registration. Carries
     /// the relay SCOPE (`relayUrl|groupIdHex`) as well as the token so a relay
@@ -1026,9 +1165,58 @@ final class RelayTicker: ObservableObject {
         }
     }
 
-    /// Single tick: ensure coordinator → outbound → inbound. Any
-    /// thrown error drops the coordinator + surfaces via `lastError`.
+    /// Single tick, generation-gated and timeout-bounded (tesela-96y). Bumps
+    /// `tickGeneration` and races the REAL tick body (`runSingleTick`)
+    /// against `tickTimeoutSeconds`. Two outcomes:
+    ///   - `runSingleTick` finishes in time → its own guard already
+    ///     committed (or discarded, if superseded) its result; nothing
+    ///     more to do here.
+    ///   - The timeout wins → `runSingleTick` is ABANDONED (not
+    ///     cancelled — see `raceAgainstTimeout`) and this function records
+    ///     the failure itself, but ONLY if no newer tick has started in
+    ///     the meantime (`shouldCommitTick`) — otherwise a slow tick's
+    ///     eventual timeout-handler could stomp a fresher tick's state.
+    ///
+    /// Before this generation/timeout gating existed, a single tick with
+    /// no bound on its engine-apply time (or a `wake()`-triggered
+    /// overlapping loop racing an in-flight tick) could wedge the ENTIRE
+    /// serial loop forever with `isRunning` still reading true and no
+    /// error surfaced — exactly the iPad "sync stopped applying inbound
+    /// changes entirely, even manual refresh showed nothing new, only
+    /// killing the app fixed it" report. Root-cause note: `.relay` mode's
+    /// manual pull-to-refresh (`MockMosaicService.refresh(from: .relay)`)
+    /// is a PURE LOCAL READ of the materialized sandbox files — it does
+    /// NOT go through `applyRemoteChange`'s edit-suppression gate at all,
+    /// so a stuck ect coalescing gate was ruled out as the cause of a
+    /// refresh-resistant staleness; the files themselves only change when
+    /// THIS loop's inbound tick materializes them, so a refresh showing
+    /// nothing new is direct evidence the loop itself had stopped making
+    /// progress.
     private func tickOnce() async {
+        tickGeneration &+= 1
+        let myGeneration = tickGeneration
+        let finishedInTime = await Self.raceAgainstTimeout(seconds: Self.tickTimeoutSeconds) { [weak self] in
+            await self?.runSingleTick(generation: myGeneration)
+        }
+        guard !finishedInTime else { return }
+        guard Self.shouldCommitTick(issuedGeneration: myGeneration, currentGeneration: tickGeneration) else { return }
+        lastError = "sync tick exceeded \(Self.tickTimeoutSeconds)s without finishing — abandoned so the loop keeps going (tesela-96y)"
+        consecutiveErrors = consecutiveErrors &+ 1
+        // The abandoned tick may still be mid-flight against the SAME
+        // coordinator/engine handles; drop them so the NEXT tick rebuilds
+        // fresh rather than layering a new attempt on top of whatever
+        // state the stuck one left things in.
+        dropCoordinator()
+    }
+
+    /// The actual ensure-coordinator → outbound → inbound body (formerly
+    /// `tickOnce()` itself — see that function's doc for why this is now
+    /// generation-gated and timeout-raced). Every point that mutates
+    /// shared `@Published` state or persisted cursors is guarded by
+    /// `shouldCommitTick(issuedGeneration: generation, ...)` so a result
+    /// computed under a superseded generation is silently discarded
+    /// instead of racing a newer tick's writes.
+    private func runSingleTick(generation: UInt64) async {
         // Hub mode: the live `/ws` socket is the sync hub; the relay poll
         // loop is gated off (Part E2). The runLoop keeps sleeping/waking;
         // each wake is a no-op until `hubMode` flips back to false.
@@ -1047,8 +1235,16 @@ final class RelayTicker: ObservableObject {
             let tickScope = cursorScope
             let outbound = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             let inbound = try await coordinator.tickInbound()
+            // tesela-96y: the two awaits above are exactly where a
+            // `wake()`-triggered loop restart (heavy sync ⇒ slower
+            // responses ⇒ a wider overlap window on every foreground/
+            // background flip) or this tick's own timeout handler may
+            // have moved on to a NEWER generation. Bail without touching
+            // any shared state if so — see `shouldCommitTick`.
+            guard Self.shouldCommitTick(issuedGeneration: generation, currentGeneration: tickGeneration) else { return }
             noteOutboundOutcome(outbound)
             lastApplied = inbound.applied
+            lastSuccessfulPollAt = Date()
             inboundCursorSeq = inbound.newCursorSeq
             // Audit A7: tick_outbound returns Ok even when relay PUTs
             // failed (skip-not-abort — the failed batch's cursors stay
@@ -1072,6 +1268,7 @@ final class RelayTicker: ObservableObject {
                 }
             }
             if inbound.applied > 0 {
+                lastAppliedAt = Date()
                 // Tell the host UI that new data has landed in the
                 // local engine + sandbox. AppShell wires this to a
                 // MockMosaicService.refresh() so the page the user is
@@ -1123,10 +1320,12 @@ final class RelayTicker: ObservableObject {
                 await depositSnapshotsIfDue(relay: relay, engine: engine, scope: scope)
             }
         } catch let err as FfiSyncError {
+            guard Self.shouldCommitTick(issuedGeneration: generation, currentGeneration: tickGeneration) else { return }
             lastError = err.localizedDescription
             consecutiveErrors = consecutiveErrors &+ 1
             dropCoordinator()
         } catch {
+            guard Self.shouldCommitTick(issuedGeneration: generation, currentGeneration: tickGeneration) else { return }
             lastError = error.localizedDescription
             consecutiveErrors = consecutiveErrors &+ 1
             dropCoordinator()
@@ -1531,10 +1730,21 @@ final class RelayTicker: ObservableObject {
                 snapshots: snapshots,
                 budgetBytes: Self.snapshotDepositBudgetBytes
             )
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key)
+            let depositedAt = Date()
+            UserDefaults.standard.set(depositedAt.timeIntervalSince1970, forKey: key)
+            lastDepositAt = depositedAt
+            lastDepositError = nil
         } catch {
             // Best-effort: leave the cadence stamp unset so the next tick
             // retries promptly instead of waiting out the full window.
+            // Deliberately NOT swallowed silently (tesela-96y): a dedicated
+            // `lastDepositError` (NOT the shared `lastError` the main
+            // sync-status pill keys off) records it, so a deposit stuck in
+            // a retry-every-tick loop (the "PUT /snapshot looping" fleet
+            // symptom) is visible in the Sync Health card without falsely
+            // flipping the whole app to "Sync error" over a best-effort,
+            // non-tick-failing background push.
+            lastDepositError = error.localizedDescription
         }
     }
 

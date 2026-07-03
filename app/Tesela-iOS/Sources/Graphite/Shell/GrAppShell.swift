@@ -489,6 +489,7 @@ struct GrAppShell: View {
                 backend: backend,
                 relayTicker: relayTicker,
                 registry: mosaicRegistry,
+                liveSync: liveSync,
                 transcription: transcription
             )
             .environment(\.theme, .graphite)

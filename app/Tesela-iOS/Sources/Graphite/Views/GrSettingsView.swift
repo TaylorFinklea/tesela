@@ -30,6 +30,11 @@ struct GrSettingsView: View {
     @ObservedObject var backend: BackendSettings
     @ObservedObject var relayTicker: RelayTicker
     @ObservedObject var registry: MosaicRegistry
+    /// Live `/ws` hub-mode socket (tesela-96y sync-health surface). Only
+    /// actually connected in `.http`/hub mode — `nil`-URL/relay mode never
+    /// dials it (see `GrAppShell.activateBackend`) — so its metrics render
+    /// as "—" rather than a false "disconnected" outside hub mode.
+    @ObservedObject var liveSync: LiveSyncSocket
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
@@ -58,12 +63,14 @@ struct GrSettingsView: View {
         backend: BackendSettings,
         relayTicker: RelayTicker,
         registry: MosaicRegistry,
+        liveSync: LiveSyncSocket,
         transcription: TranscriptionStore? = nil
     ) {
         self.mosaic = mosaic
         self.backend = backend
         self.relayTicker = relayTicker
         self.registry = registry
+        self.liveSync = liveSync
         self.transcription = transcription
         self._pickerMode = State(initialValue: backend.mode)
         self._urlField = State(initialValue: backend.serverURL)
@@ -530,6 +537,7 @@ struct GrSettingsView: View {
                     }
                 }
             }
+            syncHealthCard
             // Device name editor.
             card {
                 VStack(alignment: .leading, spacing: 6) {
@@ -568,6 +576,55 @@ struct GrSettingsView: View {
         if relayTicker.lastError != nil { return "Sync error" }
         if !relayTicker.isRunning { return "Sync paused" }
         return relayTicker.lastTickAt != nil ? "Syncing" : "Starting…"
+    }
+
+    /// Read-only sync-health surface (tesela-96y): the five signals that
+    /// would have made the iPad in-memory wedge diagnosable from the
+    /// device instead of invisible — last successful POLL (not just "last
+    /// tick attempted"), last WS frame actually received (hub mode's
+    /// sole inbound path), last time a remote change actually applied,
+    /// last snapshot DEPOSIT (the SEND-side strand live fleet monitoring
+    /// caught mid-wedge — "zero PUT /ops, one PUT /snapshot looping"), and
+    /// the current backoff state. A wedge shows up here as a
+    /// suspiciously-stale "Last poll" while `isRunning` still reads true.
+    @ViewBuilder
+    private var syncHealthCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("Sync Health")
+            card {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let depositErr = relayTicker.lastDepositError {
+                        Text("deposit retrying: \(depositErr)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(theme.typeTask)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(theme.typeTask.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    VStack(spacing: 0) {
+                        metricRow("Last poll", relativeTime(relayTicker.lastSuccessfulPollAt))
+                        metricRow("Last applied change", relativeTime(relayTicker.lastAppliedAt))
+                        metricRow(
+                            "Last WS event",
+                            relayTicker.hubMode ? relativeTime(liveSync.lastEventAt) : "n/a (relay mode)"
+                        )
+                        metricRow("Last deposit", relativeTime(relayTicker.lastDepositAt))
+                        metricRow("Backoff", backoffLabel)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Current backoff state, derived from the SAME pure
+    /// `RelayTicker.backoffSleepSeconds` the loop itself sleeps by — "0
+    /// consecutive errors" reads as base cadence; N>0 shows the actual
+    /// next-sleep duration so "retrying…" isn't just a vague label.
+    private var backoffLabel: String {
+        guard relayTicker.consecutiveErrors > 0 else { return "none (base cadence)" }
+        let secs = RelayTicker.backoffSleepSeconds(consecutiveErrors: relayTicker.consecutiveErrors)
+        return "\(relayTicker.consecutiveErrors) failures — next in \(secs)s"
     }
 
     private func metricRow(_ label: String, _ value: String) -> some View {
