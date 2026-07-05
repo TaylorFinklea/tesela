@@ -236,7 +236,7 @@
     align-items: center;
     gap: 6px;
     padding: 8px 0 12px 0;
-    font-family: var(--theme-font-mono, var(--v4-mono));
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   .chip {
@@ -278,8 +278,8 @@
   }
   .add-button {
     background: transparent;
-    border: 1px dashed var(--v4-hair2);
-    color: var(--v4-ink5);
+    border: 1px dashed var(--line);
+    color: var(--fg-faint);
     border-radius: 10px;
     padding: 1px 10px;
     cursor: pointer;
@@ -296,7 +296,7 @@
     left: 0;
     z-index: 50;
     background: var(--v9-bg, var(--bg, white));
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 6px;
     padding: 4px;
     width: 220px;
@@ -306,10 +306,10 @@
     width: 100%;
     box-sizing: border-box;
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 4px;
     padding: 3px 6px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font-family: inherit;
     font-size: 11px;
     margin-bottom: 4px;
@@ -333,7 +333,7 @@
     text-align: left;
     background: transparent;
     border: 0;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     padding: 3px 6px;
     cursor: pointer;
     font-family: inherit;
@@ -341,14 +341,14 @@
     border-radius: 3px;
   }
   .picker-list button:hover {
-    background: var(--v4-surface-lo);
-    color: var(--v4-ink);
+    background: var(--bg-2);
+    color: var(--fg-default);
   }
   .create-row button {
     color: var(--primary);
   }
   .picker-list .muted {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 11px;
     padding: 3px 6px;
   }

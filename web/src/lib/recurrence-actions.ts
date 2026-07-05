@@ -1,6 +1,6 @@
 /**
  * Shared recurrence action helpers used by both the `skip-occurrence` command
- * (v4/commands.ts) and the recurring chip's click menu.
+ * (commands/index.ts) and the recurring chip's click menu.
  */
 
 import { api } from "$lib/api-client";

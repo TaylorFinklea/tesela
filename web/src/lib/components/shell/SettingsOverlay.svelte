@@ -87,40 +87,40 @@
     inset: 0;
     display: flex;
     flex-direction: column;
-    background: var(--v4-bg);
+    background: var(--bg);
   }
   .settings-head {
     display: flex;
     align-items: center;
     gap: 14px;
     padding: 8px 14px;
-    border-bottom: 1px solid var(--v4-hair);
+    border-bottom: 1px solid var(--line-soft);
     flex-shrink: 0;
   }
   .settings-label {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
     letter-spacing: 1.4px;
     text-transform: uppercase;
-    color: var(--v4-accent);
+    color: var(--accent-spark);
   }
   .settings-hint {
     flex: 1;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10.5px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
   .settings-close {
     background: transparent;
     border: 0;
-    color: var(--v4-ink4);
+    color: var(--fg-subtle);
     font-size: 16px;
     line-height: 1;
     padding: 2px 8px;
     border-radius: 5px;
     cursor: pointer;
   }
-  .settings-close:hover { color: var(--v4-ink2); background: var(--v4-surface-lo); }
+  .settings-close:hover { color: var(--fg-muted); background: var(--bg-2); }
 
   .settings-body {
     flex: 1;
@@ -130,7 +130,7 @@
   .settings-nav {
     width: 200px;
     flex-shrink: 0;
-    border-right: 1px solid var(--v4-hair);
+    border-right: 1px solid var(--line-soft);
     padding: 10px 8px;
     display: flex;
     flex-direction: column;
@@ -147,25 +147,25 @@
     border: 0;
     border-radius: 6px;
     cursor: pointer;
-    color: var(--v4-ink4);
+    color: var(--fg-subtle);
     text-align: left;
-    transition: background var(--v4-dur-fast, 140ms), color var(--v4-dur-fast, 140ms);
+    transition: background var(--motion-duration-fast, 140ms), color var(--motion-duration-fast, 140ms);
   }
   .settings-nav-row:hover {
-    background: var(--v4-surface-lo);
-    color: var(--v4-ink2);
+    background: var(--bg-2);
+    color: var(--fg-muted);
   }
   .settings-nav-row.active {
-    background: color-mix(in srgb, var(--v4-accent) 12%, transparent);
-    color: var(--v4-accent);
+    background: color-mix(in srgb, var(--accent-spark) 12%, transparent);
+    color: var(--accent-spark);
   }
   .settings-nav-label {
-    font-family: var(--v4-sans);
+    font-family: var(--theme-font-sans);
     font-size: 12px;
     font-weight: 500;
   }
   .settings-nav-hint {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 9.5px;
     opacity: 0.7;
   }

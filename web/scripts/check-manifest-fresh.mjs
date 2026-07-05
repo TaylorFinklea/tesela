@@ -27,7 +27,7 @@ try {
   );
 
   const { registerBuiltinCommands } = await server.ssrLoadModule(
-    "/src/lib/v4/commands.ts",
+    "/src/lib/commands/index.ts",
   );
   registerBuiltinCommands();
 

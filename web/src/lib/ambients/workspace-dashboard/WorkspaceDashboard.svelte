@@ -54,19 +54,19 @@
     min-height: 0;
     overflow: auto;
     padding: 12px 14px;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 12px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     display: flex;
     flex-direction: column;
     gap: 14px;
   }
   header {
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font-size: 12.5px;
   }
   h3 {
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font-size: 11px;
     text-transform: uppercase;
     margin: 0 0 6px;
@@ -82,21 +82,21 @@
   }
   li button {
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
     padding: 3px 7px;
-    color: var(--v4-ink2);
-    font-family: var(--v4-mono);
+    color: var(--fg-muted);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     cursor: pointer;
     text-align: left;
     width: 100%;
   }
   li button:hover {
-    border-color: var(--v4-hair2);
-    color: var(--v4-ink);
+    border-color: var(--line);
+    color: var(--fg-default);
   }
   .muted {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
 </style>

@@ -24,14 +24,8 @@
   import * as keybindings from "$lib/stores/keybindings.svelte";
   import { focusLeaf } from "$lib/buffer/state.svelte";
   import type { LeafId } from "$lib/buffer/types";
-  // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
-  // scopes to `.v4-root`. On the Graphite (/g) route there is no `.v4-root`
-  // ancestor, so `--v4-bg` (and friends) resolved to nothing — the `:` line
-  // and its suggestion list rendered transparent over the editor. Import the
-  // v4 tokens here + tag both fixed elements with `.v4-root` (below) so they
-  // resolve wherever this mounts (v4 OR Graphite) — same fix as
-  // FullscreenOverlay.svelte.
-  import "$lib/v4/tokens.css";
+  // Uses app role tokens from app.css; Graphite bridges those roles in
+  // graphite/tokens.css so the fixed strip inherits the active chrome.
 
   interface Props {
     ctx: CommandContext;
@@ -204,7 +198,7 @@
 
 {#if open}
   {#if suggestions.length > 0}
-    <ul class="v4-colon-suggestions v4-root" role="listbox">
+    <ul class="v4-colon-suggestions" role="listbox">
       {#each suggestions as row, i (row.verb)}
         <li
           class:active={i === highlightedIdx}
@@ -221,7 +215,7 @@
       {/each}
     </ul>
   {/if}
-  <div class="v4-colon v4-root" role="dialog" aria-label="vim ex command">
+  <div class="v4-colon" role="dialog" aria-label="vim ex command">
     <span class="v4-colon-prompt">:</span>
     <input
       bind:this={inputEl}
@@ -249,8 +243,8 @@
     /* Sits just above the status bar. v4's status row is 26px; Graphite's is
        30px — the chrome overrides `--tesela-colon-bottom` (graphite/tokens.css). */
     bottom: var(--tesela-colon-bottom, 26px);
-    background: var(--v4-bg);
-    border-top: 1px solid var(--v4-accent-dim);
+    background: var(--bg);
+    border-top: 1px solid var(--accent-spark-dim);
     padding: 6px 14px;
     display: flex;
     align-items: center;
@@ -266,8 +260,8 @@
     margin: 0;
     padding: 4px 0;
     list-style: none;
-    background: var(--v4-bg);
-    border-top: 1px solid var(--v4-hair);
+    background: var(--bg);
+    border-top: 1px solid var(--line-soft);
     z-index: 80;
     max-height: 280px;
     overflow: auto;
@@ -278,51 +272,51 @@
     align-items: baseline;
     gap: 10px;
     padding: 3px 18px;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 12px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
   }
   .v4-colon-suggestions li.active {
-    background: color-mix(in srgb, var(--v4-accent) 14%, transparent);
-    color: var(--v4-ink);
+    background: color-mix(in srgb, var(--accent-spark) 14%, transparent);
+    color: var(--fg-default);
   }
   .v4-colon-suggestions .glyph {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     text-align: center;
   }
   .v4-colon-suggestions .verb {
-    color: var(--v4-accent);
+    color: var(--accent-spark);
   }
   .v4-colon-suggestions .label {
-    color: var(--v4-ink3);
+    color: var(--fg-subtle);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .v4-colon-suggestions .shortcut {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 10.5px;
   }
   .v4-colon-prompt {
-    color: var(--v4-accent);
-    font-family: var(--v4-mono);
+    color: var(--accent-spark);
+    font-family: var(--theme-font-mono);
     font-size: 14px;
   }
   .v4-colon-input {
     flex: 1;
     background: transparent;
     border: 0;
-    color: var(--v4-ink);
-    font-family: var(--v4-mono);
+    color: var(--fg-default);
+    font-family: var(--theme-font-mono);
     font-size: 13px;
     outline: none;
   }
   .v4-colon-input::placeholder {
-    color: var(--v4-ink6);
+    color: var(--fg-faint);
   }
   .v4-colon-error {
     color: #f87171;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
 </style>

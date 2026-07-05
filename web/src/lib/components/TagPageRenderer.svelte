@@ -174,7 +174,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
   }
   .tag-page-plural {
     font-size: 15px;
@@ -186,7 +186,7 @@
   }
   .tag-page-divider {
     height: 1px;
-    background: var(--v4-hair);
+    background: var(--line-soft);
     margin: 4px 0;
   }
   .tag-page-instances {

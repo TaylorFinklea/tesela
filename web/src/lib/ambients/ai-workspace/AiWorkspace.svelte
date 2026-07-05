@@ -16,8 +16,8 @@
     flex: 1;
     min-height: 0;
     padding: 20px 22px;
-    font-family: var(--v4-sans);
-    color: var(--v4-ink2);
+    font-family: var(--theme-font-sans);
+    color: var(--fg-muted);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -26,19 +26,19 @@
   h2 {
     margin: 0;
     font-size: 14px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
   }
   .muted {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 12px;
   }
   button {
     background: transparent;
-    border: 1px solid var(--v4-hair);
-    color: var(--v4-ink5);
+    border: 1px solid var(--line-soft);
+    color: var(--fg-faint);
     border-radius: 5px;
     padding: 4px 10px;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     cursor: not-allowed;
   }

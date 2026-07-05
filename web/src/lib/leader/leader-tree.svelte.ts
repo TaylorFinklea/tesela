@@ -1,12 +1,12 @@
 /**
- * Prism v5 — leader chord menu state + tree.
+ * Leader chord menu state + tree.
  *
  * Spacemacs/which-key style: Space (in NORMAL mode of cm-vim, or anywhere
  * outside a text entry) opens a hierarchical chord menu. Each keystroke
  * either descends into a sub-menu or runs an action and closes.
  *
- * The tree definition lives here so callers (commands.ts, +layout.svelte,
- * BlockEditor's vim binding) all read the same source.
+ * The tree definition lives here so callers (commands, shell overlays,
+ * and BlockEditor's vim binding) all read the same source.
  */
 
 import {

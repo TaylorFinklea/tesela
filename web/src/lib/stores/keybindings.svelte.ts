@@ -11,7 +11,7 @@
  * `hidden` lists the surfaces (palette/colon/leader/slash) a command should
  * be hidden from — absent/empty means visible everywhere it normally would
  * be. `groupLabels` overrides the leader-tree's compiled-in bucket labels
- * (`CHORD_GROUP_LABELS` in `v5/leader-tree.svelte.ts`), keyed by the
+ * (`CHORD_GROUP_LABELS` in `leader/leader-tree.svelte.ts`), keyed by the
  * space-joined chord-path prefix up to and including the bucket key (e.g.
  * `"b"` for the top-level Block bucket, `"g d"` for a nested bucket) — the
  * "leader-tree regroup" half of this bead. Moving a command BETWEEN groups

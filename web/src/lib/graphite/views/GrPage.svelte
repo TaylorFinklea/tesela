@@ -332,20 +332,10 @@
     padding: 14px 18px;
     min-height: 0;
 
-    /* Token shim for the REUSED typed-page leaf components (Gate B).
-       They were written against v4 (`--v4-*`, scoped to `.v4-root`) and v9
-       (`--v9-*`, resolved at :root with the global theme) tokens — neither
-       carries Graphite values inside `.gr-root`. graphite-editor.css already
-       remaps the semantic shadcn names (`--foreground`, `--primary`, …) and a
-       few journal v9 vars; this covers the rest, scoped to the page body so
-       nothing leaks into the shell chrome. */
-    --v4-mono: var(--mono);
-    --v4-ink: var(--fg);
-    --v4-ink2: var(--fg2);
-    --v4-ink5: var(--faint);
-    --v4-hair: var(--line);
-    --v4-hair2: var(--line-2);
-    --v4-surface-lo: var(--raised);
+    /* Token shim for reused typed-page leaf components that still consume
+       `--v9-*` aliases. App role tokens are bridged by graphite/tokens.css;
+       these page-scoped v9 aliases keep reused renderers on the Graphite
+       palette without leaking into shell chrome. */
     --v9-bg: var(--bg);
     --v9-bg-2: var(--raised);
     --v9-bg-3: var(--raised-2);

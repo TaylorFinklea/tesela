@@ -19,13 +19,8 @@
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import SettingsOverlay from "$lib/components/shell/SettingsOverlay.svelte";
-  // This overlay + its children style with the v4 design tokens (`--v4-*`),
-  // which `tokens.css` scopes to `.v4-root`. On the Graphite (/g) route only the
-  // graphite tokens are loaded, so `--v4-bg` (and friends) resolve to nothing —
-  // the overlay rendered transparent and the page bled through. Import the v4
-  // tokens here + tag the `.overlay` with `.v4-root` (below) so they resolve
-  // wherever this overlay mounts (v4 OR Graphite).
-  import "$lib/v4/tokens.css";
+  // Uses app role tokens from app.css; Graphite bridges those roles in
+  // graphite/tokens.css so the fixed overlay inherits the active chrome.
   import {
     closeOverlay,
     getActiveOverlay,
@@ -74,7 +69,7 @@
 </script>
 
 {#if open && kind === "graph"}
-  <div class="overlay v4-root">
+  <div class="overlay">
     <header class="overlay-head">
       <span class="overlay-label">graph</span>
       <span class="overlay-hint">esc closes · click a node to open it</span>
@@ -92,11 +87,11 @@
     </div>
   </div>
 {:else if open && kind === "settings"}
-  <div class="overlay v4-root">
+  <div class="overlay">
     <SettingsOverlay />
   </div>
 {:else if open && kind === "keymap"}
-  <div class="overlay v4-root">
+  <div class="overlay">
     <header class="overlay-head">
       <span class="overlay-label">keymap</span>
       <span class="overlay-hint">esc closes</span>
@@ -113,43 +108,43 @@
     position: fixed;
     inset: 0;
     z-index: 95;
-    background: var(--v4-bg);
+    background: var(--bg);
     display: flex;
     flex-direction: column;
-    animation: v4-fade-in var(--v4-dur-base) var(--v4-ease-overlay);
+    animation: app-fade-in var(--motion-duration-base) var(--motion-ease-overlay);
   }
   .overlay-head {
     display: flex;
     align-items: center;
     gap: 14px;
     padding: 8px 14px;
-    border-bottom: 1px solid var(--v4-hair);
+    border-bottom: 1px solid var(--line-soft);
     flex-shrink: 0;
   }
   .overlay-label {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
     letter-spacing: 1.4px;
     text-transform: uppercase;
-    color: var(--v4-accent);
+    color: var(--accent-spark);
   }
   .overlay-hint {
     flex: 1;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10.5px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
   .overlay-close {
     background: transparent;
     border: 0;
-    color: var(--v4-ink4);
+    color: var(--fg-subtle);
     font-size: 16px;
     line-height: 1;
     padding: 2px 8px;
     border-radius: 5px;
     cursor: pointer;
   }
-  .overlay-close:hover { color: var(--v4-ink2); background: var(--v4-surface-lo); }
+  .overlay-close:hover { color: var(--fg-muted); background: var(--bg-2); }
   .overlay-body {
     flex: 1;
     min-height: 0;
@@ -160,11 +155,11 @@
     margin: 0;
     padding: 16px 20px;
     overflow: auto;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 12.5px;
     line-height: 1.5;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     white-space: pre;
-    background: var(--v4-bg);
+    background: var(--bg);
   }
 </style>

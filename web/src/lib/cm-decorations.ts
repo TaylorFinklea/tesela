@@ -1344,7 +1344,7 @@ export const teselaDecorationTheme = EditorView.theme({
     borderRadius: "10px",
     padding: "0 7px",
     margin: "0 4px 0 0",
-    fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+    fontFamily: "var(--theme-font-mono)",
     fontSize: "0.78em",
     lineHeight: "1.5",
     cursor: "pointer",
@@ -1378,7 +1378,7 @@ export const teselaDecorationTheme = EditorView.theme({
     // Fenced ``` code lines — a raised monospace surface. Consecutive
     // lines' backgrounds abut, so a multi-line fence reads as one panel.
     background: "var(--surface-2)",
-    fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+    fontFamily: "var(--theme-font-mono)",
     fontSize: "0.86em",
     padding: "0 10px",
   },
@@ -1406,7 +1406,7 @@ export const teselaDecorationTheme = EditorView.theme({
     textDecorationColor: "var(--muted-foreground)",
   },
   ".cm-tesela-md-code": {
-    fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+    fontFamily: "var(--theme-font-mono)",
     fontSize: "0.88em",
     background: "var(--surface-2)",
     border: "1px solid color-mix(in srgb, var(--foreground) 8%, transparent)",

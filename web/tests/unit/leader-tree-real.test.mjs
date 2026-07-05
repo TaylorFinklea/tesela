@@ -2,11 +2,11 @@
  * Real-registry no-orphans test for Phase B Task 4.
  *
  * IMPORTANT: This file MUST NOT call commandRegistry._reset() because:
- * - v4/commands.ts has a `v4CommandsRegistered` guard that prevents re-registration
- * - After _reset(), re-importing v4/commands.ts won't re-register the set
+ * - commands/index.ts has a `builtinCommandsRegistered` guard that prevents re-registration
+ * - After _reset(), re-importing commands/index.ts won't re-register the set
  * - So the real-registry assertion must live here, never calling _reset()
  *
- * This test loads the real command set (v4/commands.ts + all 10 editor/commands/*.ts)
+ * This test loads the real command set (commands/index.ts + all 10 editor/commands/*.ts)
  * via module-load side-effect registration, then asserts every command has a chord.
  */
 import test from "node:test";
@@ -30,7 +30,7 @@ const localStorageMock = (() => {
 })();
 globalThis.localStorage = localStorageMock;
 
-// Mock browser globals needed by v4/commands.ts and editor commands
+// Mock browser globals needed by commands/index.ts and editor commands
 globalThis.window = {
   prompt: () => null,
   confirm: () => false,
@@ -44,22 +44,22 @@ const navigationMock = { goto: () => {} };
 // imports, we'll handle any import errors gracefully.
 
 const { commandRegistry, effectiveChord } = await import("../../src/lib/command-registry.svelte.ts");
-const { getLeaderTree } = await import("../../src/lib/v5/leader-tree.svelte.ts");
+const { getLeaderTree } = await import("../../src/lib/leader/leader-tree.svelte.ts");
 
 // Load the real command set via side-effect imports.
 // These register into the singleton commandRegistry on module load.
-// v4/commands.ts imports from $lib/* which node can't resolve — we import
+// commands/index.ts imports from $lib/* which node can't resolve — we import
 // using relative paths (same as how leader-tree.svelte.ts was fixed).
-// However v4/commands.ts itself has $lib imports throughout, so we
+// However commands/index.ts itself has $lib imports throughout, so we
 // use a try/catch for each import and log what failed.
 
 const importResults = {};
 
 try {
-  await import("../../src/lib/v4/commands.ts");
-  importResults["v4/commands"] = "ok";
+  await import("../../src/lib/commands/index.ts");
+  importResults["commands"] = "ok";
 } catch (e) {
-  importResults["v4/commands"] = `FAILED: ${e.message}`;
+  importResults["commands"] = `FAILED: ${e.message}`;
 }
 
 // Import editor commands (these use relative imports to command-registry already)
@@ -78,11 +78,11 @@ for (const name of editorCmds) {
 
 test("real-registry: import results (informational)", () => {
   // This test just reports what imported successfully.
-  // Known exceptions: v4/commands.ts and editor.widget both use $lib/* imports
+  // Known exceptions: commands/index.ts and editor.widget both use $lib/* imports
   // that node cannot resolve (they need SvelteKit's alias resolver).
   // These are tested via svelte-check instead; we only verify that all
   // *other* editor commands (which use relative imports) imported OK.
-  const KNOWN_LIB_FAILURES = new Set(["v4/commands", "editor.widget"]);
+  const KNOWN_LIB_FAILURES = new Set(["commands", "editor.widget"]);
   const failed = Object.entries(importResults).filter(
     ([name, v]) => v !== "ok" && !KNOWN_LIB_FAILURES.has(name)
   );

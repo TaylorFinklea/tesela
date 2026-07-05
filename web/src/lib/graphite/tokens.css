@@ -7,6 +7,20 @@
   --task:#E8697F; --event:#62B8CE; --note:#E4AE66; --project:#7493E8; --person:#AE90E6; --query:#85BC63;
   --sans:'Geist','Inter Tight',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
 
+  /* Bridge the Graphite palette onto the shared app role-token contract so
+     reused shell/renderer components inherit Graphite colors without a
+     versioned token shim. */
+  --bg-2:var(--surface); --bg-3:var(--raised); --bg-4:var(--raised-2);
+  --line-soft:var(--line); --fg-default:var(--fg); --fg-muted:var(--fg2);
+  --fg-subtle:var(--subtle); --fg-faint:var(--faint);
+  --accent-primary:var(--coral); --accent-spark:var(--coral);
+  --accent-spark-dim:var(--coral-line); --accent-secondary:var(--query);
+  --theme-font-sans:var(--sans); --theme-font-mono:var(--mono);
+  --background:var(--bg); --foreground:var(--fg); --surface-2:var(--raised);
+  --muted:var(--raised); --muted-foreground:var(--subtle);
+  --border:var(--line); --primary:var(--coral); --ring:var(--coral);
+  --popover:var(--raised); --popover-foreground:var(--fg);
+
   /* The shared `:` ex-mode strip (ColonCommandLine) sits above the status
      row; Graphite's is 30px tall (vs v4's 26px). */
   --tesela-colon-bottom:30px;

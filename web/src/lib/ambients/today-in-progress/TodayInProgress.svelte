@@ -44,12 +44,12 @@
     min-height: 0;
     overflow: auto;
     padding: 12px 14px;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 12px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
   }
   header {
-    color: var(--v4-ink);
+    color: var(--fg-default);
     margin-bottom: 10px;
     font-size: 12.5px;
   }
@@ -65,19 +65,19 @@
     width: 100%;
     text-align: left;
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
     padding: 4px 8px;
-    color: var(--v4-ink2);
-    font-family: var(--v4-mono);
+    color: var(--fg-muted);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     cursor: pointer;
   }
   li button:hover {
-    border-color: var(--v4-hair2);
-    color: var(--v4-ink);
+    border-color: var(--line);
+    color: var(--fg-default);
   }
   .muted {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
 </style>

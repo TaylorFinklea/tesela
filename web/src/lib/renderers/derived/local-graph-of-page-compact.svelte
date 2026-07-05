@@ -43,23 +43,23 @@
     align-items: center;
     justify-content: center;
     gap: 4px;
-    font-family: var(--v4-mono);
-    color: var(--v4-ink2);
+    font-family: var(--theme-font-mono);
+    color: var(--fg-muted);
   }
   .label {
     font-size: 9.5px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     text-transform: uppercase;
     letter-spacing: 0.7px;
     margin: 0;
   }
   .value {
     font-size: 22px;
-    color: var(--v4-accent);
+    color: var(--accent-spark);
     margin: 0;
   }
   .hint {
-    color: var(--v4-ink6);
+    color: var(--fg-faint);
     font-size: 10px;
     margin: 0;
   }

@@ -22,12 +22,8 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
-  // This popover styles with the v4 design tokens (`--v4-*`), which
-  // tokens.css scopes to `.v4-root`. It now also mounts in the Graphite (/g)
-  // shell, where no `.v4-root` ancestor exists — import the tokens + tag the
-  // backdrop `.v4-root` (below) so they resolve in both chromes. Same fix as
-  // FullscreenOverlay.svelte.
-  import "$lib/v4/tokens.css";
+  // Uses app role tokens from app.css; Graphite bridges those roles in
+  // graphite/tokens.css so the fixed popover inherits the active chrome.
   import {
     closePeek,
     cyclePeek,
@@ -161,7 +157,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="peek-backdrop v4-root"
+    class="peek-backdrop"
     onclick={(e) => {
       if (e.target === e.currentTarget) closePeek();
     }}
@@ -245,24 +241,24 @@
     position: fixed;
     inset: 0;
     z-index: 90;
-    background: color-mix(in srgb, var(--v4-bg) 30%, transparent);
+    background: color-mix(in srgb, var(--bg) 30%, transparent);
     display: flex;
     align-items: flex-start;
     justify-content: flex-end;
     padding: 80px 40px 20px;
-    animation: v4-fade-in var(--v4-dur-fast) var(--v4-ease-overlay);
+    animation: app-fade-in var(--motion-duration-fast) var(--motion-ease-overlay);
   }
   .peek {
     width: min(460px, calc(100vw - 80px));
     max-height: calc(100vh - 120px);
-    background: var(--v4-bg);
-    border: 1px solid var(--v4-hair);
+    background: var(--bg);
+    border: 1px solid var(--line-soft);
     border-radius: 10px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: v4-popover-in var(--v4-dur-base) var(--v4-ease-overlay);
+    animation: app-popover-in var(--motion-duration-base) var(--motion-ease-overlay);
   }
   .peek-head {
     display: flex;
@@ -270,7 +266,7 @@
     justify-content: space-between;
     gap: 10px;
     padding: 8px 12px;
-    border-bottom: 1px solid var(--v4-hair);
+    border-bottom: 1px solid var(--line-soft);
     flex-shrink: 0;
   }
   .peek-meta {
@@ -280,16 +276,16 @@
     min-width: 0;
   }
   .peek-label {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 9.5px;
     letter-spacing: 1.4px;
     text-transform: uppercase;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
   .peek-tile {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -301,9 +297,9 @@
   }
   .peek-kind {
     background: transparent;
-    border: 1px solid var(--v4-hair);
-    color: var(--v4-ink2);
-    font-family: var(--v4-mono);
+    border: 1px solid var(--line-soft);
+    color: var(--fg-muted);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     border-radius: 5px;
     padding: 2px 6px;
@@ -311,7 +307,7 @@
   .peek-close {
     background: transparent;
     border: 0;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 14px;
     line-height: 1;
     padding: 2px 6px;
@@ -319,15 +315,15 @@
     border-radius: 4px;
   }
   .peek-close:hover {
-    color: var(--v4-ink2);
-    background: var(--v4-surface-lo);
+    color: var(--fg-muted);
+    background: var(--bg-2);
   }
   .peek-hint {
     padding: 4px 12px;
-    color: var(--v4-ink6);
-    font-family: var(--v4-mono);
+    color: var(--fg-faint);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
-    border-bottom: 1px solid var(--v4-hair);
+    border-bottom: 1px solid var(--line-soft);
   }
   .peek-body {
     flex: 1;
@@ -336,8 +332,8 @@
     padding: 10px 12px;
   }
   .peek-empty {
-    color: var(--v4-ink5);
-    font-family: var(--v4-mono);
+    color: var(--fg-faint);
+    font-family: var(--theme-font-mono);
     font-size: 11.5px;
     padding: 16px 4px;
     text-align: center;
@@ -357,22 +353,22 @@
     gap: 10px;
     width: 100%;
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
     padding: 5px 8px;
     cursor: pointer;
   }
   .peek-journey-row:hover {
-    background: var(--v4-surface-lo);
+    background: var(--bg-2);
   }
   .peek-journey-tile {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11.5px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
   }
   .peek-journey-via {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
 </style>

@@ -41,6 +41,7 @@
   --accent-primary: #e07a5f;
   --accent-secondary: #81b29a;
   --accent-spark: var(--accent-primary);
+  --accent-spark-dim: color-mix(in srgb, var(--accent-spark) 55%, transparent);
   --type-task: #db6c83;
   --type-event: #6dbacc;
   --type-note: #e8b86b;
@@ -66,6 +67,13 @@
   /* Typography. Themes can override these via the same role tokens. */
   --theme-font-sans: "Geist", "Geist Sans", "Inter Tight", system-ui, sans-serif;
   --theme-font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Motion roles shared by overlays, popovers, and pane chrome. */
+  --motion-ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-overlay: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-duration-fast: 140ms;
+  --motion-duration-base: 220ms;
+  --motion-duration-slow: 320ms;
 
   /* === Compatibility aliases ============================================
    * These keep the rest of the app rendering without a sweeping rename.
@@ -152,6 +160,19 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 999px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+}
+
+@keyframes app-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes app-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes app-popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Block property lines flagged for hiding (via `hiddenPropertyKeysFacet` —

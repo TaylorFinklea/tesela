@@ -15,13 +15,13 @@
  * behavior stays bound to the live board instance.
  *
  * Chords live under a fresh `k` leader prefix (kanban) — `k` is not used as
- * a first-key bucket by any v4 or editor command, so the whole board action
- * set groups cleanly under one leader subtree ("kanban…").
+ * a first-key bucket by any built-in or editor command, so the whole board
+ * action set groups cleanly under one leader subtree ("kanban…").
  *
- * Registered via `registerBuiltinCommands()` (see `v4/commands.ts`) so the
+ * Registered via `registerBuiltinCommands()` (see `commands/index.ts`) so the
  * manifest generator + freshness check pick them up automatically — no
  * script edits needed. Idempotent (guard below) so re-calling it on layout
- * re-init is a no-op, matching `buildV4Commands`'s contract.
+ * re-init is a no-op, matching `buildBuiltinCommands`'s contract.
  */
 import {
   commandRegistry,

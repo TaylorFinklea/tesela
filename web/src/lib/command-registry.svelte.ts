@@ -6,8 +6,8 @@
  * to read from it. Colon mode also resolves verbs through the registry.
  *
  * Commands are registered by calling `commandRegistry.register(cmd)`.
- * Importing `web/src/lib/v4/commands.ts` automatically registers the legacy
- * V4 command set so existing consumers keep working.
+ * The root layout calls `registerBuiltinCommands()` from `web/src/lib/commands`
+ * once so every dispatcher reads the same built-in command set.
  */
 
 import { BUILTIN_SLASH_CHORDS } from "./chord-keys.ts";

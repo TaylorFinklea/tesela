@@ -199,11 +199,11 @@
     margin-bottom: 14px;
   }
   .v4-prop-heading {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 9.5px;
     letter-spacing: 1.2px;
     text-transform: uppercase;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     margin: 0 0 5px;
   }
   .v4-prop-row {
@@ -214,14 +214,14 @@
     align-items: center;
   }
   .v4-prop-key {
-    color: var(--v4-ink4);
-    font-family: var(--v4-mono);
+    color: var(--fg-subtle);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     flex-shrink: 0;
     min-width: 70px;
   }
   .v4-prop-val {
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
@@ -240,23 +240,23 @@
     width: 100%;
   }
   .v4-prop-val--editable:hover {
-    background: var(--v4-surface-lo);
-    border-color: var(--v4-hair);
-    color: var(--v4-ink);
+    background: var(--bg-2);
+    border-color: var(--line-soft);
+    color: var(--fg-default);
   }
   .v4-prop-val--editable:focus-visible {
     outline: none;
-    background: var(--v4-surface-lo);
-    border-color: var(--v4-hair2);
-    color: var(--v4-ink);
+    background: var(--bg-2);
+    border-color: var(--line);
+    color: var(--fg-default);
   }
   .v4-prop-input {
     flex: 1;
     min-width: 0;
-    background: var(--v4-surface-lo);
-    border: 1px solid var(--v4-hair2);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
     border-radius: 3px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font: inherit;
     font-size: 12px;
     padding: 1px 5px;
@@ -264,12 +264,12 @@
   }
   .v4-prop-input:focus {
     outline: none;
-    border-color: var(--v4-accent-dim);
+    border-color: var(--accent-spark-dim);
   }
   .v4-prop-hint {
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-style: italic;
     margin: 4px 6px 0;
   }

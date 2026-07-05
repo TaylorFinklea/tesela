@@ -196,8 +196,8 @@
   }
   h3 {
     margin: 0;
-    color: var(--v4-ink);
-    font-family: var(--v4-mono);
+    color: var(--fg-default);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -206,13 +206,13 @@
     gap: 8px;
   }
   .count {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 10.5px;
     font-weight: 400;
   }
   .badge {
-    color: var(--v4-ink5);
-    border: 1px solid var(--v4-hair);
+    color: var(--fg-faint);
+    border: 1px solid var(--line-soft);
     border-radius: 4px;
     padding: 1px 6px;
     font-size: 9.5px;
@@ -235,32 +235,32 @@
     text-align: left;
     width: 100%;
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
     padding: 6px 10px;
     cursor: pointer;
-    font-family: var(--v4-mono);
-    color: var(--v4-ink2);
+    font-family: var(--theme-font-mono);
+    color: var(--fg-muted);
   }
   li button:hover {
-    border-color: var(--v4-hair2);
-    background: var(--v4-surface-lo);
+    border-color: var(--line);
+    background: var(--bg-2);
   }
   .src {
     font-size: 11px;
-    color: var(--v4-ink3);
+    color: var(--fg-subtle);
   }
   .ctx {
     font-size: 11.5px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     width: 100%;
   }
   .muted {
-    color: var(--v4-ink5);
-    font-family: var(--v4-mono);
+    color: var(--fg-faint);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   .unlinked-row {
@@ -279,24 +279,24 @@
   }
   .row-promote {
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
-    color: var(--v4-accent);
+    color: var(--accent-spark);
     padding: 0 10px;
     cursor: pointer;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     align-self: center;
   }
   .row-promote:hover {
-    border-color: var(--v4-accent-dim);
-    background: color-mix(in srgb, var(--v4-accent) 12%, transparent);
+    border-color: var(--accent-spark-dim);
+    background: color-mix(in srgb, var(--accent-spark) 12%, transparent);
   }
   .empty {
-    color: var(--v4-ink5);
-    font-family: var(--v4-mono);
+    color: var(--fg-faint);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     text-align: center;
     padding: 16px 0;

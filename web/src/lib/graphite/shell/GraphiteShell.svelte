@@ -38,7 +38,7 @@
   } from '$lib/buffer/state.svelte';
   import { asPageId } from '$lib/buffer/types';
   import { openStation } from '$lib/stores/station.svelte';
-  import { openLeader } from '$lib/v5/leader-tree.svelte';
+  import { openLeader } from '$lib/leader/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
   import { getVimMode } from '$lib/stores/pane-state.svelte';
   import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';

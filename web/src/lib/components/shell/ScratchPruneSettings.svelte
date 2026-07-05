@@ -119,7 +119,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 16px 0;
-    border-top: 1px solid var(--v9-line, var(--v4-hair));
+    border-top: 1px solid var(--v9-line, var(--line-soft));
   }
   header {
     display: flex;
@@ -129,16 +129,16 @@
   h3 {
     margin: 0;
     font-size: 14px;
-    color: var(--v9-ink, var(--v4-ink));
+    color: var(--v9-ink, var(--fg-default));
   }
   .hint {
-    color: var(--v9-ink-muted, var(--v4-ink5));
+    color: var(--v9-ink-muted, var(--fg-faint));
     font-size: 12px;
     margin: 0;
     max-width: 64ch;
   }
   code {
-    font-family: var(--theme-font-mono, var(--v4-mono));
+    font-family: var(--theme-font-mono);
     color: var(--primary);
     background: transparent;
   }
@@ -148,27 +148,27 @@
     gap: 10px;
     flex-wrap: wrap;
     font-size: 12px;
-    color: var(--v9-ink-muted, var(--v4-ink3));
+    color: var(--v9-ink-muted, var(--fg-subtle));
   }
   .row strong {
-    color: var(--v9-ink, var(--v4-ink));
+    color: var(--v9-ink, var(--fg-default));
     font-weight: 500;
   }
   .presets button,
   .custom button {
     background: transparent;
-    border: 1px solid var(--v9-line, var(--v4-hair));
-    color: var(--v9-ink-muted, var(--v4-ink3));
+    border: 1px solid var(--v9-line, var(--line-soft));
+    color: var(--v9-ink-muted, var(--fg-subtle));
     border-radius: 5px;
     padding: 4px 12px;
     cursor: pointer;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   .presets button:hover,
   .custom button:hover:not(:disabled) {
-    border-color: var(--v9-line-soft, var(--v4-hair2));
-    color: var(--v9-ink, var(--v4-ink));
+    border-color: var(--v9-line-soft, var(--line));
+    color: var(--v9-ink, var(--fg-default));
   }
   .presets button.active {
     border-color: var(--primary);
@@ -182,11 +182,11 @@
   input[type="number"] {
     width: 80px;
     background: transparent;
-    border: 1px solid var(--v9-line, var(--v4-hair));
+    border: 1px solid var(--v9-line, var(--line-soft));
     border-radius: 5px;
     padding: 4px 8px;
-    color: var(--v9-ink, var(--v4-ink));
-    font-family: var(--v4-mono);
+    color: var(--v9-ink, var(--fg-default));
+    font-family: var(--theme-font-mono);
     font-size: 12px;
   }
   input[type="number"]:focus {
@@ -194,8 +194,8 @@
     outline: none;
   }
   .result {
-    color: var(--v9-ink-muted, var(--v4-ink5));
-    font-family: var(--v4-mono);
+    color: var(--v9-ink-muted, var(--fg-faint));
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
 </style>

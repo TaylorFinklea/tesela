@@ -124,8 +124,8 @@
   }
   h3 {
     margin: 0;
-    color: var(--v4-ink);
-    font-family: var(--v4-mono);
+    color: var(--fg-default);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -134,7 +134,7 @@
     gap: 8px;
   }
   .count {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 10.5px;
     font-weight: 400;
   }
@@ -154,43 +154,43 @@
     text-align: left;
     width: 100%;
     background: transparent;
-    border: 1px solid var(--v4-hair);
+    border: 1px solid var(--line-soft);
     border-radius: 5px;
     padding: 6px 10px;
     cursor: pointer;
-    font-family: var(--v4-mono);
-    color: var(--v4-ink2);
+    font-family: var(--theme-font-mono);
+    color: var(--fg-muted);
   }
   li button:hover {
-    border-color: var(--v4-hair2);
-    background: var(--v4-surface-lo);
+    border-color: var(--line);
+    background: var(--bg-2);
   }
   .kind-glyph {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 14px;
   }
   .title {
     font-size: 12px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .context {
     font-size: 11.5px;
-    color: var(--v4-ink);
+    color: var(--fg-default);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .parent {
     font-size: 10.5px;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
   }
   .kind-chip {
     font-size: 9.5px;
-    color: var(--v4-ink5);
-    border: 1px solid var(--v4-hair);
+    color: var(--fg-faint);
+    border: 1px solid var(--line-soft);
     border-radius: 4px;
     padding: 0 6px;
     text-transform: uppercase;
@@ -198,8 +198,8 @@
   }
   .muted,
   .empty {
-    color: var(--v4-ink5);
-    font-family: var(--v4-mono);
+    color: var(--fg-faint);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   .empty {

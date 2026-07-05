@@ -1698,7 +1698,7 @@
       ".cm-vim-panel": {
         backgroundColor: "var(--surface-2)",
         color: "var(--muted-foreground)",
-        fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+        fontFamily: "var(--theme-font-mono)",
         fontSize: "0.82em",
         padding: "2px 8px",
         borderTop: "1px solid color-mix(in srgb, var(--foreground) 10%, transparent)",
@@ -1706,7 +1706,7 @@
       ".cm-vim-panel input": {
         backgroundColor: "transparent",
         color: "var(--foreground)",
-        fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+        fontFamily: "var(--theme-font-mono)",
         caretColor: "var(--primary)",
         outline: "none",
       },

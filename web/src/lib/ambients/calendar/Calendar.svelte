@@ -97,9 +97,9 @@
     display: flex;
     flex-direction: column;
     padding: 12px 14px;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 12px;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     gap: 10px;
   }
   header {
@@ -110,14 +110,14 @@
   }
   header button {
     background: transparent;
-    border: 1px solid var(--v4-hair);
-    color: var(--v4-ink2);
+    border: 1px solid var(--line-soft);
+    color: var(--fg-muted);
     border-radius: 5px;
     padding: 2px 8px;
     cursor: pointer;
   }
   .v5-cal-month {
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font-size: 13px;
   }
   .v5-cal-grid {
@@ -127,35 +127,35 @@
   }
   .v5-cal-grid-head .v5-cal-hd {
     text-align: center;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 10.5px;
   }
   .v5-cal-cell {
     background: transparent;
-    border: 1px solid var(--v4-hair);
-    color: var(--v4-ink2);
+    border: 1px solid var(--line-soft);
+    color: var(--fg-muted);
     border-radius: 4px;
     padding: 6px 0;
     text-align: center;
     cursor: pointer;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   .v5-cal-cell:hover {
-    border-color: var(--v4-hair2);
-    color: var(--v4-ink);
+    border-color: var(--line);
+    color: var(--fg-default);
   }
   .v5-cal-cell.selected {
-    border-color: var(--v4-accent);
-    color: var(--v4-ink);
-    background: color-mix(in srgb, var(--v4-accent) 8%, transparent);
+    border-color: var(--accent-spark);
+    color: var(--fg-default);
+    background: color-mix(in srgb, var(--accent-spark) 8%, transparent);
   }
   .v5-cal-cell.empty {
     visibility: hidden;
   }
   footer {
     margin-top: auto;
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 11px;
     display: flex;
     align-items: center;
@@ -163,11 +163,11 @@
   }
   footer button {
     background: transparent;
-    border: 1px solid var(--v4-hair);
-    color: var(--v4-ink2);
+    border: 1px solid var(--line-soft);
+    color: var(--fg-muted);
     border-radius: 4px;
     padding: 2px 8px;
     cursor: pointer;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
   }
 </style>

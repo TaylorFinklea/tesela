@@ -20,7 +20,7 @@ const localStorageMock = (() => {
 globalThis.localStorage = localStorageMock;
 
 const { commandRegistry } = await import("../../src/lib/command-registry.svelte.ts");
-const { getLeaderTree } = await import("../../src/lib/v5/leader-tree.svelte.ts");
+const { getLeaderTree } = await import("../../src/lib/leader/leader-tree.svelte.ts");
 const keybindings = await import("../../src/lib/stores/keybindings.svelte.ts");
 
 function reg(id, chord, label) {

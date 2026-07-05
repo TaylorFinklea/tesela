@@ -16,7 +16,7 @@ globalThis.KeyboardEvent = KeyboardEvent;
 
 // We test the pure registry utilities by importing the module's named exports.
 // This module alone never registers anything as an import side effect (the
-// builtin V4 command set is registered explicitly via registerBuiltinCommands(),
+// built-in command set is registered explicitly via registerBuiltinCommands(),
 // called once from the root layout) — the singleton registry starts empty, but
 // tests still call _reset() defensively for isolation from each other.
 const mod = await import("../../src/lib/command-registry.svelte.ts");
@@ -819,7 +819,7 @@ test("availableOn('leader'): editor+chord command shows only when a block is foc
 });
 
 // ── matchesCommand (moved into the registry so palette+colon stop reaching
-// around it into v4/commands.ts) ───────────────────────────────────────────
+// around it into commands/index.ts) ───────────────────────────────────────────
 
 test("matchesCommand: empty query matches everything", () => {
   const cmd = { id: "x", label: "X", glyph: "x", category: "navigate", keywords: [], run: () => {} };

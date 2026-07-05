@@ -68,14 +68,14 @@
     min-height: 0;
     overflow: auto;
     padding: 10px 12px;
-    font-family: var(--v4-mono);
-    color: var(--v4-ink2);
+    font-family: var(--theme-font-mono);
+    color: var(--fg-muted);
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
   header {
-    color: var(--v4-ink);
+    color: var(--fg-default);
     font-size: 11.5px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -91,7 +91,7 @@
   li button {
     background: transparent;
     border: 1px solid transparent;
-    color: var(--v4-ink2);
+    color: var(--fg-muted);
     text-align: left;
     padding: 3px 6px;
     border-radius: 4px;
@@ -100,15 +100,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--v4-mono);
+    font-family: var(--theme-font-mono);
     font-size: 11px;
   }
   li button:hover {
-    border-color: var(--v4-hair);
-    color: var(--v4-ink);
+    border-color: var(--line-soft);
+    color: var(--fg-default);
   }
   .muted {
-    color: var(--v4-ink5);
+    color: var(--fg-faint);
     font-size: 11px;
   }
 </style>

@@ -1,9 +1,6 @@
 /**
- * Prism v5 command verbs — the rows that appear in the Station's Palette
- * tab and the `:` ex-mode dispatcher.
- *
- * File still lives under `lib/v4/` for now to avoid mid-cutover import
- * churn; will move to `lib/v5/` in Phase 13.
+ * Built-in command verbs — the rows that appear in the Palette tab, leader
+ * tree, and `:` ex-mode dispatcher.
  */
 
 import {
@@ -76,7 +73,7 @@ const AMBIENTS: { name: string; label: string; verb: string; glyph: string; chor
   { name: "inbox", label: "Inbox", verb: "inbox", glyph: "📥", chord: ["g", "I"] },
 ];
 
-export type V4Command = {
+export type BuiltinCommand = {
   id: string;
   verb?: string;
   label: string;
@@ -342,10 +339,10 @@ function followBinding(): DerivedBinding {
   return { mode: "follow" };
 }
 
-let v4CommandsRegistered = false;
+let builtinCommandsRegistered = false;
 
-export function buildV4Commands(): V4Command[] {
-  const commands: V4Command[] = [
+export function buildBuiltinCommands(): BuiltinCommand[] {
+  const commands: BuiltinCommand[] = [
     // ── pane ────────────────────────────────────────────────────────────
     {
       id: "vsplit",
@@ -739,25 +736,25 @@ export function buildV4Commands(): V4Command[] {
     },
   ];
 
-  if (!v4CommandsRegistered) {
+  if (!builtinCommandsRegistered) {
     for (const cmd of commands) {
       commandRegistry.register(cmd as RegistryCommand);
     }
-    v4CommandsRegistered = true;
+    builtinCommandsRegistered = true;
   }
 
   return commands;
 }
 
 /**
- * Explicit bootstrap: registers the built-in V4 command set into the shared
- * commandRegistry. Idempotent (buildV4Commands guards against
+ * Explicit bootstrap: registers the built-in command set into the shared
+ * commandRegistry. Idempotent (buildBuiltinCommands guards against
  * double-registration) — safe to call more than once. Call this exactly
  * once, from the root layout, rather than relying on importing this module
  * for its former import-time side effect.
  */
 export function registerBuiltinCommands(): void {
-  buildV4Commands();
+  buildBuiltinCommands();
   // tesela-ya4.2 — the KanbanBoard's command set (palette + leader chord).
   // Registered here (not as an import side effect) so the manifest
   // generator + freshness check pick it up automatically via the SAME

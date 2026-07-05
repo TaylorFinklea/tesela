@@ -40,7 +40,7 @@
   } from "$lib/loro/active-note-doc.svelte";
   import { api } from "$lib/api-client";
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
-  import { registerBuiltinCommands } from "$lib/v4/commands";
+  import { registerBuiltinCommands } from "$lib/commands";
   import { initKeymapConfig } from "$lib/stores/keymap-sync";
   import "../app.css";
 
@@ -49,8 +49,8 @@
   // Explicit bootstrap for the command registry (the emacs-2.0 spine): every
   // route runs through this root layout, so registering here — once, before
   // any dispatcher (palette/colon/leader/slash) renders — replaces the old
-  // import-order side effect (buildV4Commands() ran whenever anything
-  // happened to import v4/commands.ts). Idempotent; safe even if a route
+  // import-order side effect (buildBuiltinCommands() ran whenever anything
+  // happened to import commands/index.ts). Idempotent; safe even if a route
   // somehow re-triggers layout init.
   registerBuiltinCommands();
 

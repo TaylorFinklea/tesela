@@ -6,7 +6,7 @@
  * from the same live `commandRegistry`, so there is never a hand-copied
  * second list to drift.
  *
- * Loads the REAL command set — `registerBuiltinCommands()` (v4/commands.ts)
+ * Loads the REAL command set — `registerBuiltinCommands()` (commands/index.ts)
  * plus every `editor/commands/*.ts` module (side-effect registration) — via
  * Vite's `ssrLoadModule`, which resolves the `$lib`/`$app` aliases and
  * compiles the `.svelte.ts` rune files the way the real app does (plain
@@ -37,7 +37,7 @@ try {
   );
 
   const { registerBuiltinCommands } = await server.ssrLoadModule(
-    "/src/lib/v4/commands.ts",
+    "/src/lib/commands/index.ts",
   );
   registerBuiltinCommands();
 
