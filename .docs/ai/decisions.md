@@ -4,6 +4,20 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-07-05 — Conductor triage fields live in bd METADATA, never prose (verify_cmd is metadata-only; Arena/cycle silently Untriage prose-triaged beads)
+
+Arena/cycle dispatch refuses untriaged beads. Source of truth: `harness-conductor/src/fields.rs` (+ `arena.rs:716` → `"{} has no verify_cmd metadata; arena requires self-certifying beads"`). The field-resolution rules:
+
+- **`tier_floor`** (`lead`|`senior`|`junior`) + **`complexity`** (`S`|`M`|`L`|`XL`): bd **metadata** preferred; **notes** is a fallback for these two only (a notes range like `S-M` resolves to its upper bound `M`).
+- **`verify_cmd`**: bd **metadata ONLY** — notes prose like `Verify: cargo …` is INERT, never scanned. Description text is inert for ALL three fields; a `Verify:`/`tier_floor:`/`complexity:` line embedded in DESCRIPTION or NOTES does nothing.
+- Per field: metadata first; if metadata is present but invalid (e.g. `tier_floor=boss`), the item is Untriaged — fail closed, no notes fallback for that field.
+
+**Observed gap (2026-07-05 Arena run on tesela-3tm):** 0 of 38 ready Tesela beads carry Conductor metadata triage — and neither do the closed wave-dispatched beads (pfix.2, ows.1, y11 all `metadata: None`). Triage prose (`tier_floor: senior | complexity: S | Verify: xcodebuild test`) was embedded in DESCRIPTION/NOTES, which Conductor ignores → every bead is Untriaged → never dispatched by Arena and silently Untriaged for cycle. The first Arena run failed preflight `arena: tesela-3tm is untriaged; missing [TierFloor, Complexity]` until metadata was set; `tesela-ows.4` was skipped for the same reason (its triage lives in DESCRIPTION).
+
+**Convention LOCKED:** when an item enters the Tesela backlog, set all three as bd METADATA — `bd update <id> --set-metadata=tier_floor=… --set-metadata=complexity=… --set-metadata=verify_cmd="…"`. Prose triage in description/notes is fine for human readability but is NOT parsed — metadata is canonical. `verify_cmd` must be a real, single-command, runnable gate (confirm green on `main` before setting it; for xcodebuild-dependent beads remember the `.xcodeproj` is gitignored + needs FFI cross-compile + xcodegen first — prefer a wrapper or a non-xcodebuild gate where possible). Notes may carry tier_floor/complexity as a secondary signal but verify_cmd MUST be in metadata.
+
+**Backfill:** the 38 open + closed beads need metadata populated — filed as bead `tesela-1tc` (Lead triage pass, this decision's implementer). Until then, Arena pick-up-and-go is blocked: each run requires a Lead to set metadata on the chosen bead first (acceptable — the orchestrator is Lead; this is the triage step that should have happened at bead-creation time).
+
 ### 2026-07-03 — Same-block convergence: keep-winner EXONERATED; the fix axis is delivery (c7s) + per-edit splice authoring (baa)
 
 The 2026-07-03 same-block data-loss incident (two devices typing in one block; minutes of divergence; one side destroyed) was adversarially investigated from full frozen doc history (probe: `probe_incident_9iy.rs`, branch `w7-conv`) + live relay traffic, second-opinioned by gpt-5.5 (approve-with-nits). Durable conclusions:
