@@ -13,6 +13,7 @@
   import { buildRegistry } from "$lib/property-registry";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { setBottomDrawerOpen, setActiveRegion, setBottomTab, getActiveRegion } from "$lib/stores/pane-state.svelte";
+  import { setKanbanFocused } from "$lib/kanban/kanban-focus.svelte";
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
@@ -367,6 +368,168 @@
     setFocusedBlock(card);
   }
 
+  // ── ya4.2 — board action handlers ───────────────────────────────────
+  // Each action is a named function so the direct in-board keydown path
+  // (handleKanbanKeydown below) and the command-registry dispatch path
+  // (the `tesela:run-kanban-command` listener wired further down, fed by
+  // the palette ⌘K + leader chord entries in `kanban-commands.ts`) share
+  // ONE implementation. The existing j/k/h/l/g/G/Enter/m/H/L/i bindings
+  // are preserved verbatim — only their bodies moved into handlers.
+  function cardsInFocusedColumn(): ParsedBlock[] {
+    return groupedBlocks.get(columnNames[focusedColIndex]) ?? [];
+  }
+
+  function focusDown() {
+    const cards = cardsInFocusedColumn();
+    focusedCardIndex = Math.min(Math.max(0, cards.length - 1), focusedCardIndex + 1);
+    syncFocusedCardToDrawer();
+  }
+
+  function focusUp() {
+    focusedCardIndex = Math.max(0, focusedCardIndex - 1);
+    syncFocusedCardToDrawer();
+  }
+
+  function focusLeft() {
+    focusedColIndex = Math.max(0, focusedColIndex - 1);
+    clampCardIndex();
+    syncFocusedCardToDrawer();
+  }
+
+  function focusRight() {
+    focusedColIndex = Math.min(columnNames.length - 1, focusedColIndex + 1);
+    clampCardIndex();
+    syncFocusedCardToDrawer();
+  }
+
+  function focusFirst() {
+    focusedCardIndex = 0;
+    syncFocusedCardToDrawer();
+  }
+
+  function focusLast() {
+    const cards = cardsInFocusedColumn();
+    focusedCardIndex = Math.max(0, cards.length - 1);
+    syncFocusedCardToDrawer();
+  }
+
+  function openFocusedCard() {
+    const card = cardsInFocusedColumn()[focusedCardIndex];
+    if (card) goto(`/p/${encodeURIComponent(card.note_id)}`);
+  }
+
+  function openMovePicker() {
+    const block = cardsInFocusedColumn()[focusedCardIndex];
+    if (!block) return;
+    // Position picker next to the focused card
+    const el = document.querySelector("[data-kanban-focused='true']") as HTMLElement | null;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      movePickerPosition = { x: rect.right + 4, y: rect.top };
+    }
+    movePickerBlock = block;
+  }
+
+  function moveCardPrevCol() {
+    const card = cardsInFocusedColumn()[focusedCardIndex];
+    if (card && focusedColIndex > 0) void moveFocusedCardToColumn(card, focusedColIndex - 1);
+  }
+
+  function moveCardNextCol() {
+    const card = cardsInFocusedColumn()[focusedCardIndex];
+    if (card && focusedColIndex < columnNames.length - 1) void moveFocusedCardToColumn(card, focusedColIndex + 1);
+  }
+
+  function editCardProperties() {
+    // Open BottomDrawer for the focused card so the user can edit its
+    // properties (deadline, priority, status, …) without leaving the
+    // board. The drawer is a singleton fed by `current-block.svelte`,
+    // so the same flow as BlockOutliner's `onfocusedblockchange`.
+    const card = cardsInFocusedColumn()[focusedCardIndex];
+    if (!card) return;
+    setFocusedBlock(card);
+    setBottomDrawerOpen(true);
+    setActiveRegion("bottom");
+    setBottomTab({ kind: "fixed", id: "properties" });
+  }
+
+  // ya4.2 — keyboard group-by switch. Cycles the resolved group-by
+  // property forward (dir=1) / backward (dir=-1) through the <select>'s
+  // options list (`groupByOptions`), persisting via `handleGroupByChange`.
+  // No-op when there are no groupable candidates (decision 3d honest empty
+  // state) — there is nothing to switch to.
+  function cycleGroupBy(direction: 1 | -1) {
+    if (groupByOptions.length === 0) return;
+    const currentIdx = groupByOptions.findIndex((p) => p.name === groupByPropName);
+    const nextIdx = (currentIdx + direction + groupByOptions.length) % groupByOptions.length;
+    const next = groupByOptions[nextIdx];
+    if (next) void handleGroupByChange(next.name);
+  }
+
+  // ya4.2 — mint a block id for a new card. `crypto.randomUUID` is
+  // available in every browser that ships the Loro/CodeMirror stack; the
+  // fallback is only for the SSR manifest path (which never reaches here).
+  function newBlockBid(): string {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
+  // ya4.2 — new card directly into the focused column. Creates a fresh
+  // block in today's daily note (auto-created) tagged with the board's
+  // inferred tag when the DSL is tag-scoped (so `executeQuery(dsl)` picks
+  // it up), then sets the focused column's group-by value on the new block
+  // via the block-granular `set-property` endpoint so it lands in that
+  // column. The "__unset__" column leaves the property unset. The query
+  // cache is invalidated so the card appears immediately.
+  async function createCardInFocusedColumn() {
+    if (!groupByPropName) return; // empty state — no column to target
+    const targetCol = columnNames[focusedColIndex];
+    try {
+      const daily = await api.getDailyNote();
+      const bid = newBlockBid();
+      const seedText = tagName ? `#${tagName}` : "";
+      await api.upsertBlocks(daily.id, [
+        { kind: "upsert", bid, text: seedText, parent_bid: null, indent_level: 0 },
+      ]);
+      if (targetCol !== "__unset__") {
+        await api.setBlockProperty(`${daily.id}:${bid}`, groupByPropName.toLowerCase(), targetCol);
+      }
+      queryClient.invalidateQueries({ queryKey: kanbanQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["note", daily.id] });
+    } catch (err) {
+      console.error("Failed to create kanban card:", err);
+    }
+  }
+
+  // ya4.2 — route a command-registry dispatch (palette ⌘K / leader chord)
+  // to the same handler the direct key uses. The `tesela:run-kanban-command`
+  // listener below calls this with `detail.id`; `kanban-commands.ts` is the
+  // source of truth for the id↔handler mapping.
+  function routeKanbanCommand(id: string): void {
+    switch (id) {
+      case "kanban.focus-down": focusDown(); break;
+      case "kanban.focus-up": focusUp(); break;
+      case "kanban.focus-left": focusLeft(); break;
+      case "kanban.focus-right": focusRight(); break;
+      case "kanban.focus-first": focusFirst(); break;
+      case "kanban.focus-last": focusLast(); break;
+      case "kanban.open-card": openFocusedCard(); break;
+      case "kanban.open-move-picker": openMovePicker(); break;
+      case "kanban.move-card-prev-col": moveCardPrevCol(); break;
+      case "kanban.move-card-next-col": moveCardNextCol(); break;
+      case "kanban.edit-properties": editCardProperties(); break;
+      case "kanban.cycle-group-by": cycleGroupBy(1); break;
+      case "kanban.cycle-group-by-back": cycleGroupBy(-1); break;
+      case "kanban.new-card": void createCardInFocusedColumn(); break;
+    }
+  }
+
   function handleKanbanKeydown(e: KeyboardEvent) {
     if (!focused) return;
     // Region gate: when focus has moved to the drawer (`bottom`) or rail,
@@ -387,92 +550,97 @@
       if (isEditing) return;
     }
 
-    const cols = columnNames;
-    const currentCards = groupedBlocks.get(cols[focusedColIndex]) ?? [];
-
     switch (e.key) {
       case "j":
         e.preventDefault();
-        focusedCardIndex = Math.min(Math.max(0, currentCards.length - 1), focusedCardIndex + 1);
-        syncFocusedCardToDrawer();
+        focusDown();
         break;
       case "k":
         e.preventDefault();
-        focusedCardIndex = Math.max(0, focusedCardIndex - 1);
-        syncFocusedCardToDrawer();
+        focusUp();
         break;
       case "h":
         e.preventDefault();
-        focusedColIndex = Math.max(0, focusedColIndex - 1);
-        clampCardIndex();
-        syncFocusedCardToDrawer();
+        focusLeft();
         break;
       case "l":
         e.preventDefault();
-        focusedColIndex = Math.min(cols.length - 1, focusedColIndex + 1);
-        clampCardIndex();
-        syncFocusedCardToDrawer();
+        focusRight();
         break;
       case "G":
         e.preventDefault();
-        focusedCardIndex = Math.max(0, currentCards.length - 1);
-        syncFocusedCardToDrawer();
+        focusLast();
         break;
       case "g":
         e.preventDefault();
-        focusedCardIndex = 0;
-        syncFocusedCardToDrawer();
+        focusFirst();
         break;
-      case "Enter": {
+      case "Enter":
         e.preventDefault();
-        const card = currentCards[focusedCardIndex];
-        if (card) goto(`/p/${encodeURIComponent(card.note_id)}`);
+        openFocusedCard();
         break;
-      }
-      case "m": {
+      case "m":
         e.preventDefault();
-        const block = currentCards[focusedCardIndex];
-        if (block) {
-          // Position picker next to the focused card
-          const el = document.querySelector("[data-kanban-focused='true']") as HTMLElement | null;
-          if (el) {
-            const rect = el.getBoundingClientRect();
-            movePickerPosition = { x: rect.right + 4, y: rect.top };
-          }
-          movePickerBlock = block;
-        }
+        openMovePicker();
         break;
-      }
-      case "H": {
+      case "H":
         // Shift+H: move focused card to previous column.
         e.preventDefault();
-        const card = currentCards[focusedCardIndex];
-        if (card && focusedColIndex > 0) void moveFocusedCardToColumn(card, focusedColIndex - 1);
+        moveCardPrevCol();
         break;
-      }
-      case "L": {
+      case "L":
         // Shift+L: move focused card to next column.
         e.preventDefault();
-        const card = currentCards[focusedCardIndex];
-        if (card && focusedColIndex < cols.length - 1) void moveFocusedCardToColumn(card, focusedColIndex + 1);
+        moveCardNextCol();
         break;
-      }
-      case "i": {
-        // Open BottomDrawer for the focused card so the user can edit its
-        // properties (deadline, priority, status, …) without leaving the
-        // board. The drawer is a singleton fed by `current-block.svelte`,
-        // so the same flow as BlockOutliner's `onfocusedblockchange`.
+      case "i":
         e.preventDefault();
-        const card = currentCards[focusedCardIndex];
-        if (!card) break;
-        setFocusedBlock(card);
-        setBottomDrawerOpen(true);
-        setActiveRegion("bottom");
-        setBottomTab({ kind: "fixed", id: "properties" });
+        editCardProperties();
         break;
-      }
+      case "s":
+        // ya4.2 — cycle the group-by property forward (Shift+s reverses).
+        e.preventDefault();
+        cycleGroupBy(1);
+        break;
+      case "S":
+        e.preventDefault();
+        cycleGroupBy(-1);
+        break;
+      case "c":
+        // ya4.2 — create a new card directly into the focused column.
+        e.preventDefault();
+        void createCardInFocusedColumn();
+        break;
     }
   }
+
+  // ya4.2 — publish board-focus to the command registry's `when`
+  // predicates. The kanban commands (`$lib/kanban/kanban-commands.ts`)
+  // are admitted to the palette/leader ONLY while a board owns focus,
+  // so they don't clutter those surfaces for every other route. Set on
+  // focus gain, clear on focus loss / unmount (the single focused board
+  // owns the flag at any time).
+  $effect(() => {
+    if (!focused) return;
+    setKanbanFocused(true);
+    return () => setKanbanFocused(false);
+  });
+
+  // ya4.2 — command-registry dispatch bridge. The palette (⌘K) and the
+  // leader chord menu invoke the kanban commands' `run`, which dispatches
+  // `tesela:run-kanban-command`; the focused board listens + routes to the
+  // same handler the direct key uses (mirrors `tesela:run-editor-command`
+  // in BlockEditor). Attached only while focused so two mounted boards
+  // never both fire.
+  $effect(() => {
+    if (!focused) return;
+    function onRun(e: Event) {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) routeKanbanCommand(id);
+    }
+    document.addEventListener("tesela:run-kanban-command", onRun);
+    return () => document.removeEventListener("tesela:run-kanban-command", onRun);
+  });
 
   // Scroll focused card (or column, when the column has no cards) into view
   $effect(() => {

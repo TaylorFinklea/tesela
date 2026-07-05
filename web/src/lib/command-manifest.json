@@ -1125,6 +1125,368 @@
     "arg_prompt": null
   },
   {
+    "id": "kanban.cycle-group-by",
+    "verb": null,
+    "label": "Kanban: cycle group-by forward",
+    "glyph": "⇋",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "s"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "group",
+      "switch",
+      "cycle",
+      "groupby"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.cycle-group-by-back",
+    "verb": null,
+    "label": "Kanban: cycle group-by backward",
+    "glyph": "⇌",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "S"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "group",
+      "switch",
+      "cycle",
+      "groupby",
+      "back"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.new-card",
+    "verb": null,
+    "label": "Kanban: new card in focused column",
+    "glyph": "✚",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "n"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "new",
+      "create",
+      "card",
+      "add"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-down",
+    "verb": null,
+    "label": "Kanban: focus card below",
+    "glyph": "↓",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "j"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "down",
+      "next"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-up",
+    "verb": null,
+    "label": "Kanban: focus card above",
+    "glyph": "↑",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "k"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "up",
+      "prev"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-left",
+    "verb": null,
+    "label": "Kanban: focus previous column",
+    "glyph": "←",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "h"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "left",
+      "prev",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-right",
+    "verb": null,
+    "label": "Kanban: focus next column",
+    "glyph": "→",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "l"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "right",
+      "next",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-first",
+    "verb": null,
+    "label": "Kanban: focus first card in column",
+    "glyph": "⇱",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "g"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "first",
+      "top"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.focus-last",
+    "verb": null,
+    "label": "Kanban: focus last card in column",
+    "glyph": "⇲",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "G"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "last",
+      "bottom"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.open-card",
+    "verb": null,
+    "label": "Kanban: open focused card",
+    "glyph": "↵",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "o"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "open",
+      "goto",
+      "jump",
+      "card"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.open-move-picker",
+    "verb": null,
+    "label": "Kanban: move focused card…",
+    "glyph": "⇄",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "m"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "picker",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.move-card-prev-col",
+    "verb": null,
+    "label": "Kanban: move focused card to previous column",
+    "glyph": "◀",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "H"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "card",
+      "prev",
+      "left",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.move-card-next-col",
+    "verb": null,
+    "label": "Kanban: move focused card to next column",
+    "glyph": "▶",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "L"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "card",
+      "next",
+      "right",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "kanban.edit-properties",
+    "verb": null,
+    "label": "Kanban: edit focused card properties",
+    "glyph": "⚙",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "i"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "edit",
+      "properties",
+      "drawer",
+      "inspect"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
     "id": "editor.collection",
     "verb": "collection",
     "label": "Collection",

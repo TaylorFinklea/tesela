@@ -12,6 +12,7 @@ import {
   type Command as RegistryCommand,
   type CommandContext,
 } from "$lib/command-registry.svelte";
+import { registerKanbanCommands } from "$lib/kanban/kanban-commands";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
 import { togglePeek } from "$lib/stores/peek.svelte";
@@ -757,4 +758,10 @@ export function buildV4Commands(): V4Command[] {
  */
 export function registerBuiltinCommands(): void {
   buildV4Commands();
+  // tesela-ya4.2 — the KanbanBoard's command set (palette + leader chord).
+  // Registered here (not as an import side effect) so the manifest
+  // generator + freshness check pick it up automatically via the SAME
+  // bootstrap call, and the root layout's single `registerBuiltinCommands()`
+  // covers it for the browser too. Idempotent.
+  registerKanbanCommands();
 }

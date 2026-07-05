@@ -56,6 +56,7 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
   v: "views…",
   a: "actions…",
   t: "toggle…",
+  k: "kanban…",
   ",": "config…",
 };
 
