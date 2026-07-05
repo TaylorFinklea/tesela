@@ -14,6 +14,7 @@ import {
   buildRegistry,
   buildInheritanceMap,
   getTagPropertyDefs,
+  parsePropertyPage,
 } from "../../src/lib/property-registry.ts";
 
 // Minimal Note builder matching the shape the registry reads
@@ -69,6 +70,20 @@ function resolve(tagName, notes) {
 function byName(defs, name) {
   return defs.find((d) => d.name.toLowerCase() === name.toLowerCase());
 }
+
+test("property value_type coerce-and-keep: unknown/missing degrade to text, known types survive", () => {
+  const unknown = parsePropertyPage(note("Mystery", "Property", { value_type: "not-a-real-type" }));
+  assert.ok(unknown, "Property page parsed (unknown value_type)");
+  assert.equal(unknown.value_type, "text");
+
+  const missing = parsePropertyPage(note("Missing", "Property", {}));
+  assert.ok(missing, "Property page parsed (no value_type key)");
+  assert.equal(missing.value_type, "text");
+
+  const known = parsePropertyPage(note("Due", "Property", { value_type: "date" }));
+  assert.ok(known, "Property page parsed (known value_type)");
+  assert.equal(known.value_type, "date");
+});
 
 test("Task Status == [todo, doing, done, blocked] + show on_new (REPLACE global)", () => {
   const defs = resolve("Task", [statusPage, priorityPage, rootTag, taskTag, projectTag]);

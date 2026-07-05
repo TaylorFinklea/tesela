@@ -41,6 +41,14 @@ export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   node: "Node",
 };
 
+const PROPERTY_TYPE_VALUES = new Set<PropertyType>(Object.keys(PROPERTY_TYPE_LABELS) as PropertyType[]);
+
+export function parsePropertyType(raw: unknown): PropertyType {
+  return typeof raw === "string" && PROPERTY_TYPE_VALUES.has(raw as PropertyType)
+    ? (raw as PropertyType)
+    : "text";
+}
+
 /**
  * Phase 10.6 — chip-display config. Lives on the Property page so every
  * surface that pins this property as a chip (per-tag `display_chips`) gets
@@ -141,7 +149,7 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
   }
   return {
     name: note.title,
-    value_type: (c.value_type as PropertyType) || "text",
+    value_type: parsePropertyType(c.value_type),
     choices: Array.isArray(c.choices) ? (c.choices as string[]) : [],
     default: typeof c.default === "string" ? c.default : null,
     // `show` is set to a concrete Visibility only on the per-type resolver
