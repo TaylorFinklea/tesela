@@ -175,6 +175,17 @@
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Honor the OS reduced-motion preference globally — the faded/slid/popover
+   animations above (and any other motion) are suppressed app-wide. This was
+   previously scoped to the legacy v4 token shim; now that the v4 layer is the
+   live behavior (tesela-cmdd.6), the suppression is promoted here unscoped. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* Block property lines flagged for hiding (via `hiddenPropertyKeysFacet` —
    either `hide_by_default: true` on the tag-property def, or `hide_empty: true`
    AND value is empty). Revealed by the chevron toggle which adds .show-props
