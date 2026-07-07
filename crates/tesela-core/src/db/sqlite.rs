@@ -306,58 +306,49 @@ impl SqliteIndex {
 
     /// Upsert a note into the index (insert or update).
     ///
-    /// Uses UPDATE + INSERT instead of INSERT OR REPLACE to preserve the SQLite rowid.
-    /// The content FTS5 table (`content=notes, content_rowid=rowid`) references notes by rowid;
-    /// INSERT OR REPLACE silently changes the rowid (delete + re-insert), causing
-    /// SQLITE_CORRUPT_VTAB (267) on the next search because the FTS5 index holds the old rowid.
+    /// Uses INSERT .. ON CONFLICT DO UPDATE (never INSERT OR REPLACE) to preserve
+    /// the SQLite rowid. The content FTS5 table (`content=notes, content_rowid=rowid`)
+    /// references notes by rowid; INSERT OR REPLACE silently changes the rowid
+    /// (delete + re-insert), causing SQLITE_CORRUPT_VTAB (267) on the next search
+    /// because the FTS5 index holds the old rowid. ON CONFLICT DO UPDATE mutates the
+    /// existing row in place (rowid kept, UPDATE triggers fired). It must also stay
+    /// ONE atomic statement: the create handler's reindex races the fs-watcher's
+    /// reindex of the same just-written file, and a two-statement UPDATE-then-INSERT
+    /// let the loser die with `UNIQUE constraint failed: notes.id`.
+    /// `created_at` is intentionally absent from the UPDATE arm — the original
+    /// insert's value is preserved.
     pub async fn upsert_note(&self, note: &Note) -> Result<()> {
         let tags_json = serde_json::to_string(&note.metadata.tags).map_err(TeselaError::Json)?;
 
-        // Try to UPDATE first — this preserves the rowid so FTS5 triggers stay consistent.
-        let updated = sqlx::query(
+        sqlx::query(
             r#"
-            UPDATE notes
-            SET title = ?, body = ?, content = ?, path = ?, checksum = ?,
-                modified_at = ?, tags = ?, note_type = ?
-            WHERE id = ?
+            INSERT INTO notes (
+                id, title, body, content, path, checksum, created_at, modified_at, tags, note_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                body = excluded.body,
+                content = excluded.content,
+                path = excluded.path,
+                checksum = excluded.checksum,
+                modified_at = excluded.modified_at,
+                tags = excluded.tags,
+                note_type = excluded.note_type
             "#,
         )
+        .bind(note.id.as_str())
         .bind(&note.title)
         .bind(&note.body)
         .bind(&note.content)
         .bind(note.path.to_str().unwrap_or(""))
         .bind(&note.checksum)
+        .bind(note.created_at.to_rfc3339())
         .bind(note.modified_at.to_rfc3339())
         .bind(&tags_json)
         .bind(note.metadata.note_type.as_deref())
-        .bind(note.id.as_str())
         .execute(&self.pool)
         .await
-        .map_err(|e| db_err("Failed to update note", e))?;
-
-        // If no row was modified, the note is new — INSERT it.
-        if updated.rows_affected() == 0 {
-            sqlx::query(
-                r#"
-                INSERT INTO notes (
-                    id, title, body, content, path, checksum, created_at, modified_at, tags, note_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                "#,
-            )
-            .bind(note.id.as_str())
-            .bind(&note.title)
-            .bind(&note.body)
-            .bind(&note.content)
-            .bind(note.path.to_str().unwrap_or(""))
-            .bind(&note.checksum)
-            .bind(note.created_at.to_rfc3339())
-            .bind(note.modified_at.to_rfc3339())
-            .bind(&tags_json)
-            .bind(note.metadata.note_type.as_deref())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| db_err("Failed to insert note", e))?;
-        }
+        .map_err(|e| db_err("Failed to upsert note", e))?;
 
         Ok(())
     }
@@ -2160,6 +2151,24 @@ mod tests {
         let results = index.search("Rust", 10, 0).await.unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].note_id.as_str(), "test-1");
+    }
+
+    /// Concurrent upserts of the SAME brand-new note id must both succeed.
+    ///
+    /// The HTTP create handler's reindex races the fs-watcher's reindex of the
+    /// file the handler just wrote. A two-statement UPDATE-then-INSERT upsert
+    /// lets both writers observe rows_affected == 0 and take the INSERT branch;
+    /// the loser dies with `UNIQUE constraint failed: notes.id` (the
+    /// intermittent POST /notes 500). The upsert must be one atomic statement.
+    #[tokio::test]
+    async fn concurrent_upsert_of_same_new_note_both_succeed() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        for i in 0..50 {
+            let note = make_test_note(&format!("race-{i}"), "Race", "body", &[]);
+            let (a, b) = tokio::join!(index.upsert_note(&note), index.upsert_note(&note));
+            a.unwrap();
+            b.unwrap();
+        }
     }
 
     #[tokio::test]
