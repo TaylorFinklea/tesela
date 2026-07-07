@@ -204,6 +204,8 @@ struct GrInboxView: View {
             emptyState
         } else if activeView?.displayMode == "kanban" {
             kanbanContent
+        } else if activeView?.displayMode == "table" {
+            tableContent
         } else {
             List {
                 if let mode = activeView?.displayMode, mode != "list" {
@@ -269,10 +271,12 @@ struct GrInboxView: View {
         }
     }
 
-    /// Honest note when the active view stores a table display preference
-    /// (tesela-ya4.6 — iOS table mode isn't built yet): iOS renders a list;
-    /// the columnar layout applies on web. Kanban has its own native render
-    /// path (`kanbanContent` below) and never reaches this branch.
+    /// Honest note for a display mode with no native iOS render path.
+    /// Kanban (`kanbanContent`) and table (`tableContent`) each have their
+    /// own native surface and never reach this branch — it's a defensive
+    /// fallback for any future/unrecognized `display_mode` value, so an
+    /// unexpected mode still renders SOMETHING honest rather than silently
+    /// looking like plain "list".
     private func displayModeNote(_ mode: String) -> some View {
         Text("\(mode) view — shown as a list on iOS; full layout on web")
             .font(.system(size: 10.5, design: .monospaced))
@@ -363,6 +367,72 @@ struct GrInboxView: View {
             await runActiveQuery()
         } catch {
             // Silent — the sheet already dismissed; the next refresh reconciles.
+        }
+    }
+
+    // ── Table (tesela-ya4.6) ─────────────────────────────────────────────
+
+    /// Resolved columns before the stored config's hide/reorder is applied
+    /// — `kanbanTagName` (the DSL's first positive `tag:X`) drives the same
+    /// tag-scoped-vs-data-derived resolution `TableLogic.resolveColumns`
+    /// mirrors from web `resolveTableColumns`.
+    private var tableResolvedColumns: [PropertyDef] {
+        TableLogic.resolveColumns(tagName: kanbanTagName, items: rows, registry: mosaic.propertyRegistry)
+    }
+
+    /// Final visible/ordered columns — hidden columns dropped, `order`
+    /// override applied (`TableLogic.applyConfig`, mirror of web
+    /// `applyTableConfig`). Honors the saved view's stored
+    /// `displayTableConfig` when present; a nil config renders every
+    /// resolved column in its natural order.
+    private var tableColumns: [PropertyDef] {
+        TableLogic.applyConfig(tableResolvedColumns, config: activeView?.displayTableConfig)
+    }
+
+    /// The stored sort (`displayTableConfig.sortBy`/`sortDir`), seeded as
+    /// `GrTableView`'s INITIAL local sort — only when it names a column
+    /// that actually resolves, mirroring the web table's "a sort pinned to
+    /// a since-hidden/removed column has no effect" posture (looked up
+    /// against `tableResolvedColumns`, not the filtered `tableColumns`).
+    private var tableStoredSort: (column: String, direction: TableSortDirection)? {
+        guard let config = activeView?.displayTableConfig,
+              let sortBy = config.sortBy, !sortBy.isEmpty,
+              let dirRaw = config.sortDir, let dir = TableSortDirection(rawValue: dirRaw),
+              tableResolvedColumns.contains(where: { $0.name == sortBy }) else {
+            return nil
+        }
+        return (sortBy, dir)
+    }
+
+    @ViewBuilder
+    private var tableContent: some View {
+        if tableColumns.isEmpty {
+            // Mirror kanban's decision-3(d) honesty — never silently render
+            // a table with zero columns; say why instead.
+            VStack {
+                Spacer()
+                Text(
+                    "No columns resolved for this view. Add properties to the "
+                    + "scoped type, or make sure the query's blocks carry some."
+                )
+                .font(.system(size: 12.5))
+                .foregroundStyle(theme.fgMuted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.bg)
+        } else {
+            GrTableView(
+                items: rows,
+                columns: tableColumns,
+                storedSort: tableStoredSort,
+                onOpen: { item in
+                    guard !item.page_id.isEmpty else { return }
+                    navigationPath.append(GrPageRoute(slug: item.page_id))
+                }
+            )
         }
     }
 
