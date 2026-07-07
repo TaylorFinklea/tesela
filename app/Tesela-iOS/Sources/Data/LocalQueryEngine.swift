@@ -427,25 +427,44 @@ enum LocalQueryEngine {
         return false
     }
 
+    /// One authoring-UI hint about a span the parser silently dropped or
+    /// left dangling during its re-sync (tesela-vp9.4). `got` is the raw
+    /// UTF-8 source slice at `[start, end)` — byte offsets, the same space
+    /// `SpannedDslToken` spans live in; `hint` is a short human-readable
+    /// explanation. Mirror of web's `Diagnostic`
+    /// (`web/src/lib/query-language.ts`, tesela-vp9.1).
+    struct QueryDiagnostic: Equatable {
+        let start: Int
+        let end: Int
+        let got: String
+        let hint: String
+    }
+
     /// Mirror of `tokenize` (query.rs): punctuation + quoted strings +
     /// hyphen-keeping words, each token carrying its byte span in the
     /// source so the parser can detect adjacency (tight commas, value
     /// slurping across `:` / `-` runs).
-    private enum DslToken: Equatable {
+    ///
+    /// Internal (tesela-vp9.4) so authoring UI — highlighting overlays,
+    /// completion popups — can tokenize the SAME way the parser does, with
+    /// zero drift between "what lights up" and "what parses". No second
+    /// lexer: this is the identical function `parseSimpleDsl` calls
+    /// internally.
+    enum DslToken: Equatable {
         case word(String)
         case quoted(String)
         case lparen, rparen, comma, colon, minus
         case op(SimpleDsl.Op)
     }
 
-    private struct SpannedDslToken {
+    struct SpannedDslToken {
         let tok: DslToken
         /// UTF-8 byte offsets into the source; `end` exclusive.
         let start: Int
         let end: Int
     }
 
-    private static func tokenizeDsl(_ input: String) -> (tokens: [SpannedDslToken], bytes: [UInt8]) {
+    static func tokenizeDsl(_ input: String) -> (tokens: [SpannedDslToken], bytes: [UInt8]) {
         let bytes = Array(input.utf8)
         var tokens: [SpannedDslToken] = []
         var i = 0
@@ -518,8 +537,25 @@ enum LocalQueryEngine {
         let bytes: [UInt8]
         var pos = 0
         var kind: SimpleDsl.Kind = .block
+        /// tesela-vp9.4 authoring-only diagnostics sink. `nil` for the
+        /// plain `parseSimpleDsl` path — every `recordDrop` call below is
+        /// then a no-op `?.append`, so parsing behavior is provably
+        /// unchanged. Non-nil only under `parseSimpleDslWithDiagnostics`.
+        var diagnostics: [QueryDiagnostic]? = nil
 
         var peek: DslToken? { pos < tokens.count ? tokens[pos].tok : nil }
+
+        /// Raw UTF-8 source slice at `[start, end)` — byte offsets into
+        /// `bytes`, matching a `SpannedDslToken`'s span.
+        func rawSlice(_ start: Int, _ end: Int) -> String {
+            String(decoding: bytes[start..<end], as: UTF8.self)
+        }
+
+        /// Record one dropped/dangling span. No-op when `diagnostics` is
+        /// nil (the plain `parseSimpleDsl` path).
+        mutating func recordDrop(_ start: Int, _ end: Int, _ got: String, _ hint: String) {
+            diagnostics?.append(QueryDiagnostic(start: start, end: end, got: got, hint: hint))
+        }
 
         func peekKeyword(_ kw: String) -> Bool {
             if case .word(let w)? = peek { return w.lowercased() == kw }
@@ -561,10 +597,13 @@ enum LocalQueryEngine {
             guard var left = parseAnd() else { return nil }
             var alts: [SimpleDsl.BoolExpr] = []
             while peekKeyword("or") {
+                let orSpanned = tokens[pos]
                 pos += 1
                 if let rhs = parseAnd() {
                     if alts.isEmpty { alts.append(left) }
                     alts.append(rhs)
+                } else {
+                    recordDrop(orSpanned.start, orSpanned.end, "OR", "'OR' has no right-hand predicate")
                 }
             }
             if !alts.isEmpty { left = .or(alts) }
@@ -578,12 +617,19 @@ enum LocalQueryEngine {
             guard var left = parseUnary() else { return nil }
             var args: [SimpleDsl.BoolExpr] = []
             while true {
+                var andSpanned: SpannedDslToken? = nil
                 if peekKeyword("and") {
+                    andSpanned = tokens[pos]
                     pos += 1
                 } else if !peekStartsUnary {
                     break
                 }
-                guard let rhs = parseUnary() else { break }
+                guard let rhs = parseUnary() else {
+                    if let andSpanned = andSpanned {
+                        recordDrop(andSpanned.start, andSpanned.end, "AND", "'AND' has no right-hand predicate")
+                    }
+                    break
+                }
                 if args.isEmpty { args.append(left) }
                 args.append(rhs)
             }
@@ -602,19 +648,33 @@ enum LocalQueryEngine {
                 // dropped barewords and the sort never populated.
                 if peekOrderBy { return nil }
                 if peekKeyword("not") {
+                    let notSpanned = tokens[pos]
                     pos += 1
-                    guard let inner = parseUnary() else { return nil }
+                    guard let inner = parseUnary() else {
+                        recordDrop(notSpanned.start, notSpanned.end, "NOT", "'NOT' has no operand")
+                        return nil
+                    }
                     return .not(inner)
                 }
                 if peek == .minus {
+                    let minusSpanned = tokens[pos]
                     pos += 1
-                    guard let inner = parseUnary() else { return nil }
+                    guard let inner = parseUnary() else {
+                        recordDrop(minusSpanned.start, minusSpanned.end, "-", "'-' has no operand")
+                        return nil
+                    }
                     return .not(inner)
                 }
                 if peek == .lparen {
+                    let lparenSpanned = tokens[pos]
                     pos += 1
                     let inner = parseOr() ?? .and([])
-                    if peek == .rparen { pos += 1 }
+                    if peek == .rparen {
+                        pos += 1
+                    } else {
+                        let end = pos < tokens.count ? tokens[pos].start : bytes.count
+                        recordDrop(lparenSpanned.start, end, rawSlice(lparenSpanned.start, end), "unclosed '('")
+                    }
                     return inner
                 }
                 let startPos = pos
@@ -637,9 +697,18 @@ enum LocalQueryEngine {
         /// returns a bare `BoolExpr`.
         mutating func parsePredicate() -> SimpleDsl.BoolExpr? {
             guard pos < tokens.count else { return nil }
-            let keyTok = tokens[pos].tok
+            let keySpanned = tokens[pos]
+            let keyTok = keySpanned.tok
             pos += 1
-            guard case .word(let rawKey) = keyTok else { return nil }
+            guard case .word(let rawKey) = keyTok else {
+                recordDrop(
+                    keySpanned.start,
+                    keySpanned.end,
+                    rawSlice(keySpanned.start, keySpanned.end),
+                    "expected a predicate key here"
+                )
+                return nil
+            }
             let key = rawKey.lowercased()
 
             // `kind:` is meta — consume the value, set kind, no clause.
@@ -673,18 +742,26 @@ enum LocalQueryEngine {
                     return atom(.inList(key: key, values: parseParenValueList(), negated: true))
                 }
                 if peekKeyword("like") {
+                    let likeSpanned = tokens[pos]
                     pos += 1
-                    let value = parseValue() ?? ""
-                    return atom(.cmp(key: key, op: .notLike, value: value))
+                    let raw = parseValue()
+                    if raw == nil {
+                        recordDrop(likeSpanned.start, likeSpanned.end, "LIKE", "'LIKE' has no operand")
+                    }
+                    return atom(.cmp(key: key, op: .notLike, value: raw ?? ""))
                 }
                 pos = save
             }
 
             // `key LIKE "pattern"` — SQL-style wildcard match.
             if peekKeyword("like") {
+                let likeSpanned = tokens[pos]
                 pos += 1
-                let value = parseValue() ?? ""
-                return atom(.cmp(key: key, op: .like, value: value))
+                let raw = parseValue()
+                if raw == nil {
+                    recordDrop(likeSpanned.start, likeSpanned.end, "LIKE", "'LIKE' has no operand")
+                }
+                return atom(.cmp(key: key, op: .like, value: raw ?? ""))
             }
 
             // `key IS [NOT] NULL|EMPTY` — sugar for `-has:key` / `has:key`.
@@ -724,13 +801,19 @@ enum LocalQueryEngine {
             // Infix `key = v` / `key >= v` / … — no empty-value drop and
             // no comma sugar on this path (mirrors Rust).
             if case .op(let infixOp)? = peek {
+                let infixSpanned = tokens[pos]
                 pos += 1
-                let value = parseValue() ?? ""
-                return atom(.cmp(key: key, op: infixOp, value: value))
+                let raw = parseValue()
+                if raw == nil {
+                    let opText = rawSlice(infixSpanned.start, infixSpanned.end)
+                    recordDrop(infixSpanned.start, infixSpanned.end, opText, "'\(opText)' has no operand")
+                }
+                return atom(.cmp(key: key, op: infixOp, value: raw ?? ""))
             }
 
             // Legacy colon syntax: `key:value`, `key:>=N`, `key:v1,v2`.
             if peek == .colon {
+                let colonSpanned = tokens[pos]
                 pos += 1
                 var op = SimpleDsl.Op.eq
                 // `consume_legacy_colon_op` accepts !=, <=, >=, <, > —
@@ -742,7 +825,15 @@ enum LocalQueryEngine {
                 let value = parseValue() ?? ""
                 // Empty value drops the clause (degrade toward
                 // match-all); `has:` is the one legitimate no-value key.
-                if key != "has" && value.isEmpty { return nil }
+                if key != "has" && value.isEmpty {
+                    recordDrop(
+                        keySpanned.start,
+                        colonSpanned.end,
+                        rawSlice(keySpanned.start, colonSpanned.end),
+                        "'\(key):' has no value"
+                    )
+                    return nil
+                }
                 // Tight-comma multi-value sugar — Eq only.
                 if op == .eq && !value.isEmpty {
                     var values = [value]
@@ -762,6 +853,12 @@ enum LocalQueryEngine {
             }
 
             // Bareword with no operator — dropped silently, same as Rust.
+            recordDrop(
+                keySpanned.start,
+                keySpanned.end,
+                rawSlice(keySpanned.start, keySpanned.end),
+                "unknown word '\(key)' — expected an operator after it"
+            )
             return nil
         }
 
@@ -884,20 +981,83 @@ enum LocalQueryEngine {
         }
     }
 
-    /// Parse a DSL string into the `BoolExpr` tree the local matcher
-    /// evaluates. Gated by the shared conformance fixture — every
-    /// supported shape must match Rust's `parse_query` + `block_matches`
-    /// exactly.
-    static func parseSimpleDsl(_ dsl: String) -> SimpleDsl {
+    /// A `.quoted` token is well-formed only if its span accounts for both
+    /// the opening AND closing `"` (`end - start == v.utf8.count + 2`);
+    /// when the tokenizer ran off the end of input looking for the closer,
+    /// the span is one byte short. Pure token-local arithmetic — no
+    /// re-scan of `bytes` needed. Mirror of web's `recordUnclosedQuotes`
+    /// (tesela-vp9.1).
+    private static func recordUnclosedQuotes(
+        tokens: [SpannedDslToken],
+        bytes: [UInt8],
+        diagnostics: inout [QueryDiagnostic]
+    ) {
+        for sp in tokens {
+            guard case .quoted(let v) = sp.tok else { continue }
+            let closed = sp.end - sp.start == v.utf8.count + 2
+            if !closed {
+                diagnostics.append(QueryDiagnostic(
+                    start: sp.start,
+                    end: sp.end,
+                    got: String(decoding: bytes[sp.start..<sp.end], as: UTF8.self),
+                    hint: "unclosed quoted string"
+                ))
+            }
+        }
+    }
+
+    /// Shared parse path for `parseSimpleDsl` / `parseSimpleDslWithDiagnostics`
+    /// (tesela-vp9.4) — mirror of web's `parseQueryInternal`.
+    /// `collectDiagnostics` gates whether the diagnostics sink threaded
+    /// through `DslParser` is non-nil; every `recordDrop` call becomes a
+    /// no-op `?.append` when it's nil, so `parseSimpleDsl`'s behavior is
+    /// provably unchanged by this refactor.
+    private static func parseSimpleDslInternal(
+        _ dsl: String,
+        collectDiagnostics: Bool
+    ) -> (parsed: SimpleDsl, diagnostics: [QueryDiagnostic]?) {
         let (tokens, bytes) = tokenizeDsl(dsl)
-        var parser = DslParser(tokens: tokens, bytes: bytes)
+        var diagnostics: [QueryDiagnostic]? = nil
+        if collectDiagnostics {
+            var quoteDiagnostics: [QueryDiagnostic] = []
+            recordUnclosedQuotes(tokens: tokens, bytes: bytes, diagnostics: &quoteDiagnostics)
+            diagnostics = quoteDiagnostics
+        }
+        var parser = DslParser(tokens: tokens, bytes: bytes, diagnostics: diagnostics)
         // Empty / all-dropped input → the identity `.and([])` (match-all),
         // mirroring Rust `parse_or().unwrap_or_default()`.
         let expr = parser.parseOr() ?? .and([])
         // Same top-level sequencing as Rust `parse_query`: the sort is
         // parsed at wherever expression parsing stopped.
         let sort = parser.parseOrderBy()
-        return SimpleDsl(kind: parser.kind, expr: expr, sort: sort)
+        if parser.diagnostics != nil, parser.pos < parser.tokens.count {
+            let start = parser.tokens[parser.pos].start
+            let end = parser.tokens[parser.tokens.count - 1].end
+            parser.recordDrop(start, end, parser.rawSlice(start, end), "unexpected trailing input")
+        }
+        return (SimpleDsl(kind: parser.kind, expr: expr, sort: sort), parser.diagnostics)
+    }
+
+    /// Parse a DSL string into the `BoolExpr` tree the local matcher
+    /// evaluates. Gated by the shared conformance fixture — every
+    /// supported shape must match Rust's `parse_query` + `block_matches`
+    /// exactly.
+    static func parseSimpleDsl(_ dsl: String) -> SimpleDsl {
+        parseSimpleDslInternal(dsl, collectDiagnostics: false).parsed
+    }
+
+    /// Authoring-only sibling of `parseSimpleDsl` (tesela-vp9.4). Returns
+    /// the SAME `SimpleDsl` `parseSimpleDsl` would (proven by the
+    /// invariant test in `QueryDiagnosticsTests.swift`, on top of the
+    /// shared 182-case conformance fixture pinning `parseSimpleDsl` itself)
+    /// plus a list of spans the parser silently dropped or left dangling
+    /// while re-syncing. Diagnostics are additive UI metadata only — never
+    /// authoritative, and the conformance fixture is NOT extended for them
+    /// (decision 3 in `.docs/ai/phases/2026-07-07-jql-authoring-spec.md`).
+    /// Mirror of web's `parseQueryWithDiagnostics` (tesela-vp9.1).
+    static func parseSimpleDslWithDiagnostics(_ dsl: String) -> (parsed: SimpleDsl, diagnostics: [QueryDiagnostic]) {
+        let result = parseSimpleDslInternal(dsl, collectDiagnostics: true)
+        return (result.parsed, result.diagnostics ?? [])
     }
 
     /// Per-block evaluation context: the parsed block enriched with the
