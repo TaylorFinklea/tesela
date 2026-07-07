@@ -59,7 +59,13 @@ export const INBOX_VIEW_DSL = "status:backlog,todo -has:scheduled -has:deadline"
 // Tokenizer (mirrors query.rs `tokenize`)
 // ────────────────────────────────────────────────────────────────────
 
-type Token =
+/**
+ * Exported (tesela-vp9.1) so authoring UI — highlighting overlays,
+ * completion popups — can tokenize the SAME way the parser does, with
+ * zero drift between "what lights up" and "what parses". No second
+ * lexer: this is the identical function `parseQuery` calls internally.
+ */
+export type Token =
   | { t: "word"; v: string }
   | { t: "quoted"; v: string }
   | { t: "lparen" }
@@ -80,13 +86,13 @@ type Token =
  * digits / dashes that belong to a single value (`block:python:5`) and
  * to detect TIGHT commas for the `key:v1,v2` multi-value sugar.
  */
-type Spanned = { tok: Token; start: number; end: number };
+export type Spanned = { tok: Token; start: number; end: number };
 
 function isWordChar(c: string): boolean {
   return /[A-Za-z0-9_-]/.test(c);
 }
 
-function tokenize(input: string): Spanned[] {
+export function tokenize(input: string): Spanned[] {
   const tokens: Spanned[] = [];
   const n = input.length;
   let i = 0;
