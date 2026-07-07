@@ -38,7 +38,7 @@ export type Command = {
   verb?: string;
   label: string;
   glyph: string;
-  category: 'pane' | 'tab' | 'tile' | 'create' | 'navigate' | 'derived' | 'ambient' | 'editor' | 'kanban';
+  category: 'pane' | 'tab' | 'tile' | 'create' | 'navigate' | 'derived' | 'ambient' | 'editor' | 'kanban' | 'table';
   shortcut?: string;
   /** Chord path, e.g. ['g','d'] for "g d" in the leader menu. */
   chord?: string[];
