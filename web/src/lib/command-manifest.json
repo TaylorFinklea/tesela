@@ -1487,6 +1487,328 @@
     "arg_prompt": null
   },
   {
+    "id": "table.focus-down",
+    "verb": null,
+    "label": "Table: focus row below",
+    "glyph": "↓",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "j"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "down",
+      "next",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-up",
+    "verb": null,
+    "label": "Table: focus row above",
+    "glyph": "↑",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "k"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "up",
+      "prev",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-first-row",
+    "verb": null,
+    "label": "Table: focus first row",
+    "glyph": "⇱",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "g"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "first",
+      "top",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-last-row",
+    "verb": null,
+    "label": "Table: focus last row",
+    "glyph": "⇲",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "G"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "last",
+      "bottom",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-left",
+    "verb": null,
+    "label": "Table: focus previous column",
+    "glyph": "←",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "h"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "left",
+      "prev",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-right",
+    "verb": null,
+    "label": "Table: focus next column",
+    "glyph": "→",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "l"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "right",
+      "next",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-first-col",
+    "verb": null,
+    "label": "Table: focus first column",
+    "glyph": "⇤",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "0"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "first",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.focus-last-col",
+    "verb": null,
+    "label": "Table: focus last column",
+    "glyph": "⇥",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "$"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "last",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.open-row",
+    "verb": null,
+    "label": "Table: open focused row",
+    "glyph": "↵",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "o"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "open",
+      "goto",
+      "jump",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.edit-cell",
+    "verb": null,
+    "label": "Table: edit focused cell",
+    "glyph": "✎",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "e"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "edit",
+      "cell",
+      "property",
+      "value"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.edit-properties",
+    "verb": null,
+    "label": "Table: edit focused row properties",
+    "glyph": "⚙",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "i"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "edit",
+      "properties",
+      "drawer",
+      "inspect"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.sort-column",
+    "verb": null,
+    "label": "Table: sort by focused column",
+    "glyph": "⇅",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "s"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "sort",
+      "column",
+      "toggle",
+      "order"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
     "id": "editor.collection",
     "verb": "collection",
     "label": "Collection",

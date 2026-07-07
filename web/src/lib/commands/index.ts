@@ -10,6 +10,7 @@ import {
   type CommandContext,
 } from "$lib/command-registry.svelte";
 import { registerKanbanCommands } from "$lib/kanban/kanban-commands";
+import { registerTableCommands } from "$lib/table/table-commands";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
 import { togglePeek } from "$lib/stores/peek.svelte";
@@ -761,4 +762,7 @@ export function registerBuiltinCommands(): void {
   // bootstrap call, and the root layout's single `registerBuiltinCommands()`
   // covers it for the browser too. Idempotent.
   registerKanbanCommands();
+  // tesela-ya4.3 — QueryTable's command set (palette + leader chord). Same
+  // rationale as registerKanbanCommands() above.
+  registerTableCommands();
 }

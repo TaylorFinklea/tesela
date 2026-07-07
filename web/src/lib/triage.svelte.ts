@@ -9,8 +9,8 @@
  * Implementation (P1.13 structured-first): a triage action is a single
  * CONTAINER property write — `api.setBlockProperty(blockId, key, value)`
  * (`POST /blocks/set-property`), the same endpoint the outliner's
- * `setBlockPropertyStructured` and QueryWidgetView's status cycle use. The
- * server resolves the row's block address (`<note_id>:<line>` or
+ * `setBlockPropertyStructured` uses. The server resolves the row's block
+ * address (`<note_id>:<line>` or
  * `<note_id>:<bid>`), writes the typed container, and materializes exactly one
  * `key:: value` line. The previous GET → text-splice → whole-note PUT here
  * violated BOTH editing invariants: the base-less PUT re-asserted any block a

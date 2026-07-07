@@ -14,6 +14,7 @@
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { setBottomDrawerOpen, setActiveRegion, setBottomTab, getActiveRegion } from "$lib/stores/pane-state.svelte";
   import { setKanbanFocused } from "$lib/kanban/kanban-focus.svelte";
+  import { queryItemToParsedBlock } from "$lib/query-item-adapt";
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
@@ -75,29 +76,6 @@
     queryFn: () => api.executeQuery(dsl, null, null),
     enabled: dsl.trim().length > 0,
   }));
-
-  /** Adapt one flat `executeQuery` row into the `ParsedBlock` shape the
-   *  board/card/move machinery already speaks. `QueryItem` has no `bid` —
-   *  writes fall back to the line-addressed `block_id`, same as
-   *  QueryWidgetView's list/table rows already do (they never had a bid
-   *  either). Callers filter out page-kind rows (`block_id === null`)
-   *  before mapping — kanban only shows blocks. */
-  function queryItemToParsedBlock(item: QueryItem): ParsedBlock {
-    return {
-      id: item.block_id as string,
-      bid: null,
-      text: item.text,
-      raw_text: item.text,
-      tags: item.primary_tag ? [item.primary_tag] : [],
-      inline_tags: [],
-      trailing_tags: [],
-      inherited_tags: [],
-      properties: item.properties,
-      indent_level: 0,
-      note_id: item.page_id,
-      parent_note_type: item.page_note_type,
-    };
-  }
 
   // Phase 11 — property registry powers card chip rendering. Reuses the
   // same buildRegistry that BlockOutliner uses inline so cards inherit any
