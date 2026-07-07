@@ -3372,6 +3372,72 @@ public func FfiConverterTypeSnapshotDepositReportRecord_lower(_ value: SnapshotD
 
 
 /**
+ * tesela-ya4.4 — Swift-friendly mirror of `tesela_sync::TableColumnConfig`.
+ * See that type's doc comment for field semantics.
+ */
+public struct TableColumnConfig: Equatable, Hashable {
+    public var hidden: [String]
+    public var order: [String]
+    public var sortBy: String?
+    public var sortDir: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(hidden: [String], order: [String], sortBy: String?, sortDir: String?) {
+        self.hidden = hidden
+        self.order = order
+        self.sortBy = sortBy
+        self.sortDir = sortDir
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TableColumnConfig: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTableColumnConfig: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TableColumnConfig {
+        return
+            try TableColumnConfig(
+                hidden: FfiConverterSequenceString.read(from: &buf), 
+                order: FfiConverterSequenceString.read(from: &buf), 
+                sortBy: FfiConverterOptionString.read(from: &buf), 
+                sortDir: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TableColumnConfig, into buf: inout [UInt8]) {
+        FfiConverterSequenceString.write(value.hidden, into: &buf)
+        FfiConverterSequenceString.write(value.order, into: &buf)
+        FfiConverterOptionString.write(value.sortBy, into: &buf)
+        FfiConverterOptionString.write(value.sortDir, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTableColumnConfig_lift(_ buf: RustBuffer) throws -> TableColumnConfig {
+    return try FfiConverterTypeTableColumnConfig.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTableColumnConfig_lower(_ value: TableColumnConfig) -> RustBuffer {
+    return FfiConverterTypeTableColumnConfig.lower(value)
+}
+
+
+/**
  * Outcome of [`SyncCoordinator::tick_inbound`]. Designed to be small
  * enough to render in a one-line status string.
  */
@@ -3686,6 +3752,12 @@ public struct ViewRecord: Equatable, Hashable {
      * Optional "include done items" toggle.
      */
     public var displayShowDone: Bool?
+    /**
+     * tesela-ya4.4 — table column display config (hide / reorder / sort).
+     * iOS STORES this (round-trips it through upsert/list) but does not
+     * render it — the native table view is a later bead (ya4.6).
+     */
+    public var displayTableConfig: TableColumnConfig?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3715,7 +3787,12 @@ public struct ViewRecord: Equatable, Hashable {
          */displayGroupBy: String?, 
         /**
          * Optional "include done items" toggle.
-         */displayShowDone: Bool?) {
+         */displayShowDone: Bool?, 
+        /**
+         * tesela-ya4.4 — table column display config (hide / reorder / sort).
+         * iOS STORES this (round-trips it through upsert/list) but does not
+         * render it — the native table view is a later bead (ya4.6).
+         */displayTableConfig: TableColumnConfig?) {
         self.id = id
         self.name = name
         self.dsl = dsl
@@ -3724,6 +3801,7 @@ public struct ViewRecord: Equatable, Hashable {
         self.displayMode = displayMode
         self.displayGroupBy = displayGroupBy
         self.displayShowDone = displayShowDone
+        self.displayTableConfig = displayTableConfig
     }
 
     
@@ -3749,7 +3827,8 @@ public struct FfiConverterTypeViewRecord: FfiConverterRustBuffer {
                 builtin: FfiConverterBool.read(from: &buf), 
                 displayMode: FfiConverterString.read(from: &buf), 
                 displayGroupBy: FfiConverterOptionString.read(from: &buf), 
-                displayShowDone: FfiConverterOptionBool.read(from: &buf)
+                displayShowDone: FfiConverterOptionBool.read(from: &buf), 
+                displayTableConfig: FfiConverterOptionTypeTableColumnConfig.read(from: &buf)
         )
     }
 
@@ -3762,6 +3841,7 @@ public struct FfiConverterTypeViewRecord: FfiConverterRustBuffer {
         FfiConverterString.write(value.displayMode, into: &buf)
         FfiConverterOptionString.write(value.displayGroupBy, into: &buf)
         FfiConverterOptionBool.write(value.displayShowDone, into: &buf)
+        FfiConverterOptionTypeTableColumnConfig.write(value.displayTableConfig, into: &buf)
     }
 }
 
@@ -3997,6 +4077,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterData.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTableColumnConfig: FfiConverterRustBuffer {
+    typealias SwiftType = TableColumnConfig?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTableColumnConfig.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTableColumnConfig.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

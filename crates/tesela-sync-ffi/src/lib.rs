@@ -23,7 +23,7 @@ use tesela_sync::{
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
     engine::SyncEngine, oplog::op::OpPayload, transport::relay::RelayClient, DeviceId, GroupId,
     GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, PropOp, PropScalar,
-    SyncEnvelope, ViewRecord as InnerViewRecord,
+    SyncEnvelope, TableColumnConfig as InnerTableColumnConfig, ViewRecord as InnerViewRecord,
 };
 use tokio::sync::Mutex;
 
@@ -206,6 +206,42 @@ pub struct ViewRecord {
     pub display_group_by: Option<String>,
     /// Optional "include done items" toggle.
     pub display_show_done: Option<bool>,
+    /// tesela-ya4.4 — table column display config (hide / reorder / sort).
+    /// iOS STORES this (round-trips it through upsert/list) but does not
+    /// render it — the native table view is a later bead (ya4.6).
+    pub display_table_config: Option<TableColumnConfig>,
+}
+
+/// tesela-ya4.4 — Swift-friendly mirror of `tesela_sync::TableColumnConfig`.
+/// See that type's doc comment for field semantics.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TableColumnConfig {
+    pub hidden: Vec<String>,
+    pub order: Vec<String>,
+    pub sort_by: Option<String>,
+    pub sort_dir: Option<String>,
+}
+
+impl From<InnerTableColumnConfig> for TableColumnConfig {
+    fn from(c: InnerTableColumnConfig) -> Self {
+        Self {
+            hidden: c.hidden,
+            order: c.order,
+            sort_by: c.sort_by,
+            sort_dir: c.sort_dir,
+        }
+    }
+}
+
+impl From<TableColumnConfig> for InnerTableColumnConfig {
+    fn from(c: TableColumnConfig) -> Self {
+        Self {
+            hidden: c.hidden,
+            order: c.order,
+            sort_by: c.sort_by,
+            sort_dir: c.sort_dir,
+        }
+    }
 }
 
 impl From<InnerViewRecord> for ViewRecord {
@@ -219,6 +255,7 @@ impl From<InnerViewRecord> for ViewRecord {
             display_mode: v.display_mode,
             display_group_by: v.display_group_by,
             display_show_done: v.display_show_done,
+            display_table_config: v.display_table_config.map(TableColumnConfig::from),
         }
     }
 }
@@ -234,6 +271,7 @@ impl From<ViewRecord> for InnerViewRecord {
             display_mode: v.display_mode,
             display_group_by: v.display_group_by,
             display_show_done: v.display_show_done,
+            display_table_config: v.display_table_config.map(Into::into),
         }
     }
 }
@@ -3629,6 +3667,7 @@ mod tests {
             display_mode: "kanban".into(),
             display_group_by: Some("status".into()),
             display_show_done: Some(false),
+            display_table_config: None,
         })
         .await
         .unwrap();
@@ -3672,6 +3711,7 @@ mod tests {
             display_mode: "list".into(),
             display_group_by: None,
             display_show_done: None,
+            display_table_config: None,
         })
         .await
         .unwrap();
@@ -3695,6 +3735,39 @@ mod tests {
             a.views_list().await,
             "registries converge through the FFI delta path"
         );
+    }
+
+    /// tesela-ya4.4 — `display_table_config` round-trips through the FFI
+    /// `ViewRecord`/`TableColumnConfig` mirrors (Swift stores this field but
+    /// never renders it — the round-trip is the whole contract).
+    #[tokio::test]
+    async fn views_upsert_round_trips_table_config_through_ffi() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+
+        let cfg = TableColumnConfig {
+            hidden: vec!["notes".into()],
+            order: vec!["priority".into(), "status".into()],
+            sort_by: Some("priority".into()),
+            sort_dir: Some("desc".into()),
+        };
+        h.views_upsert(ViewRecord {
+            id: "v-table".into(),
+            name: "Tasks".into(),
+            dsl: "tag:task".into(),
+            order: 10,
+            builtin: false,
+            display_mode: "table".into(),
+            display_group_by: None,
+            display_show_done: None,
+            display_table_config: Some(cfg.clone()),
+        })
+        .await
+        .unwrap();
+
+        let views = h.views_list().await;
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].display_table_config, Some(cfg));
     }
 
     // ─── tesela-zpr: iOS snapshot deposit mirror ─────────────────────────
