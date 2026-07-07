@@ -9,10 +9,12 @@ import SwiftUI
 /// input with zero recognized predicates is rejected inline, so a typo
 /// can't silently become a match-everything view).
 ///
-/// Display mode is a stored preference: iOS always renders results as a
-/// list, so picking table/kanban shows an honest "applies on web" note.
-/// Builtins (the seeded Inbox) are editable but never deletable — the
-/// delete affordance is replaced by a caption saying so.
+/// Display mode is a stored preference. `kanban` renders as native
+/// horizontally-paged columns on iOS (tesela-ya4.5); `table` isn't built
+/// yet (tesela-ya4.6) so iOS still renders it as a list with an honest
+/// "applies on web" note. Builtins (the seeded Inbox) are editable but
+/// never deletable — the delete affordance is replaced by a caption saying
+/// so.
 struct GrViewEditorSheet: View {
     /// nil = creating a new view.
     let existing: SavedView?
@@ -191,11 +193,13 @@ struct GrViewEditorSheet: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 9))
             }
-            if displayMode != "list" {
+            if displayMode == "table" {
                 sectionCaption(
-                    "Stored for the web app — iOS renders every view as a "
-                    + "list. The \(displayMode) layout applies on web."
+                    "Stored for the web app — iOS renders table views as a "
+                    + "list. The table layout applies on web."
                 )
+            } else if displayMode == "kanban" {
+                sectionCaption("iOS renders kanban as native swipeable columns.")
             }
         }
     }
