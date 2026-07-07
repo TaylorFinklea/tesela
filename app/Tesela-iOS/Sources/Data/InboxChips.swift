@@ -91,7 +91,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "🧱",
         hint: "Hide markdown section headings (### …) — they're dividers, not tasks",
         clauses: ["-is:heading"],
-        jqlClause: "NOT is:heading",
+        jqlClause: "is != heading",
         defaultOn: true,
         category: .scope
     ),
@@ -101,7 +101,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "📅",
         hint: "Hide blocks on YYYY-MM-DD daily notes — journal captures aren't triage items",
         clauses: ["-on:daily-page"],
-        jqlClause: "NOT on:daily-page",
+        jqlClause: "on != daily-page",
         defaultOn: true,
         category: .scope
     ),
@@ -111,7 +111,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "⚙️",
         hint: "Hide blocks on Tag / Property / Query / Template pages",
         clauses: ["-on:system-pages"],
-        jqlClause: "NOT on:system-pages",
+        jqlClause: "on != system-pages",
         defaultOn: true,
         category: .scope
     ),
