@@ -59,7 +59,13 @@ export const INBOX_VIEW_DSL = "status:backlog,todo -has:scheduled -has:deadline"
 // Tokenizer (mirrors query.rs `tokenize`)
 // ────────────────────────────────────────────────────────────────────
 
-type Token =
+/**
+ * Exported (tesela-vp9.1) so authoring UI — highlighting overlays,
+ * completion popups — can tokenize the SAME way the parser does, with
+ * zero drift between "what lights up" and "what parses". No second
+ * lexer: this is the identical function `parseQuery` calls internally.
+ */
+export type Token =
   | { t: "word"; v: string }
   | { t: "quoted"; v: string }
   | { t: "lparen" }
@@ -80,13 +86,13 @@ type Token =
  * digits / dashes that belong to a single value (`block:python:5`) and
  * to detect TIGHT commas for the `key:v1,v2` multi-value sugar.
  */
-type Spanned = { tok: Token; start: number; end: number };
+export type Spanned = { tok: Token; start: number; end: number };
 
 function isWordChar(c: string): boolean {
   return /[A-Za-z0-9_-]/.test(c);
 }
 
-function tokenize(input: string): Spanned[] {
+export function tokenize(input: string): Spanned[] {
   const tokens: Spanned[] = [];
   const n = input.length;
   let i = 0;
@@ -166,6 +172,13 @@ type ParserState = {
   pos: number;
   /** `kind:block` / `kind:page` is plucked out of the predicate stream. */
   kind: Kind;
+  /**
+   * Authoring-only diagnostics sink (tesela-vp9.1). `null` for the
+   * plain `parseQuery` path — every recording call below is a no-op
+   * `?.push` in that case, so parsing stays exactly as it was. Non-null
+   * only under `parseQueryWithDiagnostics`.
+   */
+  diagnostics: Diagnostic[] | null;
 };
 
 function atom(pred: Predicate): BoolExpr {
@@ -176,14 +189,85 @@ function emptyAnd(): BoolExpr {
   return { op: "and", args: [] };
 }
 
-export function parseQuery(input: string): ParsedQuery {
-  const p: ParserState = { input, tokens: tokenize(input), pos: 0, kind: "block" };
+/**
+ * One authoring-UI hint about a span the parser silently dropped or
+ * left dangling during its re-sync (see the module doc + tesela-vp9.1).
+ * `got` is the raw source slice at `[start, end)`; `hint` is a short
+ * human-readable explanation, omitted (empty string) where none is
+ * cheaply derivable.
+ */
+export type Diagnostic = { start: number; end: number; got: string; hint: string };
+
+function recordDrop(
+  p: ParserState,
+  start: number,
+  end: number,
+  got: string,
+  hint: string,
+): void {
+  p.diagnostics?.push({ start, end, got, hint });
+}
+
+/**
+ * A `"quoted"` token is well-formed only if its span accounts for both
+ * the opening AND closing `"` (`end - start === v.length + 2`); when
+ * the tokenizer ran off the end of input looking for the closer, the
+ * span is one byte short (`v.length + 1`). Pure token-local arithmetic
+ * — no re-scan of `input` needed.
+ */
+function recordUnclosedQuotes(tokens: Spanned[], input: string, diagnostics: Diagnostic[]): void {
+  for (const sp of tokens) {
+    if (sp.tok.t !== "quoted") continue;
+    const closed = sp.end - sp.start === sp.tok.v.length + 2;
+    if (!closed) {
+      diagnostics.push({
+        start: sp.start,
+        end: sp.end,
+        got: input.slice(sp.start, sp.end),
+        hint: "unclosed quoted string",
+      });
+    }
+  }
+}
+
+function parseQueryInternal(input: string, diagnostics: Diagnostic[] | null): ParsedQuery {
+  const tokens = tokenize(input);
+  if (diagnostics) recordUnclosedQuotes(tokens, input, diagnostics);
+  const p: ParserState = { input, tokens, pos: 0, kind: "block", diagnostics };
   const expr = parseOr(p) ?? emptyAnd();
   const sort = parseOrderBy(p);
+  if (diagnostics && p.pos < p.tokens.length) {
+    const start = p.tokens[p.pos].start;
+    const end = p.tokens[p.tokens.length - 1].end;
+    recordDrop(p, start, end, input.slice(start, end), "unexpected trailing input");
+  }
   const filters = flattenToLegacyFilters(expr);
   const out: ParsedQuery = { kind: p.kind, expr, filters };
   if (sort !== null) out.sort = sort;
   return out;
+}
+
+export function parseQuery(input: string): ParsedQuery {
+  return parseQueryInternal(input, null);
+}
+
+/**
+ * Authoring-only sibling of `parseQuery` (tesela-vp9.1). Returns the
+ * SAME `ParsedQuery` `parseQuery` would (byte-for-byte — proven by the
+ * `query-diagnostics.test.mjs` invariant test, on top of the shared
+ * conformance fixture pinning `parseQuery` itself) plus a list of spans
+ * the parser silently dropped or left dangling while re-syncing.
+ * Diagnostics are additive UI metadata only — never authoritative, and
+ * the 182-case conformance fixture is NOT extended for them (decision 3
+ * in `.docs/ai/phases/2026-07-07-jql-authoring-spec.md`).
+ */
+export function parseQueryWithDiagnostics(input: string): {
+  parsed: ParsedQuery;
+  diagnostics: Diagnostic[];
+} {
+  const diagnostics: Diagnostic[] = [];
+  const parsed = parseQueryInternal(input, diagnostics);
+  return { parsed, diagnostics };
 }
 
 function peek(p: ParserState): Token | null {
@@ -256,11 +340,14 @@ function parseOr(p: ParserState): BoolExpr | null {
   if (left === null) return null;
   const alts: BoolExpr[] = [];
   while (peekKeyword(p, "or")) {
+    const orSpanned = p.tokens[p.pos];
     bump(p);
     const rhs = parseAnd(p);
     if (rhs !== null) {
       if (alts.length === 0) alts.push(left);
       alts.push(rhs);
+    } else {
+      recordDrop(p, orSpanned.start, orSpanned.end, "OR", "'OR' has no right-hand predicate");
     }
   }
   if (alts.length > 0) left = { op: "or", args: alts };
@@ -272,13 +359,20 @@ function parseAnd(p: ParserState): BoolExpr | null {
   if (left === null) return null;
   const args: BoolExpr[] = [];
   for (;;) {
+    let andSpanned: Spanned | null = null;
     if (peekKeyword(p, "and")) {
+      andSpanned = p.tokens[p.pos];
       bump(p);
     } else if (!peekStartsUnary(p)) {
       break;
     }
     const rhs = parseUnary(p);
-    if (rhs === null) break;
+    if (rhs === null) {
+      if (andSpanned !== null) {
+        recordDrop(p, andSpanned.start, andSpanned.end, "AND", "'AND' has no right-hand predicate");
+      }
+      break;
+    }
     if (args.length === 0) args.push(left);
     args.push(rhs);
   }
@@ -295,22 +389,36 @@ function parseUnary(p: ParserState): BoolExpr | null {
     // the top level.
     if (peekOrderBy(p)) return null;
     if (peekKeyword(p, "not")) {
+      const notSpanned = p.tokens[p.pos];
       bump(p);
       const inner = parseUnary(p);
-      if (inner === null) return null;
+      if (inner === null) {
+        recordDrop(p, notSpanned.start, notSpanned.end, "NOT", "'NOT' has no operand");
+        return null;
+      }
       return { op: "not", arg: inner };
     }
     const t = peek(p);
     if (t?.t === "minus") {
+      const minusSpanned = p.tokens[p.pos];
       bump(p);
       const inner = parseUnary(p);
-      if (inner === null) return null;
+      if (inner === null) {
+        recordDrop(p, minusSpanned.start, minusSpanned.end, "-", "'-' has no operand");
+        return null;
+      }
       return { op: "not", arg: inner };
     }
     if (t?.t === "lparen") {
+      const lparenSpanned = p.tokens[p.pos];
       bump(p);
       const inner = parseOr(p) ?? emptyAnd();
-      if (peek(p)?.t === "rparen") bump(p);
+      if (peek(p)?.t === "rparen") {
+        bump(p);
+      } else {
+        const end = p.pos < p.tokens.length ? p.tokens[p.pos].start : p.input.length;
+        recordDrop(p, lparenSpanned.start, end, p.input.slice(lparenSpanned.start, end), "unclosed '('");
+      }
       return inner;
     }
     const startPos = p.pos;
@@ -333,11 +441,21 @@ function parseUnary(p: ParserState): BoolExpr | null {
  * predicate the Rust parser produces.
  */
 function parsePredicate(p: ParserState): BoolExpr | null {
+  const keySpanned = p.tokens[p.pos];
   const keyTok = bump(p);
   if (keyTok === null) return null;
   // A standalone quoted string or punctuation at predicate position is
   // malformed — drop it and re-synchronize on the next token.
-  if (keyTok.t !== "word") return null;
+  if (keyTok.t !== "word") {
+    recordDrop(
+      p,
+      keySpanned.start,
+      keySpanned.end,
+      p.input.slice(keySpanned.start, keySpanned.end),
+      "expected a predicate key here",
+    );
+    return null;
+  }
   const key = asciiLower(keyTok.v);
 
   // `kind:` is meta — consume the value, set p.kind, return null so the
@@ -376,18 +494,26 @@ function parsePredicate(p: ParserState): BoolExpr | null {
       return atom({ kind: "in", key, values, negated: true });
     }
     if (peekKeyword(p, "like")) {
+      const likeSpanned = p.tokens[p.pos];
       bump(p);
-      const value = parseValue(p) ?? "";
-      return atom({ kind: "cmp", key, op: "NotLike", value });
+      const raw = parseValue(p);
+      if (raw === null) {
+        recordDrop(p, likeSpanned.start, likeSpanned.end, "LIKE", "'LIKE' has no operand");
+      }
+      return atom({ kind: "cmp", key, op: "NotLike", value: raw ?? "" });
     }
     p.pos = save;
   }
 
   // `key LIKE "pattern"` — SQL-style wildcard match.
   if (peekKeyword(p, "like")) {
+    const likeSpanned = p.tokens[p.pos];
     bump(p);
-    const value = parseValue(p) ?? "";
-    return atom({ kind: "cmp", key, op: "Like", value });
+    const raw = parseValue(p);
+    if (raw === null) {
+      recordDrop(p, likeSpanned.start, likeSpanned.end, "LIKE", "'LIKE' has no operand");
+    }
+    return atom({ kind: "cmp", key, op: "Like", value: raw ?? "" });
   }
 
   // `key IS [NOT] NULL|EMPTY` — sugar for `-has:key` / `has:key`.
@@ -434,20 +560,35 @@ function parsePredicate(p: ParserState): BoolExpr | null {
   }
 
   // Infix comparison operator: `key = value`, `key != value`, etc.
+  const infixSpanned = p.tokens[p.pos];
   const infix = consumeInfixOp(p);
   if (infix !== null) {
-    const value = parseValue(p) ?? "";
-    return atom({ kind: "cmp", key, op: infix, value });
+    const raw = parseValue(p);
+    if (raw === null) {
+      const opText = p.input.slice(infixSpanned.start, infixSpanned.end);
+      recordDrop(p, infixSpanned.start, infixSpanned.end, opText, `'${opText}' has no operand`);
+    }
+    return atom({ kind: "cmp", key, op: infix, value: raw ?? "" });
   }
 
   // Legacy colon syntax: `key:value`, `key:>=N`, etc. `has:foo` is the
   // one legitimate "no value" form; for everything else an empty value
   // drops the predicate.
   if (peek(p)?.t === "colon") {
+    const colonSpanned = p.tokens[p.pos];
     bump(p);
     const op = consumeLegacyColonOp(p) ?? "Eq";
     const value = parseValue(p) ?? "";
-    if (key !== "has" && value === "") return null;
+    if (key !== "has" && value === "") {
+      recordDrop(
+        p,
+        keySpanned.start,
+        colonSpanned.end,
+        p.input.slice(keySpanned.start, colonSpanned.end),
+        `'${key}:' has no value`,
+      );
+      return null;
+    }
     // `key:v1,v2,…` — comma multi-value sugar: OR within the key,
     // desugared to the same `in` predicate the `key IN (…)` form and
     // the legacy `tag-in:` shape produce. Eq-only, and the commas must
@@ -468,6 +609,13 @@ function parsePredicate(p: ParserState): BoolExpr | null {
   }
 
   // A bareword with no operator at all isn't a valid predicate.
+  recordDrop(
+    p,
+    keySpanned.start,
+    keySpanned.end,
+    p.input.slice(keySpanned.start, keySpanned.end),
+    `unknown word '${key}' — expected an operator after it`,
+  );
   return null;
 }
 
