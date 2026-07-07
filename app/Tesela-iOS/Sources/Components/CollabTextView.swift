@@ -42,6 +42,76 @@ struct RemoteCaret: Equatable {
     var peer: String? = nil
 }
 
+/// Theme colors for JQL syntax kinds inside `query::` lines (tesela-vp9.6),
+/// one per `QueryAuthoring.PreviewTokenKind` case. Mirrors
+/// `GrViewEditorSheet.previewColor(for:)`'s theme mapping (key→
+/// accentSecondary, operator→fgMuted, value→fgDefault, string→typeNote,
+/// number→typeProject, paren→fgFaint) so the saved-view editor's
+/// token-preview row and this in-block highlight read as the same palette.
+struct JQLThemeColors {
+    let key: Color
+    let operatorKind: Color
+    let value: Color
+    let string: Color
+    let number: Color
+    let paren: Color
+
+    func color(for kind: QueryAuthoring.PreviewTokenKind) -> Color {
+        switch kind {
+        case .key: return key
+        case .operatorKind: return operatorKind
+        case .value: return value
+        case .string: return string
+        case .number: return number
+        case .paren: return paren
+        }
+    }
+}
+
+/// Paints `JQLLineHighlight.HighlightSpan`s (tesela-vp9.6) — the syntax
+/// colors for `query::` lines — OVER whatever `InlineNLPHighlighter.apply`
+/// already painted in the SAME pass. Deliberately does NOT reset the base
+/// color the way `InlineNLPHighlighter.apply` does: `query::` lines carry
+/// no NLP spans by construction (`CollabTextView.Coordinator
+/// .applyNLPHighlight` filters them out before that first pass runs), so
+/// they're already uniformly `base`-colored by the time this runs — this
+/// only needs to ADD the JQL foreground colors on top.
+///
+/// Kept as a sibling to `InlineNLPHighlighter` rather than a case added to
+/// its `InlineNLP.HighlightKind` vocabulary: JQL syntax roles (key/
+/// operator/value/string/number/paren) are a different axis than the
+/// NLP-lift semantic kinds (priority level / date), and extending
+/// `HighlightKind` would force every `colorForKind` switch — including the
+/// unrelated capture composer's (`CaptureTextView.swift`), which never
+/// produces a `query::` line — to exhaustively handle cases it never
+/// emits. This keeps `InlineNLPHighlighter.apply`'s mechanics (and every
+/// existing call site) completely untouched. Same selection-preserving /
+/// IME-composition-skipping / stale-range-safe posture as
+/// `InlineNLPHighlighter.apply`.
+enum JQLHighlighter {
+    @MainActor
+    static func overlay(
+        on tv: UITextView,
+        spans: [JQLLineHighlight.HighlightSpan],
+        colorForKind: (QueryAuthoring.PreviewTokenKind) -> UIColor
+    ) {
+        guard !spans.isEmpty, tv.markedTextRange == nil else { return }
+        let storage = tv.textStorage
+        let length = storage.length
+        let valid = spans.filter {
+            $0.range.location >= 0 && $0.range.length > 0 && $0.range.location + $0.range.length <= length
+        }
+        guard !valid.isEmpty else { return }
+        let sel = tv.selectedRange
+        storage.beginEditing()
+        for span in valid {
+            storage.addAttribute(.foregroundColor, value: colorForKind(span.kind), range: span.range)
+        }
+        storage.endEditing()
+        tv.selectedRange = sel
+    }
+}
+
 struct CollabTextView: UIViewRepresentable {
     /// The block's raw text — the engine-exact stored value. Bound so
     /// SwiftUI and the `UITextView` agree on the current string; the
@@ -112,6 +182,14 @@ struct CollabTextView: UIViewRepresentable {
     /// Color drawn over a matched date phrase (cyan, matching the desktop
     /// block editor). Falls back to `nlpHighlightColor` when `nil`.
     var nlpDateColor: Color? = nil
+    /// JQL syntax highlight colors for `query::` lines (tesela-vp9.6) —
+    /// key/operator/value/string/number/paren, keyed by
+    /// `QueryAuthoring.PreviewTokenKind`. `nil` (default; e.g. the capture
+    /// composer never sets this) → no JQL coloring, `query::` lines then
+    /// fall through to ordinary NLP-lift detection like any other line.
+    /// When set, `query::` lines get THESE colors INSTEAD of the NLP-lift
+    /// colors above — see `Coordinator.applyNLPHighlight`.
+    var jqlColors: JQLThemeColors? = nil
 
     /// Phase 3 presence: fires with the caret's utf16 offset whenever it moves
     /// (tap / arrow / typing). The owner publishes it as a presence frame.
@@ -346,8 +424,28 @@ struct CollabTextView: UIViewRepresentable {
         /// on the text storage — no character edit, so it emits no splice and
         /// keeps the engine `text_seq` aligned. Caret/selection are preserved.
         /// Skipped during IME composition (marked text) to avoid fighting it.
+        ///
+        /// tesela-vp9.6: `query::` lines get JQL syntax coloring
+        /// (`JQLLineHighlight.detectSpans` — key/operator/value/string/
+        /// number/paren) INSTEAD of NLP-lift coloring. NLP spans that fall
+        /// on a `query::` line are filtered out here BEFORE the shared
+        /// painter runs, so a date word inside a quoted query value
+        /// (`query:: title LIKE "tomorrow"`) never reads as an NLP date
+        /// token. The two passes coexist without fighting: the first
+        /// (`InlineNLPHighlighter.apply`, unmodified) resets the WHOLE
+        /// text to `base` and paints the (filtered) NLP spans; the second
+        /// (`JQLHighlighter.overlay`) only ADDS the JQL spans' colors on
+        /// top — `query::` lines carry no NLP spans by construction, so
+        /// nothing the first pass painted there needs undoing.
         func applyNLPHighlight(_ tv: UITextView) {
-            guard let detect = parent.nlpHighlightRanges else { return }
+            guard parent.nlpHighlightRanges != nil || parent.jqlColors != nil else { return }
+            let text = tv.text ?? ""
+            let jqlLineRanges = parent.jqlColors != nil ? JQLLineHighlight.queryLineRanges(in: text) : []
+            let rawNlpSpans = parent.nlpHighlightRanges?(text) ?? []
+            let nlpSpans = jqlLineRanges.isEmpty ? rawNlpSpans : rawNlpSpans.filter { span in
+                !jqlLineRanges.contains { NSIntersectionRange($0, span.range).length > 0 }
+            }
+
             let base = UIColor(parent.textColor)
             let fallback = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
             let priorityColors = parent.nlpPriorityColors
@@ -356,7 +454,7 @@ struct CollabTextView: UIViewRepresentable {
             // surfaces color identically. Preserves selection/typingAttributes
             // and skips IME composition — same as the prior inline body.
             InlineNLPHighlighter.apply(
-                to: tv, base: base, spans: detect(tv.text ?? "")
+                to: tv, base: base, spans: nlpSpans
             ) { kind in
                 switch kind {
                 case .priority(let level):
@@ -366,6 +464,11 @@ struct CollabTextView: UIViewRepresentable {
                 case .other:
                     return fallback
                 }
+            }
+
+            if let jqlColors = parent.jqlColors {
+                let jqlSpans = JQLLineHighlight.detectSpans(in: text)
+                JQLHighlighter.overlay(on: tv, spans: jqlSpans) { UIColor(jqlColors.color(for: $0)) }
             }
         }
 
