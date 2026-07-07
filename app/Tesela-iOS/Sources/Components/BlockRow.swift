@@ -566,6 +566,14 @@ struct BlockRow: View {
             nlpHighlightColor: theme.accentPrimary,
             nlpPriorityColors: theme.priorityColors,
             nlpDateColor: theme.dateToken,
+            jqlColors: JQLThemeColors(
+                key: theme.accentSecondary,
+                operatorKind: theme.fgMuted,
+                value: theme.fgDefault,
+                string: theme.typeNote,
+                number: theme.typeProject,
+                paren: theme.fgFaint
+            ),
             onCaretMove: onCaretMove,
             remoteCarets: remoteCarets
         )
