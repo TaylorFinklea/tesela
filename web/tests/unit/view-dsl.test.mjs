@@ -1,7 +1,9 @@
 // Unit tests for the saved-views DSL editor helpers
 // (web/src/lib/views/view-dsl.ts): validation parity with the server's
-// validate_dsl, chip clause toggling (chips-as-inserters), and the cheap
-// key autocomplete.
+// validate_dsl and chip clause toggling (chips-as-inserters). The cheap
+// key-only autocomplete this file used to own moved to the shared
+// QueryInput widget's completion module (tesela-vp9.2) — see
+// web/tests/unit/query-input-completion.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -9,9 +11,6 @@ import {
   validateViewDsl,
   toggleClausesInDsl,
   clausesActiveInDsl,
-  dslKeySuggestions,
-  applyDslSuggestion,
-  BASE_DSL_KEYS,
 } from "../../src/lib/views/view-dsl.ts";
 import { INBOX_VIEW_DSL } from "../../src/lib/query-language.ts";
 
@@ -90,64 +89,5 @@ test("toggle round-trip with every inbox chip fragment stays valid", () => {
     assert.equal(validateViewDsl(on), null, `insert ${clauses} stays valid`);
     const off = toggleClausesInDsl(on, clauses);
     assert.equal(validateViewDsl(off), null, `remove ${clauses} stays valid`);
-  }
-});
-
-// ── dslKeySuggestions / applyDslSuggestion ────────────────────────────────
-
-test("suggest — partial key at the caret offers matching keys", () => {
-  const s = dslKeySuggestions("sta", 3);
-  assert.ok(s);
-  assert.deepEqual(s.items, ["status:"]);
-  assert.equal(s.from, 0);
-  assert.equal(s.to, 3);
-});
-
-test("suggest — after a space, a new partial word suggests", () => {
-  const s = dslKeySuggestions("status:todo ta", 14);
-  assert.ok(s);
-  assert.deepEqual(s.items, ["tag:", "tag-in:"]);
-  assert.equal(s.from, 12);
-});
-
-test("suggest — leading negation dash is preserved (replaces only the key)", () => {
-  const s = dslKeySuggestions("-h", 2);
-  assert.ok(s);
-  assert.deepEqual(s.items, ["has:"]);
-  assert.equal(s.from, 1); // after the '-'
-  const applied = applyDslSuggestion("-h", s, s.items[0]);
-  assert.equal(applied.dsl, "-has:");
-  assert.equal(applied.cursor, 5);
-});
-
-test("suggest — nothing for an empty token, a completed key, or mid-word caret", () => {
-  assert.equal(dslKeySuggestions("status:todo ", 12), null); // empty token
-  assert.equal(dslKeySuggestions("status:to", 9), null); // already has key:
-  assert.equal(dslKeySuggestions("status", 3), null); // caret mid-word
-});
-
-test("suggest — registry property keys mix in after the base keys, deduped", () => {
-  const s = dslKeySuggestions("p", 1, ["Priority", "Points", "page"]);
-  assert.ok(s);
-  // base 'page' first, then registry keys lowercased, 'page' deduped.
-  assert.deepEqual(s.items, ["page:", "priority:", "points:"]);
-});
-
-test("suggest — exact key match still offers the colon completion", () => {
-  const s = dslKeySuggestions("status", 6);
-  assert.ok(s);
-  assert.deepEqual(s.items, ["status:"]);
-});
-
-test("applyDslSuggestion — replaces the partial and reports the caret", () => {
-  const s = dslKeySuggestions("status:todo ta", 14);
-  const applied = applyDslSuggestion("status:todo ta", s, "tag:");
-  assert.equal(applied.dsl, "status:todo tag:");
-  assert.equal(applied.cursor, 16);
-});
-
-test("BASE_DSL_KEYS covers the task's required key set", () => {
-  for (const k of ["status", "tag", "has", "is", "on", "kind", "text"]) {
-    assert.ok(BASE_DSL_KEYS.includes(k), `${k} present`);
   }
 });

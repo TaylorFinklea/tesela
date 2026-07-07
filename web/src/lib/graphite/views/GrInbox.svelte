@@ -10,18 +10,19 @@
      widget (the post-7cf456d GrPage pattern), which itself falls back to
      table when a kanban query isn't tag-scoped.
 
-     Editing is DSL-first (product-locked): the editor row has a monospace
-     query input with live validation (the TS parser mirror of the
-     server's validate_dsl — the server 400s as backstop), key
-     autocomplete (base keys + property-registry names), and the existing
-     inbox chips RE-POINTED AS INSERTERS that toggle their DSL fragments
-     into the string (view-dsl.ts owns the pure logic). Save/rename/
-     delete (builtin delete disabled with the server's message)/reorder
-     (↑↓ → POST /views/reorder) round out CRUD. The `views_changed` WS
-     event seeds the ["views"] cache from the layout, so edits on another
-     device show up live. Shared modules imported READ-ONLY. -->
+     Editing is JQL-first (product-locked): the editor row mounts the
+     shared `QueryInput` widget (tesela-vp9.2 — syntax highlighting, three-
+     tier completion, live diagnostics; supersedes the old bespoke
+     `<input>` + key-only suggest popup), `validateViewDsl` still gates
+     `canSave` (a stricter "recognized zero predicates" check diagnostics
+     don't cover), and the existing inbox chips stay RE-POINTED AS
+     INSERTERS that toggle their DSL fragments into the string
+     (view-dsl.ts owns that pure logic — tesela-vp9.3 territory). Save/
+     rename/delete (builtin delete disabled with the server's message)/
+     reorder (↑↓ → POST /views/reorder) round out CRUD. The `views_changed`
+     WS event seeds the ["views"] cache from the layout, so edits on
+     another device show up live. Shared modules imported READ-ONLY. -->
 <script lang="ts">
-  import { tick } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { api, ApiError, type ViewRecord } from "$lib/api-client";
   import { getAppQueryClient } from "$lib/app-query-client.svelte";
@@ -32,20 +33,14 @@
     type TriageAction,
   } from "$lib/triage.svelte";
   import { CHIP_REGISTRY, type ChipDef } from "$lib/ambients/inbox/chips";
-  import {
-    validateViewDsl,
-    toggleClausesInDsl,
-    clausesActiveInDsl,
-    dslKeySuggestions,
-    applyDslSuggestion,
-    type DslSuggestion,
-  } from "$lib/views/view-dsl";
+  import { validateViewDsl, toggleClausesInDsl, clausesActiveInDsl } from "$lib/views/view-dsl";
   import { INBOX_VIEW_DSL } from "$lib/query-language";
   import type { QueryItem } from "$lib/types/QueryItem";
   import type { Widget } from "$lib/types/Widget";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import QueryInput from "$lib/components/QueryInput.svelte";
   import GrChip from "$lib/graphite/GrChip.svelte";
   import GrButton from "$lib/graphite/GrButton.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
@@ -176,7 +171,6 @@
       serverError: null,
       saving: false,
     };
-    suggest = null;
   }
   function openNewEditor() {
     editor = {
@@ -188,11 +182,9 @@
       serverError: null,
       saving: false,
     };
-    suggest = null;
   }
   function closeEditor() {
     editor = null;
-    suggest = null;
   }
 
   function apiErrorMessage(e: unknown): string {
@@ -275,77 +267,35 @@
   function insertChip(chip: ChipDef) {
     if (!editor) return;
     editor.dsl = toggleClausesInDsl(editor.dsl, chip.clauses);
-    suggest = null;
-    dslInputEl?.focus();
+    queryInputRef?.focus();
   }
 
   /** Reset a builtin's draft to its shipped default (Inbox only today). */
   function resetBuiltinDraft() {
     if (!editor?.builtin) return;
     editor.dsl = INBOX_VIEW_DSL;
-    suggest = null;
   }
 
-  // ── DSL key autocomplete (cheap version: keys only) ────────────────────
+  // ── QueryInput completion sources (property names + type names) ────────
   const propsQuery = createQuery(() => ({
     queryKey: ["properties"] as const,
     queryFn: () => api.listProperties(),
     enabled: editor !== null,
   }));
-  const propertyKeys = $derived((propsQuery.data ?? []).map((p) => p.name));
+  const typesQuery = createQuery(() => ({
+    queryKey: ["types"] as const,
+    queryFn: () => api.listTypes(),
+    enabled: editor !== null,
+  }));
+  const querySources = $derived({
+    properties: propsQuery.data ?? [],
+    types: typesQuery.data ?? [],
+  });
 
-  let dslInputEl = $state<HTMLInputElement | undefined>();
-  let suggest = $state<DslSuggestion | null>(null);
-  let suggestIndex = $state(0);
+  let queryInputRef = $state<QueryInput | null>(null);
 
-  function refreshSuggest() {
-    if (!editor || !dslInputEl) {
-      suggest = null;
-      return;
-    }
-    const cursor = dslInputEl.selectionStart ?? editor.dsl.length;
-    suggest = dslKeySuggestions(editor.dsl, cursor, propertyKeys);
-    suggestIndex = 0;
-  }
-
-  async function acceptSuggestion(item: string) {
-    if (!editor || !suggest) return;
-    const applied = applyDslSuggestion(editor.dsl, suggest, item);
-    editor.dsl = applied.dsl;
-    suggest = null;
-    await tick();
-    dslInputEl?.focus();
-    dslInputEl?.setSelectionRange(applied.cursor, applied.cursor);
-  }
-
-  function dslKeydown(e: KeyboardEvent) {
-    if (suggest && suggest.items.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        suggestIndex = (suggestIndex + 1) % suggest.items.length;
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        suggestIndex =
-          (suggestIndex - 1 + suggest.items.length) % suggest.items.length;
-        return;
-      }
-      if (e.key === "Tab" || e.key === "Enter") {
-        e.preventDefault();
-        void acceptSuggestion(suggest.items[suggestIndex]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        suggest = null;
-        return;
-      }
-    }
-    if (e.key === "Enter" && canSave) {
-      e.preventDefault();
-      void saveEditor();
-    }
+  function dslCommit() {
+    if (canSave) void saveEditor();
   }
 
   // ── selection / keyboard nav (list mode — unchanged triage surface) ────
@@ -585,37 +535,15 @@
       </div>
 
       <div class="gr-vdsl-wrap">
-        <input
-          class="gr-vdsl"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-          placeholder="status = todo AND type = project AND scheduled IS NULL"
-          bind:this={dslInputEl}
+        <QueryInput
+          bind:this={queryInputRef}
           bind:value={editor.dsl}
-          oninput={refreshSuggest}
-          onclick={refreshSuggest}
-          onkeydown={dslKeydown}
-          onblur={() => (suggest = null)}
+          placeholder="status = todo AND type = project AND scheduled IS NULL"
+          sources={querySources}
+          oncommit={dslCommit}
+          oncancel={closeEditor}
         />
-        {#if suggest && suggest.items.length > 0}
-          <div class="gr-vsuggest">
-            {#each suggest.items as item, i (item)}
-              <button
-                type="button"
-                class:hl={i === suggestIndex}
-                onmousedown={(e) => {
-                  e.preventDefault();
-                  void acceptSuggestion(item);
-                }}
-              >{item}</button>
-            {/each}
-          </div>
-        {/if}
       </div>
-      {#if editor.dsl.trim().length > 0 && draftError}
-        <div class="gr-verr">{draftError}</div>
-      {/if}
       {#if editor.serverError}
         <div class="gr-verr">{editor.serverError}</div>
       {/if}
@@ -879,51 +807,6 @@
   }
   .gr-vdsl-wrap {
     position: relative;
-  }
-  .gr-vdsl {
-    width: 100%;
-    height: 30px;
-    padding: 0 10px;
-    border-radius: 8px;
-    background: var(--raised);
-    border: 1px solid var(--line-2);
-    color: var(--fg);
-    font-family: var(--mono);
-    font-size: 12px;
-    outline: none;
-  }
-  .gr-vdsl:focus {
-    border-color: var(--coral-line);
-  }
-  .gr-vsuggest {
-    position: absolute;
-    top: 32px;
-    left: 0;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    background: var(--raised);
-    border: 1px solid var(--line-2);
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  }
-  .gr-vsuggest button {
-    appearance: none;
-    background: transparent;
-    border: none;
-    text-align: left;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    color: var(--fg2);
-    padding: 5px 10px;
-    cursor: pointer;
-  }
-  .gr-vsuggest button:hover,
-  .gr-vsuggest button.hl {
-    background: var(--raised-2);
-    color: var(--fg);
   }
   .gr-verr {
     font-family: var(--mono);

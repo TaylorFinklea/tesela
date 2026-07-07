@@ -14,6 +14,7 @@
   } from "@tabler/icons-svelte";
   import TabStrip from "./TabStrip.svelte";
   import ViewSwitcher from "./ViewSwitcher.svelte";
+  import QueryInput from "./QueryInput.svelte";
   import type { Note } from "$lib/types/Note";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
@@ -147,15 +148,28 @@
     writeBlockProps({ query: next });
   }
 
-  function queryKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      commitQuery();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      editingQuery = false;
-    }
+  function cancelEditQuery() {
+    editingQuery = false;
   }
+
+  // QueryInput completion sources (property names + type names) —
+  // tesela-vp9.2. Server-sourced (matches GrInbox/RawDslSheet) rather than
+  // the locally-derived `buildRegistry(notes)` used for evaluating matches
+  // below, per the vp9 spec's decision 4.
+  const propsQuery = createQuery(() => ({
+    queryKey: ["properties"] as const,
+    queryFn: () => api.listProperties(),
+    enabled: editingQuery,
+  }));
+  const typesQuery = createQuery(() => ({
+    queryKey: ["types"] as const,
+    queryFn: () => api.listTypes(),
+    enabled: editingQuery,
+  }));
+  const querySources = $derived({
+    properties: propsQuery.data ?? [],
+    types: typesQuery.data ?? [],
+  });
 
   // Raised 500→5000 (tesela-sclr.1): this IS the query's evaluation corpus
   // (filtered client-side below), so a 500 cap silently dropped matches
@@ -300,15 +314,18 @@
   <!-- Match count + query info (click the DSL to edit it) -->
   <div class="text-[10px] text-muted-foreground/50 mb-2 flex items-center gap-1.5 flex-wrap">
     {#if editingQuery}
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        class="text-[11px] font-mono bg-muted/40 border border-border/60 rounded px-1.5 py-0.5 text-foreground/90 min-w-[16rem] focus:outline-none focus:border-primary/60"
-        bind:value={queryDraft}
-        onkeydown={queryKeydown}
-        onblur={commitQuery}
-        autofocus
-        placeholder="type = task AND points > 5"
-      />
+      <div class="min-w-[16rem] max-w-[28rem]">
+        <QueryInput
+          compact
+          bind:value={queryDraft}
+          sources={querySources}
+          oncommit={commitQuery}
+          oncancel={cancelEditQuery}
+          onblur={commitQuery}
+          autofocus
+          placeholder="type = task AND points > 5"
+        />
+      </div>
       <span class="text-muted-foreground/40">↵ save · esc cancel</span>
     {:else if queryText}
       {matches.length} {matches.length === 1 ? "match" : "matches"}
