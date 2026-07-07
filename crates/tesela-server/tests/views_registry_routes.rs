@@ -267,6 +267,94 @@ async fn views_crud_round_trip_ordered_list_and_reorder() {
     assert_eq!(views.len(), 2, "inbox + v-board remain");
 }
 
+/// tesela-ya4.4 — table column display config (hide / reorder / sort) is
+/// round-trip-authoritative through `PUT /views/{id}`: a create/update
+/// carrying `display_table_config` persists it verbatim, an update that
+/// omits the field preserves the stored value, and an invalid `sort_dir`
+/// is rejected with 400 (mirroring the `display_mode` validation coverage
+/// in `invalid_dsl_is_rejected_with_the_parse_message`).
+#[tokio::test(flavor = "current_thread")]
+async fn table_config_round_trips_through_update_view() {
+    let h = boot();
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/views", h.base))
+        .json(&serde_json::json!({
+            "name": "Tasks",
+            "dsl": "tag:task",
+            "display_mode": "table",
+        }))
+        .send()
+        .await
+        .expect("POST /views");
+    assert_eq!(resp.status().as_u16(), 201);
+    let created: serde_json::Value = resp.json().await.unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        created["display_table_config"].is_null(),
+        "no config on create — none was sent"
+    );
+
+    // Hide a column + reorder + sort — the write-back a QueryTable action
+    // sends is the FULL config every time.
+    let resp = client
+        .put(format!("{}/views/{}", h.base, id))
+        .json(&serde_json::json!({
+            "display_table_config": {
+                "hidden": ["notes"],
+                "order": ["priority", "status"],
+                "sort_by": "priority",
+                "sort_dir": "desc",
+            }
+        }))
+        .send()
+        .await
+        .expect("PUT display_table_config");
+    assert_eq!(resp.status().as_u16(), 200);
+    let updated: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(updated["display_table_config"]["hidden"], serde_json::json!(["notes"]));
+    assert_eq!(
+        updated["display_table_config"]["order"],
+        serde_json::json!(["priority", "status"])
+    );
+    assert_eq!(updated["display_table_config"]["sort_by"], "priority");
+    assert_eq!(updated["display_table_config"]["sort_dir"], "desc");
+
+    // An unrelated update (rename) omits display_table_config — the stored
+    // config must survive (field-level, not whole-record, semantics).
+    let resp = client
+        .put(format!("{}/views/{}", h.base, id))
+        .json(&serde_json::json!({ "name": "My tasks" }))
+        .send()
+        .await
+        .expect("PUT rename only");
+    assert_eq!(resp.status().as_u16(), 200);
+    let renamed: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(renamed["name"], "My tasks");
+    assert_eq!(
+        renamed["display_table_config"]["sort_by"], "priority",
+        "table config survives an unrelated field update"
+    );
+
+    // Invalid sort_dir → 400, stored config untouched.
+    let resp = client
+        .put(format!("{}/views/{}", h.base, id))
+        .json(&serde_json::json!({
+            "display_table_config": { "sort_dir": "ascending" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    let views = get_views(&client, &h.base).await;
+    let still = views.iter().find(|v| v["id"] == id).unwrap();
+    assert_eq!(
+        still["display_table_config"]["sort_dir"], "desc",
+        "rejected PUT must not mutate the view"
+    );
+}
+
 /// DSL validation on create/update: unparseable DSL (the liberal parser
 /// recognized no predicates) is rejected with the message the editor UI
 /// surfaces; valid DSL — including the comma-OR Inbox shape — passes.
