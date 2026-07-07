@@ -22,7 +22,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
-  import { openActiveNoteDoc } from '$lib/loro/active-note-doc.svelte';
+  import { flushAllOutbound } from '$lib/loro/note-doc-registry.svelte';
   import GrTopBar from './GrTopBar.svelte';
   import GrRail from './GrRail.svelte';
   import GrStatus from './GrStatus.svelte';
@@ -92,38 +92,12 @@
     return 'Graphite';
   });
 
-  // The user's LOCAL today as a YYYY-MM-DD slug — the default daily buffer
-  // (empty pageId) renders today's note, so its Loro doc is keyed by this.
-  // Same rule GrDaily/JournalView use, so the doc slug matches the note id
-  // the server materializes (blake3(slug)[..16]).
-  function localTodaySlug(): string {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  }
-
-  // The slug of the note the focused buffer is editing, or null when the
-  // focus isn't a page (ambient/derived). Drives the web Loro peer: the doc
-  // bootstraps from the server snapshot, the editor binds its blocks' text_seq
-  // for char-splice collab, and the root layout's WS `onBinaryDelta` applies
-  // live deltas into it. The DEFAULT daily (empty pageId) → today's date.
-  const activeNoteSlug = $derived.by<string | null>(() => {
-    const b = focusedBuffer;
-    if (!b || b.kind !== 'page') return null;
-    return b.pageId && b.pageId !== '' ? b.pageId : localTodaySlug();
-  });
-
-  // C2.2/C2.3 on Graphite (/g): maintain the web peer's per-note Loro doc for
-  // the focused page — the live collab binding the editor reads through. This
-  // is the SAME wiring /v4 has; without it /g only saw HTTP-refetch updates
-  // (live web↔web/web↔iOS edits drifted until a manual refresh).
-  $effect(() => {
-    void openActiveNoteDoc(activeNoteSlug);
-  });
+  // tesela-baa: per-note Loro docs are acquired by each mounted BlockOutliner
+  // (ref-counted registry) — the shell no longer opens a doc for the focused
+  // buffer. On teardown, force any pending rAF-coalesced deltas onto the wire
+  // so the last keystrokes before a shell swap still ship.
   onDestroy(() => {
-    void openActiveNoteDoc(null);
+    flushAllOutbound();
   });
 
   // ── keydown wiring (mirror of v4/+layout.svelte) ─────────────────────────

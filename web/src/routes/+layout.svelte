@@ -34,10 +34,7 @@
     handleRecurringRolled,
   } from "$lib/notifications";
   import { ensureSystemWidgets } from "$lib/system-widgets";
-  import {
-    applyInboundToActive,
-    getActiveNoteDoc,
-  } from "$lib/loro/active-note-doc.svelte";
+  import { applyInboundToOpenDocs, flushAllOutbound } from "$lib/loro/note-doc-registry.svelte";
   import { api } from "$lib/api-client";
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
   import { registerBuiltinCommands } from "$lib/commands";
@@ -140,6 +137,10 @@
         queryClient.setQueryData(["views"], views);
       },
       onReconnected: () => {
+        // Ship any Loro ops typed during the outage FIRST: the registry's
+        // outbound cursor doesn't advance on a dropped send, and docs released
+        // while unsendable are parked until this flush drains them.
+        flushAllOutbound();
         // After a WebSocket drop, server-side WsEvents that fired during the
         // gap were lost. Recover by forcing an immediate broad refresh (no
         // debounce — we want missed remote changes visible at once). Also
@@ -152,36 +153,21 @@
         flushNoteRefreshNow();
       },
       onBinaryDelta: (updates) => {
-        // C2.2: the server broadcasts TLR2 Loro-delta frames on every edit.
-        // Apply any update that targets the ACTIVE note's doc into the web
-        // peer's Loro doc so it converges with the server in real time. This
-        // is the doc layer only — the converged doc is NOT yet fed into the
-        // editor (that's C2.3). Updates for other docs are ignored inside
-        // `applyInbound`.
-        applyInboundToActive(updates);
-        // Fallback: a relay-applied remote delta may target a note that is
-        // VIEWED but not the active editing buffer (e.g. today's daily on
-        // desktop while you edited on the phone) — `applyInboundToActive`
-        // drops those. Schedule a broad, debounced refresh so the daily /
-        // agenda / inbox / list queries re-fetch and render the change live
-        // instead of waiting for a hard refresh. The server suppresses our
-        // own-origin deltas, so this only fires for genuinely remote edits.
+        // The server broadcasts TLR2 Loro-delta frames on every edit. Route
+        // each update to whichever OPEN doc it targets (tesela-baa: one doc
+        // per mounted editor surface — every journal day, drawer tab, tag
+        // page — not just the focused note). Bound editors apply the splice
+        // live; the registry returns the updates that matched no open doc.
+        const unmatched = applyInboundToOpenDocs(updates);
+        // Broad, debounced refresh so daily / agenda / inbox / list queries
+        // re-fetch and render the change live instead of waiting for a hard
+        // refresh (covers non-editor surfaces AND unmatched docs). The server
+        // suppresses our own-origin deltas, so this only fires for genuinely
+        // remote edits.
         scheduleNoteRefresh(null, true);
-        const firstDocHex = updates[0]
-          ? Array.from(updates[0].doc)
-              .map((b) => b.toString(16).padStart(2, "0"))
-              .join("")
-          : "(none)";
-        // After applying, log one converged block's text so convergence is
-        // observable in the console (C2.2 visibility; removed when C2.3 wires
-        // the editor). Reads the first live block of the active doc.
-        const nd = getActiveNoteDoc();
-        const first = nd?.liveBlocks()[0];
         console.debug(
-          `[ws] TLR2 binary delta: ${updates.length} update(s), first doc=${firstDocHex}` +
-            (first
-              ? `; active[${first.bid.slice(0, 8)}]=${JSON.stringify(first.text)}`
-              : ""),
+          `[ws] TLR2 binary delta: ${updates.length} update(s), ` +
+            `${updates.length - unmatched.length} applied to open docs`,
         );
       },
       onPresence: (frame) => {

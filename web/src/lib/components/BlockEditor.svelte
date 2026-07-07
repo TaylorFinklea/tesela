@@ -2,7 +2,7 @@
   import { EditorView } from "@codemirror/view";
   import { Vim } from "@replit/codemirror-vim";
   import { gotoNote as moduleGotoNote } from "$lib/stores/active-pane-nav.svelte";
-  import { undoActiveDoc, redoActiveDoc } from "$lib/loro/active-note-doc.svelte";
+  import { undoFocusedDoc, redoFocusedDoc } from "$lib/loro/note-doc-registry.svelte";
 
   // Shared context always pointing to the currently focused block editor.
   // Vim actions are registered ONCE globally (Vim.defineAction is a singleton
@@ -366,18 +366,18 @@
     // which matches user expectation across both kinds of changes.
     Vim.defineAction("undoBlockOp", (cm: any) => {
       // CRDT-native text undo FIRST (cross-block, survives navigation, ciw):
-      // the active note doc's Loro UndoManager reverts the local peer's last
+      // the FOCUSED note's Loro UndoManager reverts the local peer's last
       // text edit. Then the structural snapshot stack (block delete/indent/…),
       // then cm-editor's own history as a last resort. Text-first matches the
       // common create-then-type flow (undo reverses text → structure).
-      if (undoActiveDoc()) return;
+      if (undoFocusedDoc()) return;
       if (vimCtx.undoOutliner?.()) return;
       cm?.execCommand?.("undo");
     });
     Vim.mapCommand("u", "action", "undoBlockOp", {}, { context: "normal" });
 
     Vim.defineAction("redoBlockOp", (cm: any) => {
-      if (redoActiveDoc()) return;
+      if (redoFocusedDoc()) return;
       if (vimCtx.redoOutliner?.()) return;
       cm?.execCommand?.("redo");
     });
@@ -476,10 +476,12 @@
   import { prefs } from "$lib/preferences.svelte";
   import { browser } from "$app/environment";
   import {
-    getActiveNoteDoc,
-    spliceActiveBlock,
+    getNoteDoc,
+    spliceNoteBlock,
     isLoroUndoApplying,
-  } from "$lib/loro/active-note-doc.svelte";
+    setFocusedNoteDoc,
+    clearFocusedNoteDoc,
+  } from "$lib/loro/note-doc-registry.svelte";
   import { deltaToChanges } from "$lib/loro/text-delta";
   // Phase 2 desktop presence: publish this caret + render remote ones.
   import { sendBinary } from "$lib/ws-client.svelte";
@@ -641,20 +643,19 @@
     /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
      *  vim actions for cycling drawer tabs from within the editor. */
     isPinnedTab?: boolean;
-    /** C2.3 — the block's dashed-UUID id. When present AND the active Loro
-     *  NoteDoc holds this block, the editor binds bidirectionally to the
+    /** C2.3 — the block's dashed-UUID id. When present AND `noteSlug`'s doc in
+     *  the registry holds this block, the editor binds bidirectionally to the
      *  block's `text_seq` LoroText: local typing emits character splices over
-     *  the WS (via `spliceActiveBlock`) instead of the whole-text HTTP block-op
+     *  the WS (via `spliceNoteBlock`) instead of the whole-text HTTP block-op
      *  POST, and remote splices apply live into this view. Absent (or block not
      *  yet in the doc — e.g. a brand-new local block) → the editor falls back to
      *  the existing `onchange` whole-text path. */
     bid?: string;
-    /** Presence — the filename-stem slug of the NOTE this editor's block lives
-     *  in (`note.id` in the parent). Threaded per-block so each day's editor in
-     *  the multi-day journal filters + publishes remote carets against ITS OWN
-     *  day's slug, not the single GLOBAL active doc (which only matches the
-     *  focused day → carets blacked out on every other day). Used for both the
-     *  `remoteCursorExtension` filter/render and the published presence frame. */
+    /** The filename-stem slug of the NOTE this editor's block lives in
+     *  (`note.id` in the parent), threaded per-block so each day's editor in
+     *  the multi-day journal acts against ITS OWN day. Keys the registry
+     *  lookup for the Loro splice binding, the `remoteCursorExtension`
+     *  filter/render, and the published presence frame. */
     noteSlug?: string;
     /** C2.3 — called instead of `onchange` for a LOCAL text edit that was
      *  successfully spliced into the block's LoroText (so it went out over the
@@ -1603,17 +1604,17 @@
     if (vimCtx.view === view) vimCtx.view = null;
   }
 
-  /** Resolve this block's `text_seq` LoroText handle off the active NoteDoc, or
-   *  null when not bound (no `bid`, no active doc, doc closed, or the block
-   *  isn't in the doc yet). Browser-only. */
+  /** Resolve this block's `text_seq` LoroText handle off ITS OWN note's doc in
+   *  the registry, or null when not bound (no `bid`, no `noteSlug`, doc not
+   *  open, or the block isn't in the doc yet). Browser-only. */
   function loroTextContainer(): LoroText | null {
     if (!browser || !bid) return null;
-    return getActiveNoteDoc()?.blockTextContainer(bid) ?? null;
+    return getNoteDoc(noteSlug)?.blockTextContainer(bid) ?? null;
   }
 
   /** C2.3 write path. Translate every change region in a LOCAL CM update into a
    *  UTF-16 delete-then-insert splice on the block's LoroText (which broadcasts
-   *  the delta over the WS via `spliceActiveBlock`). Returns true iff this block
+   *  the delta over the WS via `spliceNoteBlock`). Returns true iff this block
    *  is bound AND at least one splice was applied — the caller then SKIPS the
    *  whole-text HTTP save for this edit. Returns false (→ whole-text fallback)
    *  when unbound or no splice ran.
@@ -1634,7 +1635,7 @@
     let any = false;
     for (let i = edits.length - 1; i >= 0; i--) {
       const e = edits[i];
-      if (spliceActiveBlock(bid, e.from, e.delLen, e.insert)) any = true;
+      if (spliceNoteBlock(noteSlug, bid, e.from, e.delLen, e.insert)) any = true;
     }
     return any;
   }
@@ -1660,7 +1661,7 @@
     // `by: "local"` events are our own splices — already in the editor — EXCEPT
     // when a Loro undo/redo is applying: its inverse ops are also `by: "local"`
     // but the editor does NOT have them yet, so they must be applied here. That
-    // window is flagged by the active-note-doc undo wrapper.
+    // window is flagged by the doc-registry undo wrapper.
     if (batch.by === "local" && !isLoroUndoApplying()) return;
     let applied = false;
     for (const ev of batch.events) {
@@ -1731,9 +1732,18 @@
     });
 
     const focusBlurHandler = EditorView.domEventHandlers({
-      focus: () => { setFocusedEditor(blockId ?? ""); wireVimCtx(); onFocus?.(); return false; },
+      focus: () => {
+        setFocusedEditor(blockId ?? "");
+        // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
+        // block's note doc while the block is focused.
+        setFocusedNoteDoc(blockId ?? "", noteSlug);
+        wireVimCtx();
+        onFocus?.();
+        return false;
+      },
       blur: (_e, v) => {
         clearFocusedEditor(blockId ?? "");
+        clearFocusedNoteDoc(blockId ?? "");
         clearVimCtxIfMine();
         // Model B — lift detected tokens when LEAVING the block (commit-time),
         // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
@@ -2098,9 +2108,9 @@
         if (presencePendingOffset === null) return;
         const off = presencePendingOffset;
         presencePendingOffset = null;
-        // Publish THIS block's own note slug (threaded as a prop), not the
-        // single global active doc — so each day's editor in the multi-day
-        // journal advertises the day it actually belongs to.
+        // Publish THIS block's own note slug (threaded as a prop) so each
+        // day's editor in the multi-day journal advertises the day it
+        // actually belongs to.
         const slug = noteSlug;
         if (!slug || !bid) return;
         sendBinary(
@@ -2131,13 +2141,13 @@
         }
         const doc = update.state.doc.toString();
         // C2.3 write path: a genuine LOCAL text edit. If this block is bound to
-        // the active Loro doc, translate each CM change region into a UTF-16
-        // splice on the block's `text_seq` (CM offsets ARE LoroText UTF-16
-        // offsets — no convertPos) and broadcast the delta over the WS. The
-        // whole-text HTTP save is then SKIPPED for this edit (`onLoroText`
-        // updates ParsedBlock without saving). If the splice can't run (no
-        // active doc, block not yet in the doc — e.g. a brand-new local block,
-        // or no `bid`), fall back to the existing whole-text `onChange` path.
+        // its note's doc in the registry, translate each CM change region into
+        // a UTF-16 splice on the block's `text_seq` (CM offsets ARE LoroText
+        // UTF-16 offsets — no convertPos) and broadcast the delta over the WS.
+        // The whole-text HTTP save is then SKIPPED for this edit (`onLoroText`
+        // updates ParsedBlock without saving). If the splice can't run (doc not
+        // open, block not yet in the doc — e.g. a brand-new local block, or no
+        // `bid`), fall back to the existing whole-text `onChange` path.
         if (applyLocalSplicesToLoro(update)) {
           onLoroText?.(doc);
         } else {

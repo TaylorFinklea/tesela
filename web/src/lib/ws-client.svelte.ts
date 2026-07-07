@@ -282,14 +282,17 @@ function handleBinaryFrame(bytes: Uint8Array) {
 }
 
 /// Send a pre-framed binary payload (e.g. a TLR2 Loro-delta frame) over the
-/// socket when it's OPEN. No-op if the socket isn't open. Outbound use lands in
-/// C2.3; exposed now so the codec round-trips end-to-end over the wire.
-export function sendBinary(frame: Uint8Array): void {
+/// socket when it's OPEN. Returns false — WITHOUT sending — when the socket
+/// isn't open, so callers that must not lose the payload (the doc registry's
+/// outbound cursor only advances on a real handoff) can retry after reconnect.
+export function sendBinary(frame: Uint8Array): boolean {
   if (socket && socket.readyState === WebSocket.OPEN) {
     // Send the exact frame bytes as a fresh ArrayBuffer. `slice` copies just
     // the view's range (correct even if `frame` is a subarray) and yields an
     // ArrayBuffer-backed buffer, which `WebSocket.send` accepts unambiguously
     // (a generic `Uint8Array<ArrayBufferLike>` is not assignable directly).
     socket.send(frame.slice().buffer);
+    return true;
   }
+  return false;
 }

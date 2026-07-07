@@ -4,6 +4,17 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-07-07 — tesela-baa ships as a MULTI-DOC registry: extend the client-replica splice model to every mounted editor; server-side splice RPC rejected
+
+A 6-reader mapping pass found the bead's premise stale: web/desktop ALREADY had true per-keystroke splice collab (C2.2/C2.3, 68f8100e/faeffdd4, 2026-06-04 — client wasm LoroDoc → TLR2 WS → `apply_inbound_delta`), but keyed to a process-wide SINGLETON bound to the shell's focused buffer, and the journal's default daily buffer resolves to TODAY only. That singleton scope IS the 9iy storm mechanism on the authoring side: typing into the Jul-2 daily on Jul-3 never spliced — it fell back to 500ms whole-block writes (`write_block_text`), producing the monolithic 105-char rewrite the investigation found. Decisions:
+
+- **Extend the client-owned-replica model (`NoteDocRegistry`, ref-counted, one doc per note with a mounted editor); acquisition moved from the shell's focus effect to `BlockOutliner` mount** — every editing surface (journal days, drawer tabs, tag pages, GrPage) acquires its note's doc, so binding no longer depends on focus at all. Spec: `phases/2026-07-07-per-edit-splices-spec.md`.
+- **Server-side splice RPC (wiring `splice_block_text` into a route/WS message) REJECTED for web/desktop:** raw `(offset, delete_len, insert)` triples computed against a remote, concurrently-mutating doc are unsound; iOS gets away with them only because its FFI engine IS its local replica. A remote client doing char-level collab must own a real CRDT replica. (Server unchanged: `apply_inbound_delta` already routes per-note and takes the apply-lock.)
+- **Vim undo/redo route via editor-id-guarded focused-doc tracking** (Vim actions are a global registry; the focused BlockEditor sets its note's doc as the undo target).
+- **Adversarial review (3 lenses → refute pass) confirmed two majors in the first cut, both fixed + regression-tested:** (1) the outbound cursor advanced past sends `sendBinary` silently dropped while the WS was down — stranding keystrokes forever (worse post-baa: newly-bound surfaces skip the durable HTTP fallback). Now: `send` reports handoff; cursor advances ONLY on success; docs released while unsendable are PARKED at zero refs and drained by `flushAllOutbound()` on WS reconnect. (2) release/flushAll flushed with a null cursor, exporting a merely-viewed note's ENTIRE oplog (bootstrap included — MBs for big notes). Now: cursor baselines to the post-bootstrap version at open + flushes are dirty-gated (remote-only imports never re-broadcast).
+- Deferred, filed: engine write-tail debounce `tesela-ofu` (O(note) snapshot+materialize per import — pre-existing, now hotter); journal scroll-depth doc retention `tesela-bjp` (grow-only mountedSections × per-mount doc); loro `get_or_create_container` deprecation / container-twinning investigation `tesela-65f`.
+- Verified: 14 registry unit tests (fake models full-history-export + droppable sends), 599 web unit total, svelte-check clean, cargo sync+server green, and a new Playwright two-context same-block storm e2e (per-character survival + convergence — the exact 9iy shape).
+
 ### 2026-07-05 — Conductor triage fields live in bd METADATA, never prose (verify_cmd is metadata-only; Arena/cycle silently Untriage prose-triaged beads)
 
 Arena/cycle dispatch refuses untriaged beads. Source of truth: `harness-conductor/src/fields.rs` (+ `arena.rs:716` → `"{} has no verify_cmd metadata; arena requires self-certifying beads"`). The field-resolution rules:

@@ -47,7 +47,7 @@
     type BlockOp,
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
-  import { spliceActiveBlock } from "$lib/loro/active-note-doc.svelte";
+  import { spliceNoteBlock, acquireNoteDoc, releaseNoteDoc } from "$lib/loro/note-doc-registry.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
@@ -495,6 +495,18 @@
   // body-sync effect can distinguish a real noteId change (always replace)
   // from a same-note body update (preserve focus by block id).
   let lastBodyNoteId = $state(noteId);
+
+  // tesela-baa: hold this note's Loro doc open (ref-counted) while any
+  // outliner renders it, so EVERY visible editor — each journal day, drawer
+  // tab, tag page — gets the char-splice collab binding, not just the focused
+  // note (the 9iy storm gap: typing into a non-focused day fell back to
+  // whole-block writes and raced concurrent same-block edits).
+  $effect(() => {
+    const slug = noteId;
+    if (!slug) return;
+    void acquireNoteDoc(slug);
+    return () => releaseNoteDoc(slug);
+  });
 
   // True when focusedIndex was set by the page-mount auto-focus effect, not
   // by a user action. Suppresses the empty-block→Insert auto-entry below so
@@ -1183,7 +1195,7 @@
     // LoroText-BOUND block must reach the bound editor + persist over the WS, or
     // the change (e.g. the just-added `tags:: Task` line) never lands in the
     // editor's document and the next keystroke drops it. Splice the MINIMAL diff
-    // into the block's `text_seq`. `spliceActiveBlock` no-ops + returns false
+    // into the block's `text_seq`. `spliceNoteBlock` no-ops + returns false
     // when the block isn't bound — then we fall back to the whole-text HTTP op.
     // (User edits on bound blocks arrive via `handleLoroText`, not here; on
     // unbound blocks the splice no-ops — so only bound programmatic edits change
@@ -1194,7 +1206,8 @@
       while (p < min && oldText[p] === newRawText[p]) p++;
       let s = 0;
       while (s < min - p && oldText[oldText.length - 1 - s] === newRawText[newRawText.length - 1 - s]) s++;
-      const spliced = spliceActiveBlock(
+      const spliced = spliceNoteBlock(
+        noteId,
         prev.bid,
         p,
         oldText.length - p - s,
