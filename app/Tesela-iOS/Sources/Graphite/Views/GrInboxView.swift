@@ -201,6 +201,8 @@ struct GrInboxView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if rows.isEmpty {
             emptyState
+        } else if activeView?.displayMode == "kanban" {
+            kanbanContent
         } else {
             List {
                 if let mode = activeView?.displayMode, mode != "list" {
@@ -266,12 +268,101 @@ struct GrInboxView: View {
         }
     }
 
-    /// Honest note when the active view stores a table/kanban display
-    /// preference: iOS renders a list; the layout applies on web.
+    /// Honest note when the active view stores a table display preference
+    /// (tesela-ya4.6 — iOS table mode isn't built yet): iOS renders a list;
+    /// the columnar layout applies on web. Kanban has its own native render
+    /// path (`kanbanContent` below) and never reaches this branch.
     private func displayModeNote(_ mode: String) -> some View {
         Text("\(mode) view — shown as a list on iOS; full layout on web")
             .font(.system(size: 10.5, design: .monospaced))
             .foregroundStyle(theme.fgFaint)
+    }
+
+    // ── Kanban (tesela-ya4.5) ────────────────────────────────────────────
+
+    /// First positive `tag:X` filter in the active view's DSL — drives the
+    /// tag-scoped vs. data-derived group-by candidate resolution (decision
+    /// 3c / `KanbanLogic.candidateProperties`).
+    private var kanbanTagName: String? {
+        // Parens matter: `activeView?.dsl.flatMap(...)` optional-chains the
+        // WHOLE `dsl.flatMap(...)` expression, so `dsl` inside it resolves
+        // as a plain (non-optional) `String` and `.flatMap` picks the
+        // `Sequence` overload (over `Character`) instead of `Optional`'s.
+        (activeView?.dsl).flatMap(KanbanLogic.inferredTag(fromDsl:))
+    }
+
+    private var kanbanCandidates: [PropertyDef] {
+        KanbanLogic.candidateProperties(tagName: kanbanTagName, items: rows, registry: mosaic.propertyRegistry)
+    }
+
+    private func kanbanResolveDef(_ name: String) -> PropertyDef? {
+        KanbanLogic.resolveDef(name, tagName: kanbanTagName, registry: mosaic.propertyRegistry)
+    }
+
+    /// The resolved group-by property name — spec decision 3, iOS subset
+    /// (a → c → honest nil; GrInboxView is always a saved-view context, so
+    /// (b)'s per-surface pref never applies here).
+    private var kanbanGroupByName: String? {
+        KanbanLogic.resolveGroupBy(
+            displayGroupBy: activeView?.displayGroupBy,
+            candidates: kanbanCandidates,
+            resolveDef: kanbanResolveDef
+        )
+    }
+
+    private var kanbanGroupByDef: PropertyDef? {
+        kanbanGroupByName.flatMap(kanbanResolveDef)
+    }
+
+    @ViewBuilder
+    private var kanbanContent: some View {
+        if let def = kanbanGroupByDef, let name = kanbanGroupByName {
+            GrKanbanBoard(
+                items: rows,
+                groupByDef: def,
+                groupByProp: name,
+                onOpen: { item in
+                    guard !item.page_id.isEmpty else { return }
+                    navigationPath.append(GrPageRoute(slug: item.page_id))
+                },
+                onMove: { item, value in
+                    await moveCard(item, groupByProp: name, value: value)
+                }
+            )
+        } else {
+            // Decision 3(d) — honest empty state. Never silently fall back
+            // to the list under a kanban toggle.
+            VStack {
+                Spacer()
+                Text(
+                    "No groupable select property found for this view. Add a "
+                    + "select property with choices, or set a group-by on this view."
+                )
+                .font(.system(size: 12.5))
+                .foregroundStyle(theme.fgMuted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.bg)
+        }
+    }
+
+    /// Move a card to another kanban column: writes `groupByProp` via the
+    /// same block-granular `setBlockProperty` triage already uses, then
+    /// re-runs the active query so the board reflects the new column.
+    /// `.relay` already bumps `refreshTick` internally on a successful
+    /// write, but `.http` has no equivalent push — re-querying explicitly
+    /// covers both backends uniformly.
+    private func moveCard(_ item: QueryItem, groupByProp: String, value: String) async {
+        guard let bid = item.block_id else { return }
+        do {
+            try await mosaic.setBlockProperty(blockId: bid, key: groupByProp.lowercased(), value: value)
+            await runActiveQuery()
+        } catch {
+            // Silent — the sheet already dismissed; the next refresh reconciles.
+        }
     }
 
     // ── Card (.grm-icard) ───────────────────────────────────────────────
