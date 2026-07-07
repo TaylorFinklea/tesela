@@ -31,7 +31,7 @@ test("command-manifest.json entries have unique ids", () => {
 test("command-manifest.json entries carry only manifest fields — no run/when closures", () => {
   const allowed = new Set([
     "id", "verb", "label", "glyph", "category", "shortcut", "chord",
-    "surfaces", "keywords", "takes_arg", "arg_prompt",
+    "surfaces", "keywords", "takes_arg", "arg_prompt", "description",
   ]);
   for (const entry of manifest) {
     assert.equal("run" in entry, false, `${entry.id}: manifest entry must not carry run`);
