@@ -2750,6 +2750,516 @@
         "noteType": null
       },
       "expect": true
+    },
+    {
+      "name": "vp9.7-in-three-member-quoted-match",
+      "dsl": "status IN (todo, \"in progress\", done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "in progress"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-in-three-member-quoted-miss",
+      "dsl": "status IN (todo, \"in progress\", done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "blocked"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-in-space-before-comma",
+      "dsl": "status IN (todo , doing)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-in-padded-parens-and-commas",
+      "dsl": "status IN ( todo ,  doing )",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-not-in-quoted-member-excludes",
+      "dsl": "status NOT IN (\"to do\", done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "to do"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-not-in-quoted-nonmember-passes",
+      "dsl": "status NOT IN (\"to do\", done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-between-date-in-range",
+      "dsl": "deadline BETWEEN 2026-05-01 AND 2026-05-31",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "deadline": "2026-05-15"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-between-date-below-range",
+      "dsl": "deadline BETWEEN 2026-05-01 AND 2026-05-31",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "deadline": "2026-04-30"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-between-date-above-range",
+      "dsl": "deadline BETWEEN 2026-05-01 AND 2026-05-31",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "deadline": "2026-06-01"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-order-by-multi-key-does-not-break-match",
+      "dsl": "tag = task ORDER BY status ASC, deadline DESC",
+      "block": {
+        "text": "row",
+        "tags": [
+          "task"
+        ],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-order-by-multi-key-does-not-break-miss",
+      "dsl": "tag = task ORDER BY status ASC, deadline DESC",
+      "block": {
+        "text": "row",
+        "tags": [
+          "other"
+        ],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-eq-quoted-unicode-value-match",
+      "dsl": "title = \"café day\"",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "title": "café day"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-eq-quoted-unicode-value-miss",
+      "dsl": "title = \"café day\"",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "title": "coffee day"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-like-quoted-unicode-space-match",
+      "dsl": "title LIKE \"%café day%\"",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "title": "Meet at the café day festival"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-like-quoted-unicode-space-miss",
+      "dsl": "title LIKE \"%café day%\"",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "title": "Meet at the diner"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-is-not-null-scheduled-present",
+      "dsl": "scheduled IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "scheduled": "2026-07-10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-is-not-null-scheduled-missing",
+      "dsl": "scheduled IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-is-not-null-deadline-present",
+      "dsl": "deadline IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "deadline": "2026-07-10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-is-not-null-deadline-missing",
+      "dsl": "deadline IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-is-null-custom-property-present",
+      "dsl": "priority IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "priority": "high"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-is-null-custom-property-missing",
+      "dsl": "priority IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-tag-is-null-quirk-always-true-when-tagged",
+      "dsl": "tag IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [
+          "work"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-tag-is-null-quirk-always-true-when-untagged",
+      "dsl": "tag IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-is-ne-heading-infix-excludes-heading",
+      "dsl": "is != heading",
+      "block": {
+        "text": "# Section header",
+        "tags": [],
+        "properties": {},
+        "isHeading": true,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-is-ne-heading-infix-passes-plain",
+      "dsl": "is != heading",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-on-ne-daily-page-infix-excludes",
+      "dsl": "on != daily-page",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": true,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-on-ne-daily-page-infix-passes",
+      "dsl": "on != daily-page",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-on-ne-system-pages-infix-excludes",
+      "dsl": "on != system-pages",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": "Tag"
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-on-ne-system-pages-infix-passes",
+      "dsl": "on != system-pages",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-mixed-colon-jql-or-first-branch",
+      "dsl": "status:done OR points > 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done",
+          "points": "1"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-mixed-colon-jql-or-second-branch",
+      "dsl": "status:done OR points > 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo",
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-mixed-colon-jql-or-neither",
+      "dsl": "status:done OR points > 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo",
+          "points": "1"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-not-prefix-status-colon-excludes",
+      "dsl": "NOT status:done",
+      "block": {
+        "text": "Finished",
+        "tags": [],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "vp9.7-not-prefix-status-colon-passes",
+      "dsl": "NOT status:done",
+      "block": {
+        "text": "Plain block",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "vp9.7-not-prefix-tag-colon-passes",
+      "dsl": "NOT tag:a",
+      "block": {
+        "text": "row",
+        "tags": [
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
     }
   ]
 }
