@@ -114,6 +114,11 @@
           // group-by resolution decision 3a fires and group-by changes
           // round-trip through `updateView` instead of localStorage.
           viewId: selected.id,
+          // ya4.4 — the saved view's table column config; QueryTable
+          // writes hide/reorder/sort changes back through `updateView`
+          // (same round-trip-authoritative contract as `group` above)
+          // when `viewId` is set.
+          tableConfig: selected.display_table_config,
         }
       : null,
   );

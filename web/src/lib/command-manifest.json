@@ -1809,6 +1809,115 @@
     "arg_prompt": null
   },
   {
+    "id": "table.hide-column",
+    "verb": null,
+    "label": "Table: hide focused column",
+    "glyph": "⊘",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "x"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "hide",
+      "column",
+      "remove"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.unhide-all-columns",
+    "verb": null,
+    "label": "Table: unhide all columns",
+    "glyph": "◎",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "U"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "unhide",
+      "show",
+      "column",
+      "reset"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.move-column-left",
+    "verb": null,
+    "label": "Table: move focused column left",
+    "glyph": "◀",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "H"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "move",
+      "column",
+      "prev",
+      "left",
+      "reorder"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
+    "id": "table.move-column-right",
+    "verb": null,
+    "label": "Table: move focused column right",
+    "glyph": "▶",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "L"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "move",
+      "column",
+      "next",
+      "right",
+      "reorder"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null
+  },
+  {
     "id": "editor.collection",
     "verb": "collection",
     "label": "Collection",

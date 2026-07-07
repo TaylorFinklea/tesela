@@ -2,6 +2,8 @@
  * Hand-written type (not from ts-rs because widgets aren't a backend concept —
  * they're a parsed view of `note_type: Query` notes' frontmatter).
  */
+import type { TableColumnConfig } from "$lib/table/table-config";
+
 export type WidgetSection = "pinned" | "browse" | "saved";
 
 /**
@@ -46,4 +48,11 @@ export type Widget = {
    * (unchanged from before this bead).
    */
   viewId?: string | null;
+  /**
+   * tesela-ya4.4 — the saved view's `display_table_config` (hide/reorder/
+   * sort). Like `group`, only meaningful when `viewId` marks this widget as
+   * a saved-view mount; `QueryTable` ignores it otherwise (a plain
+   * Query-note widget / tag page uses its own localStorage config).
+   */
+  tableConfig?: TableColumnConfig | null;
 };

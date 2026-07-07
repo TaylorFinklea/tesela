@@ -13,6 +13,7 @@ import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
 import type { PropertyDef } from "$lib/types/PropertyDef";
+import type { TableColumnConfig } from "$lib/table/table-config";
 import type { KeymapConfig } from "$lib/stores/keybindings.svelte";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
@@ -187,6 +188,7 @@ export const api = {
     display_mode?: string;
     display_group_by?: string;
     display_show_done?: boolean;
+    display_table_config?: TableColumnConfig;
   }) => post<ViewRecord>("/views", req),
   updateView: (
     id: string,
@@ -197,6 +199,10 @@ export const api = {
       display_mode?: string;
       display_group_by?: string;
       display_show_done?: boolean;
+      /** tesela-ya4.4 — round-trip-authoritative: a saved-view table's
+       *  hide/reorder/sort change PUTs the FULL config here every time
+       *  (spec decision 4, mirroring `display_group_by`'s write-back). */
+      display_table_config?: TableColumnConfig;
     },
   ) => put<ViewRecord>(`/views/${encodeURIComponent(id)}`, req),
   deleteView: (id: string) =>
@@ -452,6 +458,8 @@ export interface ViewRecord {
   display_mode: string;
   display_group_by: string | null;
   display_show_done: boolean | null;
+  /** tesela-ya4.4 — table column display config (hide/reorder/sort). */
+  display_table_config: TableColumnConfig | null;
 }
 
 export interface CurrentMosaicResponse {

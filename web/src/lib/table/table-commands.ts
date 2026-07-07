@@ -4,7 +4,11 @@
  * (the cmdd spine), not only via the table's own in-pane keydown handler.
  * Mirrors `kanban/kanban-commands.ts` (tesela-ya4.2) exactly.
  *
- * The DIRECT key bindings (j/k/h/l/g/G/0/$/Enter/e/i/s) live in
+ * tesela-ya4.4 adds hide/unhide-all/move-column-left/move-column-right
+ * (gap G5 — column display config persistence) alongside the pre-existing
+ * sort, which now persists too (see `table-config.ts`/`QueryTable.svelte`).
+ *
+ * The DIRECT key bindings (j/k/h/l/g/G/0/$/Enter/e/i/s/x/U/H/L) live in
  * `QueryTable.svelte::handleTableKeydown`. Those + these registry entries
  * route to the SAME handlers: each registered command's `run` dispatches a
  * `tesela:run-table-command` CustomEvent carrying its id, and the focused
@@ -169,7 +173,8 @@ export function registerTableCommands(): void {
       ["edit", "properties", "drawer", "inspect"],
       "table.edit-properties",
     ),
-    // ── sort (acceptance: sortable header, keyboard-reachable) ──
+    // ── sort (acceptance: sortable header, keyboard-reachable; persists
+    // via updateView/localStorage as of ya4.4 — see table-config.ts) ──
     cmd(
       "table.sort-column",
       "Table: sort by focused column",
@@ -177,6 +182,39 @@ export function registerTableCommands(): void {
       ["s", "s"],
       ["sort", "column", "toggle", "order"],
       "table.sort-column",
+    ),
+    // ── column display config (ya4.4, gap G5) ──
+    cmd(
+      "table.hide-column",
+      "Table: hide focused column",
+      "⊘",
+      ["s", "x"],
+      ["hide", "column", "remove"],
+      "table.hide-column",
+    ),
+    cmd(
+      "table.unhide-all-columns",
+      "Table: unhide all columns",
+      "◎",
+      ["s", "U"],
+      ["unhide", "show", "column", "reset"],
+      "table.unhide-all-columns",
+    ),
+    cmd(
+      "table.move-column-left",
+      "Table: move focused column left",
+      "◀",
+      ["s", "H"],
+      ["move", "column", "prev", "left", "reorder"],
+      "table.move-column-left",
+    ),
+    cmd(
+      "table.move-column-right",
+      "Table: move focused column right",
+      "▶",
+      ["s", "L"],
+      ["move", "column", "next", "right", "reorder"],
+      "table.move-column-right",
     ),
   ];
 
