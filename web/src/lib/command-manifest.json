@@ -23,7 +23,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "hsplit",
@@ -49,7 +50,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "close-pane",
@@ -74,7 +76,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-left",
@@ -100,7 +103,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-right",
@@ -126,7 +130,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-up",
@@ -152,7 +157,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-down",
@@ -178,7 +184,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tabnew",
@@ -203,7 +210,8 @@
       "window"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tab-close",
@@ -227,7 +235,8 @@
       "kill"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "jump",
@@ -254,7 +263,8 @@
       "page"
     ],
     "takes_arg": true,
-    "arg_prompt": "note slug or id"
+    "arg_prompt": "note slug or id",
+    "description": null
   },
   {
     "id": "backlinks",
@@ -279,7 +289,8 @@
       "backlinks-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "outline",
@@ -304,7 +315,8 @@
       "outline-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "properties",
@@ -329,7 +341,8 @@
       "properties-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tasks",
@@ -354,7 +367,8 @@
       "tasks-linked-to-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "graph-local",
@@ -379,7 +393,8 @@
       "local-graph-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "instances-of-tag",
@@ -404,7 +419,8 @@
       "uses"
     ],
     "takes_arg": true,
-    "arg_prompt": "tag slug"
+    "arg_prompt": "tag slug",
+    "description": null
   },
   {
     "id": "backlinks-of-tag",
@@ -428,7 +444,8 @@
       "uses"
     ],
     "takes_arg": true,
-    "arg_prompt": "tag slug"
+    "arg_prompt": "tag slug",
+    "description": null
   },
   {
     "id": "calendar",
@@ -452,7 +469,8 @@
       "calendar"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "in-progress",
@@ -476,7 +494,8 @@
       "today-in-progress"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "dashboard",
@@ -500,7 +519,8 @@
       "workspace-dashboard"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "ai",
@@ -524,7 +544,8 @@
       "ai-workspace"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "agenda",
@@ -548,7 +569,8 @@
       "agenda"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "inbox",
@@ -572,7 +594,8 @@
       "inbox"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "daily",
@@ -596,7 +619,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "goto",
@@ -623,7 +647,8 @@
       "daily"
     ],
     "takes_arg": true,
-    "arg_prompt": "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd"
+    "arg_prompt": "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd",
+    "description": null
   },
   {
     "id": "scratch",
@@ -648,7 +673,8 @@
       "new"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "promote",
@@ -673,7 +699,8 @@
       "scratch"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "delete-tag",
@@ -697,7 +724,8 @@
       "remove"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "convert-to-tag",
@@ -721,7 +749,8 @@
       "type"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "convert-to-note",
@@ -745,7 +774,8 @@
       "type"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "rename-slug",
@@ -770,7 +800,8 @@
       "disambiguate"
     ],
     "takes_arg": true,
-    "arg_prompt": "new slug (e.g., cardinal-religion)"
+    "arg_prompt": "new slug (e.g., cardinal-religion)",
+    "description": null
   },
   {
     "id": "prune-scratches",
@@ -796,7 +827,8 @@
       "delete"
     ],
     "takes_arg": true,
-    "arg_prompt": "days threshold (default: workspace setting)"
+    "arg_prompt": "days threshold (default: workspace setting)",
+    "description": null
   },
   {
     "id": "settings-general",
@@ -822,7 +854,8 @@
       "general"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-devices",
@@ -848,7 +881,8 @@
       "devices"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-sync",
@@ -874,7 +908,8 @@
       "sync"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-mosaic",
@@ -900,7 +935,8 @@
       "mosaic"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-data",
@@ -926,7 +962,8 @@
       "data"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "new-note",
@@ -951,7 +988,8 @@
       "page"
     ],
     "takes_arg": true,
-    "arg_prompt": "note title"
+    "arg_prompt": "note title",
+    "description": null
   },
   {
     "id": "peek",
@@ -975,7 +1013,8 @@
       "popover"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "fullscreen-graph",
@@ -999,7 +1038,8 @@
       "visual"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "command-station",
@@ -1023,7 +1063,8 @@
       "cmdk"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "yesterday-daily",
@@ -1047,7 +1088,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tomorrow-daily",
@@ -1071,7 +1113,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "keymap",
@@ -1096,7 +1139,8 @@
       "keyboard"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "skip-occurrence",
@@ -1122,7 +1166,8 @@
       "occurrence"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.cycle-group-by",
@@ -1148,7 +1193,8 @@
       "groupby"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.cycle-group-by-back",
@@ -1175,7 +1221,8 @@
       "back"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.new-card",
@@ -1201,7 +1248,8 @@
       "add"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-down",
@@ -1226,7 +1274,8 @@
       "next"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-up",
@@ -1251,7 +1300,8 @@
       "prev"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-left",
@@ -1277,7 +1327,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-right",
@@ -1303,7 +1354,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-first",
@@ -1328,7 +1380,8 @@
       "top"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.focus-last",
@@ -1353,7 +1406,8 @@
       "bottom"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.open-card",
@@ -1379,7 +1433,8 @@
       "card"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.open-move-picker",
@@ -1404,7 +1459,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.move-card-prev-col",
@@ -1431,7 +1487,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.move-card-next-col",
@@ -1458,7 +1515,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "kanban.edit-properties",
@@ -1484,7 +1542,8 @@
       "inspect"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-down",
@@ -1511,7 +1570,8 @@
       "row"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-up",
@@ -1538,7 +1598,8 @@
       "row"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-first-row",
@@ -1565,7 +1626,8 @@
       "row"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-last-row",
@@ -1592,7 +1654,8 @@
       "row"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-left",
@@ -1619,7 +1682,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-right",
@@ -1646,7 +1710,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-first-col",
@@ -1672,7 +1737,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.focus-last-col",
@@ -1698,7 +1764,8 @@
       "column"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.open-row",
@@ -1725,7 +1792,8 @@
       "row"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.edit-cell",
@@ -1752,7 +1820,8 @@
       "value"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.edit-properties",
@@ -1779,7 +1848,8 @@
       "inspect"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.sort-column",
@@ -1806,7 +1876,8 @@
       "order"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.collection",
@@ -1829,7 +1900,8 @@
       "cards"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.date",
@@ -1853,7 +1925,8 @@
       "calendar"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.heading",
@@ -1878,7 +1951,8 @@
       "block"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.link",
@@ -1901,7 +1975,8 @@
       "reference"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.property",
@@ -1925,7 +2000,8 @@
       "attribute"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.query",
@@ -1948,7 +2024,8 @@
       "search"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": "Insert a live query:: block — filters/sorts blocks or pages by JQL. Examples: \"status = todo AND priority > 2\", \"type = project AND scheduled IS NULL\", \"tag = urgent ORDER BY deadline ASC\"."
   },
   {
     "id": "editor.tag",
@@ -1971,7 +2048,8 @@
       "category"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.task",
@@ -1996,7 +2074,8 @@
       "tag"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.template",
@@ -2019,7 +2098,8 @@
       "boilerplate"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.widget",
@@ -2042,6 +2122,7 @@
       "collection"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   }
 ]

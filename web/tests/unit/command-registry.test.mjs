@@ -864,6 +864,7 @@ test("toManifestEntry strips run/when and resolves defaults", () => {
     keywords: ["a"],
     takes_arg: false,
     arg_prompt: null,
+    description: null,
   });
   assert.equal("run" in entry, false);
   assert.equal("when" in entry, false);
@@ -888,6 +889,29 @@ test("toManifestEntry carries verb/shortcut/chord/argPrompt through, surfaces so
   assert.equal(entry.takes_arg, true);
   assert.equal(entry.arg_prompt, "target id");
   assert.deepEqual(entry.surfaces, [...entry.surfaces].sort());
+});
+
+test("toManifestEntry carries description through when set, null otherwise", () => {
+  const withDescription = toManifestEntry({
+    id: "cmd-c",
+    label: "Cmd C",
+    glyph: "c",
+    category: "editor",
+    keywords: ["c"],
+    description: "Longer usage notes with an example.",
+    run: () => {},
+  });
+  assert.equal(withDescription.description, "Longer usage notes with an example.");
+
+  const withoutDescription = toManifestEntry({
+    id: "cmd-d",
+    label: "Cmd D",
+    glyph: "d",
+    category: "editor",
+    keywords: ["d"],
+    run: () => {},
+  });
+  assert.equal(withoutDescription.description, null);
 });
 
 test("commandRegistry.manifest() maps every registered command, closure-free, in registration order", () => {
