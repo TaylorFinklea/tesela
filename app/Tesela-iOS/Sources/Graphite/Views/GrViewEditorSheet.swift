@@ -23,6 +23,12 @@ struct GrViewEditorSheet: View {
     let onSave: (SavedView, Bool) async throws -> Void
     /// Delete the view (never called for builtins/new views).
     let onDelete: (String) async throws -> Void
+    /// The live property/type registry — drives the query-completion
+    /// strip's KEY (property names) and VALUE (select choices / type
+    /// names) tiers (tesela-vp9.5, spec decision 4). Defaults to an
+    /// empty registry so existing call sites/previews keep compiling;
+    /// `GrInboxView` wires `mosaic.propertyRegistry`.
+    var propertyRegistry: PropertyRegistry = PropertyRegistry()
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -38,12 +44,14 @@ struct GrViewEditorSheet: View {
         existing: SavedView?,
         siblings: [SavedView],
         onSave: @escaping (SavedView, Bool) async throws -> Void,
-        onDelete: @escaping (String) async throws -> Void
+        onDelete: @escaping (String) async throws -> Void,
+        propertyRegistry: PropertyRegistry = PropertyRegistry()
     ) {
         self.existing = existing
         self.siblings = siblings
         self.onSave = onSave
         self.onDelete = onDelete
+        self.propertyRegistry = propertyRegistry
         self._name = State(initialValue: existing?.name ?? "")
         self._dsl = State(initialValue: existing?.dsl ?? "")
         self._displayMode = State(initialValue: existing?.displayMode ?? "list")
@@ -100,18 +108,24 @@ struct GrViewEditorSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionLabel("Query")
             card {
-                TextField(
-                    "status:todo tag:project -has:scheduled",
-                    text: $dsl,
-                    axis: .vertical
-                )
-                .font(.system(size: 13.5, design: .monospaced))
-                .foregroundStyle(theme.fgDefault)
-                .tint(theme.accentPrimary)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .lineLimit(2...6)
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField(
+                        "status:todo tag:project -has:scheduled",
+                        text: $dsl,
+                        axis: .vertical
+                    )
+                    .font(.system(size: 13.5, design: .monospaced))
+                    .foregroundStyle(theme.fgDefault)
+                    .tint(theme.accentPrimary)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .lineLimit(2...6)
+                    if !dsl.isEmpty {
+                        tokenPreviewRow
+                    }
+                }
             }
+            completionStrip
             if let inlineError {
                 Text(inlineError)
                     .font(.system(size: 11))
@@ -129,12 +143,91 @@ struct GrViewEditorSheet: View {
 
     /// The inline validation/save error. A live DSL parse error wins so
     /// the user sees it while typing; otherwise the last save failure.
+    /// tesela-vp9.5: the parse error text now comes from
+    /// `SavedViewLogic.dslValidationError`'s real `QueryDiagnostic` hint
+    /// (span-located, e.g. "'AND' has no right-hand predicate — near
+    /// “AND”") rather than one generic message.
     private var inlineError: String? {
         if !dsl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let err = SavedViewLogic.dslValidationError(dsl) {
             return err
         }
         return errorText
+    }
+
+    /// Read-only, horizontally-scrollable line under the query field
+    /// rendering the CURRENT text's tokens colored by kind (spec item 2)
+    /// — key/operator/value/string/number/paren, theme colors mirroring
+    /// how `InlineNLPHighlighter` colors inline-NLP token kinds in the
+    /// UITextView-backed editors — with diagnostic spans underlined red.
+    private var tokenPreviewRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            previewText
+                .font(.system(size: 11.5, design: .monospaced))
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .scrollClipDisabled()
+    }
+
+    private var previewText: Text {
+        let diagnostics = LocalQueryEngine.parseSimpleDslWithDiagnostics(dsl).diagnostics
+        let spans = QueryAuthoring.buildPreviewSpans(dsl, diagnostics: diagnostics)
+        return spans.reduce(Text("")) { acc, span in
+            var piece = Text(span.text).foregroundStyle(previewColor(for: span.kind))
+            if span.diagnostic {
+                piece = piece.underline(true, color: .red)
+            }
+            return acc + piece
+        }
+    }
+
+    private func previewColor(for kind: QueryAuthoring.PreviewTokenKind?) -> Color {
+        switch kind {
+        case .key: return theme.accentSecondary
+        case .operatorKind: return theme.fgMuted
+        case .value: return theme.fgDefault
+        case .string: return theme.typeNote
+        case .number: return theme.typeProject
+        case .paren: return theme.fgFaint
+        case nil: return theme.fgFaint
+        }
+    }
+
+    /// Suggestion strip driven by caret-context classification (spec
+    /// item 1). SwiftUI's `TextField` doesn't expose a real caret
+    /// position without a `UIViewRepresentable` migration the spec
+    /// defers past v1 — so the "working caret" here is always the END of
+    /// the current text (`dsl.utf8.count`). Practically: completions
+    /// reflect "what comes next if you keep typing", not mid-string
+    /// editing; tapping a suggestion always appends/completes at the end.
+    private var completionStrip: some View {
+        let ctx = QueryAuthoring.caretContext(dsl, cursor: dsl.utf8.count)
+        let items = QueryAuthoring.buildCompletions(
+            ctx,
+            properties: propertyRegistry.properties,
+            typeNames: propertyRegistry.typeNames()
+        )
+        return Group {
+            if !items.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        ForEach(items) { item in
+                            GrChip(label: item.label) {
+                                applyCompletion(ctx, item.label)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .scrollClipDisabled()
+            }
+        }
+    }
+
+    private func applyCompletion(_ ctx: QueryAuthoring.CaretContext, _ label: String) {
+        let result = QueryAuthoring.applyCompletion(dsl, ctx, label)
+        dsl = result.text
+        errorText = nil
     }
 
     private var insertersSection: some View {
@@ -159,12 +252,17 @@ struct GrViewEditorSheet: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
                 ForEach(chipRegistry.filter { $0.category == category }, id: \.id) { chip in
-                    let fragment = chip.clauses.joined(separator: " ")
+                    // tesela-vp9.5: inserter chips write/toggle the
+                    // chip's canonical JQL clause (`chip.jqlClause`), not
+                    // the legacy `chip.clauses` colon-DSL fragment the
+                    // live Inbox toolbar's `chipsFromDsl`/`dslFromChips`
+                    // round-trip still uses — see `ChipDef.jqlClause`'s
+                    // doc for why the two stay separate.
                     GrChip(
                         label: "\(chip.glyph) \(chip.label)",
-                        active: SavedViewLogic.fragmentActive(fragment, in: dsl)
+                        active: SavedViewLogic.fragmentActive(chip.jqlClause, in: dsl)
                     ) {
-                        dsl = SavedViewLogic.toggleFragment(fragment, in: dsl)
+                        dsl = SavedViewLogic.toggleFragment(chip.jqlClause, in: dsl)
                         errorText = nil
                     }
                 }
