@@ -47,6 +47,13 @@ export type Command = {
   surfaces?: ReadonlySet<Surface>;
   keywords: string[];
   argPrompt?: string;
+  /**
+   * Longer-form documentation for the command — usage notes, examples —
+   * beyond what `label` conveys in a row. Currently manifest-only data (no
+   * built-in UI renders it yet); a later surface (palette detail pane,
+   * chord-menu tooltip, …) can pick it up without another wire-through.
+   */
+  description?: string;
   /** Optional predicate controlling whether the command is available. */
   when?: (ctx: CommandContext) => boolean;
   run: (arg?: string, ctx?: CommandContext) => void | Promise<void>;
@@ -77,6 +84,7 @@ export type CommandManifestEntry = {
   keywords: string[];
   takes_arg: boolean;
   arg_prompt: string | null;
+  description: string | null;
 };
 
 /**
@@ -99,6 +107,7 @@ export function toManifestEntry(cmd: Command | RegisteredCommand): CommandManife
     keywords: cmd.keywords,
     takes_arg: !!cmd.argPrompt,
     arg_prompt: cmd.argPrompt ?? null,
+    description: cmd.description ?? null,
   };
 }
 
