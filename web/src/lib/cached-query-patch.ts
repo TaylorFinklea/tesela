@@ -6,10 +6,11 @@
  * SvelteKit's `$lib` alias (mirrors why `kanban-group-by.ts` was extracted).
  *
  * `queryKey` callers currently point at one of two shapes:
- *  - `ParsedBlock[]` — TagTable / the tag-page `getTypedBlocks` cache.
+ *  - `ParsedBlock[]` — the tag-page `getTypedBlocks` cache.
  *  - `QueryResult` (`{ groups: [{ items: QueryItem[] }] }`) — KanbanBoard's
- *    generalized `executeQuery`-backed source (tesela-ya4.1): the RAW
- *    `api.executeQuery` response, never a flat array.
+ *    and QueryTable's generalized `executeQuery`-backed sources
+ *    (tesela-ya4.1/ya4.3): the RAW `api.executeQuery` response, never a
+ *    flat array.
  *
  * Assuming every cache was the flat-array shape threw
  * `TypeError: previousBlocks.map is not a function` for every kanban card

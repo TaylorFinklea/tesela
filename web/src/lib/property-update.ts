@@ -1,6 +1,6 @@
 /**
  * Shared utility for updating block properties in note content.
- * Used by TagTable and KanbanBoard.
+ * Used by QueryTable and KanbanBoard.
  */
 import { api } from "$lib/api-client";
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
