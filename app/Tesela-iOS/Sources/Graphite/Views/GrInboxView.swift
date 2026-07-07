@@ -70,7 +70,8 @@ struct GrInboxView: View {
                 },
                 onDelete: { id in
                     try await deleteView(id: id)
-                }
+                },
+                propertyRegistry: mosaic.propertyRegistry
             )
             .environment(\.theme, theme)
             .preferredColorScheme(.dark)
