@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { createQuery } from "@tanstack/svelte-query";
+  import { api } from "$lib/api-client";
+  import QueryInput from "$lib/components/QueryInput.svelte";
+
   let {
     initialDsl,
     onSave,
@@ -17,18 +21,20 @@
     onSave(trimmed);
   }
 
-  function handleKey(e: KeyboardEvent) {
-    // ⌘↵ commits; Esc cancels — mirrors the rest of the app's sheet
-    // affordances. Plain Enter inserts a newline (textarea default)
-    // so the user can format multi-line drafts during a heavy edit.
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      commit();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      onCancel();
-    }
-  }
+  // QueryInput completion sources (property names + type names) —
+  // tesela-vp9.2, mirrors GrInbox/QueryBlock.
+  const propsQuery = createQuery(() => ({
+    queryKey: ["properties"] as const,
+    queryFn: () => api.listProperties(),
+  }));
+  const typesQuery = createQuery(() => ({
+    queryKey: ["types"] as const,
+    queryFn: () => api.listTypes(),
+  }));
+  const querySources = $derived({
+    properties: propsQuery.data ?? [],
+    types: typesQuery.data ?? [],
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -45,14 +51,14 @@
       <h2 class="text-[13px] font-semibold">Edit Inbox query</h2>
       <span class="text-[10px] text-muted-foreground font-mono">⌘↵ save · Esc cancel</span>
     </header>
-    <!-- svelte-ignore a11y_autofocus -->
-    <textarea
-      class="w-full h-32 p-2 rounded border border-border bg-background text-[13px] font-mono outline-none focus:border-accent resize-y"
+    <QueryInput
+      multiline
       bind:value={draft}
-      onkeydown={handleKey}
+      sources={querySources}
+      oncommit={commit}
+      oncancel={onCancel}
       autofocus
-      spellcheck="false"
-    ></textarea>
+    />
     <div class="mt-2 text-[11px] text-muted-foreground/70 leading-relaxed">
       <p>
         JQL-style. <code>kind:block</code> implicit. Example:
