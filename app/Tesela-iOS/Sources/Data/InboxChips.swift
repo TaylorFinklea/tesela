@@ -27,9 +27,34 @@ struct ChipDef: Hashable {
     let glyph: String
     /// Compact one-line explanation, used as accessibility hint / long-press preview.
     let hint: String
-    /// DSL fragment(s) the chip contributes when active. Most chips are a
-    /// single token. Order matters for round-tripping — keep canonical.
+    /// Legacy colon-DSL fragment(s) the chip contributes when active —
+    /// the shape `chipsFromDsl`/`dslFromChips` (below) still read/write
+    /// for the live Inbox toolbar's whitespace-token round-trip. Most
+    /// chips are a single token. Order matters for round-tripping — keep
+    /// canonical.
     let clauses: [String]
+    /// The chip's predicate written in canonical JQL (tesela-vp9.5,
+    /// spec decision 5) — what `GrViewEditorSheet`'s saved-view editor
+    /// inserts/toggles via `SavedViewLogic.toggleFragment`/
+    /// `fragmentActive` (parse-aware, not whitespace-token matching).
+    /// Deliberately a SEPARATE field from `clauses`, not a migration of
+    /// it: `chipsFromDsl`/`dslFromChips` are whitespace-token based and
+    /// would silently misparse a multi-word JQL clause (`status IS
+    /// NULL` tokenizes to three separate words), so the live Inbox
+    /// toolbar keeps reading/writing the legacy colon form while the
+    /// saved-view editor's chip inserters write JQL. Each mapping below
+    /// parses to the SAME predicate as its `clauses` counterpart
+    /// (verified by `QueryAuthoringTests`'s chip-equivalence cases) —
+    /// this is the table tesela-vp9.3 (web CHIP_REGISTRY → JQL) should
+    /// mirror:
+    ///   -has:status      → "status IS NULL"
+    ///   -is:heading      → "NOT is:heading"
+    ///   -on:daily-page   → "NOT on:daily-page"
+    ///   -on:system-pages → "NOT on:system-pages"
+    ///   has:scheduled    → "scheduled IS NOT NULL"
+    ///   has:deadline     → "deadline IS NOT NULL"
+    ///   -has:tag         → "tag IS NULL"
+    let jqlClause: String
     /// Whether the chip is on by default in a freshly-seeded Inbox
     /// (matters only when no saved Query note exists yet — the seed
     /// DSL is computed from these defaults).
@@ -56,6 +81,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "📥",
         hint: "Only blocks without a status:: property",
         clauses: ["-has:status"],
+        jqlClause: "status IS NULL",
         defaultOn: true,
         category: .scope
     ),
@@ -65,6 +91,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "🧱",
         hint: "Hide markdown section headings (### …) — they're dividers, not tasks",
         clauses: ["-is:heading"],
+        jqlClause: "NOT is:heading",
         defaultOn: true,
         category: .scope
     ),
@@ -74,6 +101,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "📅",
         hint: "Hide blocks on YYYY-MM-DD daily notes — journal captures aren't triage items",
         clauses: ["-on:daily-page"],
+        jqlClause: "NOT on:daily-page",
         defaultOn: true,
         category: .scope
     ),
@@ -83,6 +111,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "⚙️",
         hint: "Hide blocks on Tag / Property / Query / Template pages",
         clauses: ["-on:system-pages"],
+        jqlClause: "NOT on:system-pages",
         defaultOn: true,
         category: .scope
     ),
@@ -93,6 +122,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "🕒",
         hint: "Only blocks with a scheduled:: date",
         clauses: ["has:scheduled"],
+        jqlClause: "scheduled IS NOT NULL",
         defaultOn: false,
         category: .dates
     ),
@@ -102,6 +132,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "⚑",
         hint: "Only blocks with a deadline:: date",
         clauses: ["has:deadline"],
+        jqlClause: "deadline IS NOT NULL",
         defaultOn: false,
         category: .dates
     ),
@@ -112,6 +143,7 @@ let chipRegistry: [ChipDef] = [
         glyph: "🏷️",
         hint: "Only blocks without any tags",
         clauses: ["-has:tag"],
+        jqlClause: "tag IS NULL",
         defaultOn: false,
         category: .tags
     ),

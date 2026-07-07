@@ -119,53 +119,83 @@ enum SavedViewLogic {
     /// in `.relay` mode this check is the only gate (the engine's
     /// views_upsert doesn't validate DSL), and a substring would let
     /// "reorder bytes" persist a match-everything view fleet-wide.
+    ///
+    /// tesela-vp9.5: when the query IS rejected, the message prefers the
+    /// FIRST `QueryDiagnostic`'s hint + dropped snippet (real, span-
+    /// located feedback from `parseSimpleDslWithDiagnostics`) over the
+    /// old one-size-fits-all copy; the generic fallback only fires when
+    /// there are no diagnostics at all (e.g. a token stream that tokenizes
+    /// to nothing, like stray punctuation). A query that recognizes at
+    /// least one real predicate is still saveable even if it also has
+    /// dropped garbage elsewhere — diagnostics only change the MESSAGE
+    /// shown when already-invalid, never make a previously-valid query
+    /// invalid.
     /// Returns the error message, or nil when the DSL is saveable.
     static func dslValidationError(_ dsl: String) -> String? {
         let trimmed = dsl.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "Query must not be empty"
         }
-        let parsed = LocalQueryEngine.parseSimpleDsl(trimmed)
+        let (parsed, diagnostics) = LocalQueryEngine.parseSimpleDslWithDiagnostics(trimmed)
         let mentionsKind = trimmed.lowercased().contains("kind:")
-        if LocalQueryEngine.isEmptyExpr(parsed.expr) && parsed.sort == nil && !mentionsKind {
-            return "No filters recognized in “\(trimmed)” — use key:value "
-                + "filters like status:todo, tag:project, -has:scheduled"
+        guard LocalQueryEngine.isEmptyExpr(parsed.expr) && parsed.sort == nil && !mentionsKind else {
+            return nil
         }
-        return nil
+        if let first = diagnostics.first {
+            return "\(first.hint) — near “\(first.got)”"
+        }
+        return "No filters recognized in “\(trimmed)” — use key:value "
+            + "filters like status:todo, tag:project, -has:scheduled"
     }
 
-    /// Toggle a chip's DSL fragment in/out of the query string. The chip
-    /// inserters are one-tap writers INTO the text (DSL-first editing,
-    /// spec decision 2): if every whitespace token of `fragment` is
-    /// already present the fragment's tokens are removed; otherwise the
-    /// missing tokens are appended. Everything the user typed by hand is
-    /// preserved verbatim (token-level edit, no re-canonicalization).
-    static func toggleFragment(_ fragment: String, in dsl: String) -> String {
-        let fragmentTokens = fragment.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !fragmentTokens.isEmpty else { return dsl }
-        var tokens = dsl.split(whereSeparator: \.isWhitespace).map(String.init)
-        let allPresent = fragmentTokens.allSatisfy { tokens.contains($0) }
-        if allPresent {
-            for f in fragmentTokens {
-                if let idx = tokens.firstIndex(of: f) {
-                    tokens.remove(at: idx)
-                }
-            }
-        } else {
-            for f in fragmentTokens where !tokens.contains(f) {
-                tokens.append(f)
+    /// Toggle a chip's JQL predicate clause in/out of the query string.
+    /// The chip inserters are one-tap writers INTO the text (DSL-first
+    /// editing, spec decision 2). tesela-vp9.5: parse-aware — "present"
+    /// means the clause's parsed predicate (canonicalized, see
+    /// `QueryAuthoring.canonicalPredicate`) structurally equals one of
+    /// `dsl`'s top-level AND atoms, so a multi-token clause
+    /// (`status IS NULL`) is matched as ONE unit, and an equivalent
+    /// legacy phrasing (`-has:status`) the user typed by hand still
+    /// registers as active. Toggle-off removes the matching top-level
+    /// segment via its token span (`QueryAuthoring.topLevelSegments`);
+    /// toggle-on appends the clause space-separated (implicit AND).
+    /// Everything else in the string survives verbatim.
+    static func toggleFragment(_ jqlClause: String, in dsl: String) -> String {
+        let target = QueryAuthoring.canonicalPredicate(LocalQueryEngine.parseSimpleDsl(jqlClause).expr)
+        let (tokens, bytes) = LocalQueryEngine.tokenizeDsl(dsl)
+        let segments = QueryAuthoring.topLevelSegments(tokens)
+
+        for seg in segments {
+            let segText = String(decoding: bytes[seg.start..<seg.end], as: UTF8.self)
+            let segExpr = LocalQueryEngine.parseSimpleDsl(segText).expr
+            if QueryAuthoring.canonicalPredicate(segExpr) == target {
+                let before = String(decoding: bytes[0..<seg.start], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let after = String(decoding: bytes[seg.end...], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return [before, after].filter { !$0.isEmpty }.joined(separator: " ")
             }
         }
-        return tokens.joined(separator: " ")
+
+        // Not present (or present only in a shape this best-effort
+        // segmenter can't isolate, e.g. inside an OR/paren group — left
+        // untouched rather than risk corrupting a hand-written query).
+        if fragmentActive(jqlClause, in: dsl) { return dsl }
+        let trimmed = dsl.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? jqlClause : trimmed + " " + jqlClause
     }
 
-    /// Is the fragment currently active in the DSL (every token present)?
-    /// Drives the inserter chip's active styling.
-    static func fragmentActive(_ fragment: String, in dsl: String) -> Bool {
-        let fragmentTokens = fragment.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !fragmentTokens.isEmpty else { return false }
-        let tokens = Set(dsl.split(whereSeparator: \.isWhitespace).map(String.init))
-        return fragmentTokens.allSatisfy { tokens.contains($0) }
+    /// Is the chip's JQL predicate clause currently active in the DSL —
+    /// present (in canonical form) among `dsl`'s top-level AND atoms?
+    /// Drives the inserter chip's active styling. tesela-vp9.5:
+    /// parse-aware, replacing the old whitespace-token membership check
+    /// (which false-negatived on any multi-token JQL clause and
+    /// false-positived when a clause's individual words happened to
+    /// appear elsewhere in the string).
+    static func fragmentActive(_ jqlClause: String, in dsl: String) -> Bool {
+        let target = QueryAuthoring.canonicalPredicate(LocalQueryEngine.parseSimpleDsl(jqlClause).expr)
+        let atoms = QueryAuthoring.topLevelAtoms(LocalQueryEngine.parseSimpleDsl(dsl).expr)
+        return atoms.contains { QueryAuthoring.canonicalPredicate($0) == target }
     }
 
     /// UserDefaults key for the persisted active-view selection, scoped
