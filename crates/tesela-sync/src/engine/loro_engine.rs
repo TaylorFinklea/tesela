@@ -1476,7 +1476,15 @@ impl LoroEngine {
 //
 // CRDT shape: `views` LoroMap keyed by view id → per-view LoroMap of
 // scalar fields ({id, name, dsl, order, builtin, display_mode,
-// display_group_by?, display_show_done?}). Field-level LWW: concurrent
+// display_group_by?, display_show_done?, display_table_config?}).
+// `display_table_config` (tesela-ya4.4) is itself a compound value (hidden
+// columns / explicit order / sort), but is stored as ONE JSON-encoded
+// string field rather than a nested CRDT map — same flat-scalar,
+// whole-field-LWW shape every other `display_*` field already uses, so a
+// concurrent edit to (say) `display_group_by` on one device and a table
+// column reorder on another still merge cleanly (different keys), even
+// though two concurrent EDITS of the table config itself resolve as one
+// whole-field LWW rather than merging sub-fields. Field-level LWW: concurrent
 // edits of different fields both survive; same-field edits resolve
 // deterministically. Ordering is a plain `order` i64 per view (ties break
 // by id) — a CRDT list would add tombstone/move complexity for a registry
@@ -1560,6 +1568,12 @@ impl LoroEngine {
                     display_mode: get_str("display_mode").unwrap_or_else(|| "list".to_string()),
                     display_group_by: get_str("display_group_by").filter(|s| !s.is_empty()),
                     display_show_done: get_bool("display_show_done"),
+                    // tesela-ya4.4 — JSON-encoded compound field (see the
+                    // views-doc CRDT-shape comment above). A malformed or
+                    // absent value degrades to `None` (no override) rather
+                    // than failing the whole view's read.
+                    display_table_config: get_str("display_table_config")
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                 });
             }
         }
@@ -1629,6 +1643,17 @@ impl LoroEngine {
             Some(v) => entry.insert("display_show_done", v).map_err(ins)?,
             None => {
                 let _ = entry.delete("display_show_done");
+            }
+        }
+        match record.display_table_config.as_ref() {
+            Some(cfg) => {
+                let json = serde_json::to_string(cfg).map_err(|e| {
+                    SyncError::Storage(format!("display_table_config serialize: {e}"))
+                })?;
+                entry.insert("display_table_config", json.as_str()).map_err(ins)?;
+            }
+            None => {
+                let _ = entry.delete("display_table_config");
             }
         }
         let _ = doc

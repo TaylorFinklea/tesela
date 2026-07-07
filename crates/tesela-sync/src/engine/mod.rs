@@ -411,6 +411,42 @@ pub struct ViewRecord {
     pub display_group_by: Option<String>,
     /// Optional "include done items" toggle.
     pub display_show_done: Option<bool>,
+    /// tesela-ya4.4 — table column display config (hide / reorder / sort),
+    /// round-trip-authoritative for a saved-view table per spec decision 4
+    /// (mirrors `display_group_by`'s write-back contract). Additive: absent
+    /// in older records/payloads, which deserializes to `None` (serde's
+    /// built-in `Option<T>` missing-key default, reinforced here with
+    /// `#[serde(default)]` for defense in depth). Stored in the CRDT views
+    /// doc as a single JSON-encoded string field (same flat-scalar,
+    /// whole-field-LWW shape as every other `display_*` field) rather than
+    /// a nested CRDT container — see `loro_engine.rs`'s views doc comment.
+    #[serde(default)]
+    pub display_table_config: Option<TableColumnConfig>,
+}
+
+/// tesela-ya4.4 — one saved view's table display config: which columns are
+/// hidden, an explicit column order override, and the active sort. Every
+/// field defaults empty/`None` so an absent config behaves exactly like "no
+/// override" (natural column resolution + no sort).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableColumnConfig {
+    /// Property names hidden from the table.
+    #[serde(default)]
+    pub hidden: Vec<String>,
+    /// Explicit column display order (property names). Columns not
+    /// mentioned here render after the ordered ones, in their naturally
+    /// resolved order (see `resolveTableColumns`/`applyTableConfig` on the
+    /// web side).
+    #[serde(default)]
+    pub order: Vec<String>,
+    /// Property name currently sorted by, if any.
+    #[serde(default)]
+    pub sort_by: Option<String>,
+    /// Sort direction ("asc" | "desc"); only meaningful when `sort_by` is
+    /// set. A plain string (not an enum) to match `display_mode`'s
+    /// boundary-validated-string convention.
+    #[serde(default)]
+    pub sort_dir: Option<String>,
 }
 
 /// One note's entry in the Loro index doc.
@@ -428,4 +464,68 @@ pub struct IndexEntry {
     /// Outbound `[[wiki-link]]` targets, deduped + sorted (the link
     /// graph edges originating from this note).
     pub links: Vec<String>,
+}
+
+#[cfg(test)]
+mod display_table_config_tests {
+    use super::{TableColumnConfig, ViewRecord};
+
+    fn sample_view() -> ViewRecord {
+        ViewRecord {
+            id: "v-table".to_string(),
+            name: "Table".to_string(),
+            dsl: "tag:task".to_string(),
+            order: 10,
+            builtin: false,
+            display_mode: "table".to_string(),
+            display_group_by: None,
+            display_show_done: None,
+            display_table_config: None,
+        }
+    }
+
+    /// tesela-ya4.4 — an older `ViewRecord` JSON payload that predates the
+    /// `display_table_config` field must still deserialize, defaulting the
+    /// new field to `None` (additive-field acceptance for the shared
+    /// serde shape crossing HTTP + FFI boundaries).
+    #[test]
+    fn view_record_json_without_table_config_field_deserializes_to_none() {
+        let json = serde_json::json!({
+            "id": "v-old",
+            "name": "Old",
+            "dsl": "tag:x",
+            "order": 10,
+            "builtin": false,
+            "display_mode": "list",
+            "display_group_by": null,
+            "display_show_done": null,
+        });
+        let record: ViewRecord = serde_json::from_value(json).expect("deserializes without the new field");
+        assert_eq!(record.display_table_config, None);
+    }
+
+    /// A populated config round-trips through JSON byte-for-byte-equivalent
+    /// (field order aside) — the shape `updateView` sends/receives.
+    #[test]
+    fn table_column_config_json_round_trips() {
+        let mut view = sample_view();
+        view.display_table_config = Some(TableColumnConfig {
+            hidden: vec!["notes".to_string()],
+            order: vec!["priority".to_string(), "status".to_string()],
+            sort_by: Some("priority".to_string()),
+            sort_dir: Some("desc".to_string()),
+        });
+        let json = serde_json::to_string(&view).unwrap();
+        let back: ViewRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, view);
+    }
+
+    /// An explicitly-empty config (`{}` — every field defaulted) also
+    /// round-trips, so a client that sends a bare object to reset the
+    /// override doesn't fail to parse.
+    #[test]
+    fn table_column_config_empty_object_deserializes_to_default() {
+        let cfg: TableColumnConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(cfg, TableColumnConfig::default());
+    }
 }

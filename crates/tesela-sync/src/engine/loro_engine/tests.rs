@@ -216,6 +216,7 @@ fn user_view(id: &str, name: &str, dsl: &str, order: i64) -> crate::engine::View
         display_mode: "list".to_string(),
         display_group_by: None,
         display_show_done: None,
+        display_table_config: None,
     }
 }
 

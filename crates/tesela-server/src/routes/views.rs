@@ -22,7 +22,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tesela_core::query::{parse_query, BoolExpr};
-use tesela_sync::ViewRecord;
+use tesela_sync::{TableColumnConfig, ViewRecord};
 
 use crate::{
     error::{AppError, AppResult},
@@ -66,6 +66,19 @@ fn validate_display_mode(mode: &str) -> Result<(), AppError> {
         "invalid display_mode '{mode}': expected one of {}",
         DISPLAY_MODES.join("|")
     )))
+}
+
+/// tesela-ya4.4 — the only shape constraint on a table column config: if
+/// `sort_dir` is set it must be "asc" | "desc". `hidden`/`order`/`sort_by`
+/// are free-form property-name lists the server doesn't resolve against a
+/// type (the client owns column resolution), so nothing to validate there.
+fn validate_table_config(cfg: &TableColumnConfig) -> Result<(), AppError> {
+    match cfg.sort_dir.as_deref() {
+        None | Some("asc") | Some("desc") => Ok(()),
+        Some(other) => Err(AppError::Validation(format!(
+            "invalid display_table_config.sort_dir '{other}': expected 'asc' or 'desc'"
+        ))),
+    }
 }
 
 /// Look one view up by id (the registry holds 6–12 entries; a list scan
@@ -132,6 +145,9 @@ pub struct CreateViewReq {
     pub display_group_by: Option<String>,
     #[serde(default)]
     pub display_show_done: Option<bool>,
+    /// tesela-ya4.4 — table column display config (hide / reorder / sort).
+    #[serde(default)]
+    pub display_table_config: Option<TableColumnConfig>,
 }
 
 /// `POST /views` — create a saved view. The server mints the id unless one
@@ -156,6 +172,9 @@ pub async fn create_view(
         }
         _ => "list".to_string(),
     };
+    if let Some(cfg) = req.display_table_config.as_ref() {
+        validate_table_config(cfg)?;
+    }
 
     let existing = s.sync_engine.views_list().await;
     let id = match req.id.as_deref().map(str::trim) {
@@ -184,6 +203,7 @@ pub async fn create_view(
         display_mode,
         display_group_by: req.display_group_by.filter(|g| !g.trim().is_empty()),
         display_show_done: req.display_show_done,
+        display_table_config: req.display_table_config,
     };
     s.sync_engine
         .views_upsert(record.clone())
@@ -210,6 +230,13 @@ pub struct UpdateViewReq {
     pub display_group_by: Option<String>,
     #[serde(default)]
     pub display_show_done: Option<bool>,
+    /// tesela-ya4.4 — table column display config (hide / reorder / sort).
+    /// Round-trip-authoritative (spec decision 4): a saved-view table's
+    /// hide/reorder/sort changes PUT the full config here on every change.
+    /// Omitted (`None`) keeps the stored value; a client wanting to reset
+    /// the override sends an explicit empty config (`{}`), not an omission.
+    #[serde(default)]
+    pub display_table_config: Option<TableColumnConfig>,
 }
 
 /// `PUT /views/{id}` — update name/dsl/display/order on an existing view
@@ -251,6 +278,10 @@ pub async fn update_view(
     }
     if let Some(show_done) = req.display_show_done {
         record.display_show_done = Some(show_done);
+    }
+    if let Some(cfg) = req.display_table_config {
+        validate_table_config(&cfg)?;
+        record.display_table_config = Some(cfg);
     }
 
     s.sync_engine
@@ -333,4 +364,79 @@ pub async fn reorder_views(
     }
     notify_views_changed(&s).await;
     Ok(Json(s.sync_engine.views_list().await))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── tesela-ya4.4 — table column config validation + wire shape ───────
+    // In-process unit tests only (no `AppState`/child server needed) —
+    // `cargo test -p tesela-server --lib` runs these; the spawn-style HTTP
+    // suite in `tests/views_registry_routes.rs` covers the same shapes at
+    // the wire level but is environment-blocked on this machine.
+
+    #[test]
+    fn validate_table_config_accepts_none_asc_desc() {
+        assert!(validate_table_config(&TableColumnConfig::default()).is_ok());
+        assert!(validate_table_config(&TableColumnConfig {
+            sort_dir: Some("asc".to_string()),
+            ..Default::default()
+        })
+        .is_ok());
+        assert!(validate_table_config(&TableColumnConfig {
+            sort_dir: Some("desc".to_string()),
+            ..Default::default()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_table_config_rejects_other_sort_dir() {
+        let err = validate_table_config(&TableColumnConfig {
+            sort_dir: Some("descending".to_string()),
+            ..Default::default()
+        });
+        assert!(err.is_err());
+    }
+
+    /// `CreateViewReq`/`UpdateViewReq` must deserialize a payload that
+    /// omits `display_table_config` entirely (additive-field acceptance —
+    /// an older web/iOS build's PUT body must not 400 just because it
+    /// predates this field).
+    #[test]
+    fn create_and_update_req_deserialize_without_table_config_field() {
+        let create: CreateViewReq = serde_json::from_value(serde_json::json!({
+            "name": "Tasks",
+            "dsl": "tag:task",
+        }))
+        .expect("CreateViewReq without display_table_config");
+        assert!(create.display_table_config.is_none());
+
+        let update: UpdateViewReq = serde_json::from_value(serde_json::json!({
+            "name": "Tasks",
+        }))
+        .expect("UpdateViewReq without display_table_config");
+        assert!(update.display_table_config.is_none());
+    }
+
+    /// The shape `QueryTable`'s hide/reorder/sort write-back actually
+    /// sends: a populated config nested under `display_table_config`.
+    #[test]
+    fn update_req_deserializes_populated_table_config() {
+        let update: UpdateViewReq = serde_json::from_value(serde_json::json!({
+            "display_table_config": {
+                "hidden": ["notes"],
+                "order": ["priority", "status"],
+                "sort_by": "priority",
+                "sort_dir": "desc",
+            }
+        }))
+        .expect("UpdateViewReq with a populated display_table_config");
+        let cfg = update.display_table_config.expect("config present");
+        assert_eq!(cfg.hidden, vec!["notes".to_string()]);
+        assert_eq!(cfg.order, vec!["priority".to_string(), "status".to_string()]);
+        assert_eq!(cfg.sort_by.as_deref(), Some("priority"));
+        assert_eq!(cfg.sort_dir.as_deref(), Some("desc"));
+    }
 }

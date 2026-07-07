@@ -27,12 +27,18 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
     /// Optional "include done items" toggle. Not edited on iOS —
     /// preserved through updates.
     var displayShowDone: Bool?
+    /// tesela-ya4.4 — table column display config (hide/reorder/sort).
+    /// iOS STORES this (round-trips it through both the FFI `.relay` path
+    /// and the `.http` JSON path) but does NOT render it — the native
+    /// table view is a later bead (ya4.6).
+    var displayTableConfig: SavedViewTableConfig?
 
     enum CodingKeys: String, CodingKey {
         case id, name, dsl, order, builtin
         case displayMode = "display_mode"
         case displayGroupBy = "display_group_by"
         case displayShowDone = "display_show_done"
+        case displayTableConfig = "display_table_config"
     }
 
     /// The engine's fixed id for the seeded builtin Inbox
@@ -64,7 +70,8 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
             builtin: ffi.builtin,
             displayMode: ffi.displayMode,
             displayGroupBy: ffi.displayGroupBy,
-            displayShowDone: ffi.displayShowDone
+            displayShowDone: ffi.displayShowDone,
+            displayTableConfig: ffi.displayTableConfig.map(SavedViewTableConfig.init(ffi:))
         )
     }
 
@@ -76,7 +83,8 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
         builtin: Bool,
         displayMode: String,
         displayGroupBy: String?,
-        displayShowDone: Bool?
+        displayShowDone: Bool?,
+        displayTableConfig: SavedViewTableConfig? = nil
     ) {
         self.id = id
         self.name = name
@@ -86,6 +94,7 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
         self.displayMode = displayMode
         self.displayGroupBy = displayGroupBy
         self.displayShowDone = displayShowDone
+        self.displayTableConfig = displayTableConfig
     }
 
     /// Bridge to the FFI record (the `.relay` write path).
@@ -98,8 +107,45 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
             builtin: builtin,
             displayMode: displayMode,
             displayGroupBy: displayGroupBy,
-            displayShowDone: displayShowDone
+            displayShowDone: displayShowDone,
+            displayTableConfig: displayTableConfig?.ffiRecord
         )
+    }
+}
+
+/// tesela-ya4.4 — table column display config (hide/reorder/sort), the
+/// app-side mirror of `tesela_sync::TableColumnConfig` / the FFI
+/// `TableColumnConfig` record. Same dual-mode contract as `SavedView`
+/// itself: Codable for the `.http` JSON path (snake_case keys matching
+/// the server's serde shape), and bridges to/from the FFI record for the
+/// `.relay` path. iOS stores this opaquely — it is never read for
+/// rendering (the native table view is ya4.6).
+struct SavedViewTableConfig: Equatable, Hashable, Codable {
+    var hidden: [String]
+    var order: [String]
+    var sortBy: String?
+    var sortDir: String?
+
+    enum CodingKeys: String, CodingKey {
+        case hidden, order
+        case sortBy = "sort_by"
+        case sortDir = "sort_dir"
+    }
+
+    init(ffi: TableColumnConfig) {
+        self.init(hidden: ffi.hidden, order: ffi.order, sortBy: ffi.sortBy, sortDir: ffi.sortDir)
+    }
+
+    init(hidden: [String], order: [String], sortBy: String?, sortDir: String?) {
+        self.hidden = hidden
+        self.order = order
+        self.sortBy = sortBy
+        self.sortDir = sortDir
+    }
+
+    /// Bridge to the FFI record (the `.relay` write path).
+    var ffiRecord: TableColumnConfig {
+        TableColumnConfig(hidden: hidden, order: order, sortBy: sortBy, sortDir: sortDir)
     }
 }
 

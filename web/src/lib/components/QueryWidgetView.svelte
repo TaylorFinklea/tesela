@@ -106,10 +106,18 @@
     />
   {:else if showTable}
     <!-- tesela-ya4.3 — generalized table block source (decision 2, gap
-         G4): same DSL, same `executeQuery` source Kanban uses. -->
+         G4): same DSL, same `executeQuery` source Kanban uses.
+         tesela-ya4.4 — `viewId`/`tableConfig` mirror KanbanBoard's
+         `viewId`/`displayGroupBy` (decision 4): only carry the saved-view
+         override when `widget.viewId` marks this as a saved-view mount;
+         `configStorageKey` mirrors `groupByStorageKey` for the non-saved-
+         view localStorage path. -->
     <QueryTable
       dsl={widget.query}
       tagName={inferredTag}
+      viewId={widget.viewId ?? null}
+      tableConfig={widget.viewId ? (widget.tableConfig ?? null) : null}
+      configStorageKey={inferredTag ?? widget.id}
       focused={true}
       {onOpenRow}
     />
