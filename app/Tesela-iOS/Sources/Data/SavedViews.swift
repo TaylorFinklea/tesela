@@ -21,8 +21,12 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
     /// Result rendering: "list" | "table" | "kanban". iOS renders every
     /// mode as a list; the preference is stored for web.
     var displayMode: String
-    /// Optional grouping key (kanban columns / table groups). Not edited
-    /// on iOS — preserved through updates.
+    /// Optional grouping key (kanban columns / table groups). Editable on
+    /// iOS for kanban boards (tesela-ya4.7 — `GrViewEditorSheet`'s "Group
+    /// by" picker); `nil` means decision 3's resolution order (a → c → d)
+    /// takes over rather than an explicit override. Table-relevant on web
+    /// only in principle — no web UI edits it for table mode either, so
+    /// the iOS picker stays kanban-only too.
     var displayGroupBy: String?
     /// Optional "include done items" toggle. Not edited on iOS —
     /// preserved through updates.
@@ -242,6 +246,30 @@ enum SavedViewLogic {
         let target = QueryAuthoring.canonicalPredicate(LocalQueryEngine.parseSimpleDsl(jqlClause).expr)
         let atoms = QueryAuthoring.topLevelAtoms(LocalQueryEngine.parseSimpleDsl(dsl).expr)
         return atoms.contains { QueryAuthoring.canonicalPredicate($0) == target }
+    }
+
+    /// Merge `GrViewEditorSheet`'s draft fields into the record to persist
+    /// (tesela-ya4.7 extends the draft with the group-by pick). `base` is
+    /// either the view being edited or a freshly-minted one for "create" —
+    /// everything else on `base` (id, order, builtin, displayShowDone,
+    /// displayTableConfig, …) survives untouched, so a builtin's `builtin`
+    /// flag can never flip via a save. `displayGroupBy: nil` means the
+    /// picker's "Default" option: clearing the field so decision 3's
+    /// resolution order (a → c → d) takes over at render/query time
+    /// instead of an explicit override.
+    static func applyingDraft(
+        to base: SavedView,
+        name: String,
+        dsl: String,
+        displayMode: String,
+        displayGroupBy: String?
+    ) -> SavedView {
+        var record = base
+        record.name = name
+        record.dsl = dsl
+        record.displayMode = displayMode
+        record.displayGroupBy = displayGroupBy
+        return record
     }
 
     /// UserDefaults key for the persisted active-view selection, scoped

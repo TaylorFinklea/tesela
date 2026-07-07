@@ -147,6 +147,52 @@ final class KanbanLogicTests: XCTestCase {
         XCTAssertTrue(candidates.isEmpty)
     }
 
+    // MARK: - editorCandidateProperties (tesela-ya4.7 — GrViewEditorSheet's picker)
+
+    func testEditorCandidatesTagScopedMatchLiveCandidatePropertiesExactly() {
+        // Tag-scoped `candidateProperties` never reads `items`, so the
+        // editor (no items) and the live board (real items) must agree.
+        XCTAssertEqual(
+            KanbanLogic.editorCandidateProperties(tagName: "Task", registry: registry()).map(\.name),
+            KanbanLogic.candidateProperties(tagName: "Task", items: [], registry: registry()).map(\.name)
+        )
+        XCTAssertEqual(
+            KanbanLogic.editorCandidateProperties(tagName: "Task", registry: registry()).map(\.name),
+            ["Status"]
+        )
+    }
+
+    func testEditorCandidatesNonTagScopedFallsBackToEverySelectWithChoicesProperty() {
+        // Non-tag-scoped `candidateProperties(items: [])` always returns
+        // `[]` (its items-presence filter can never pass with no items) —
+        // the editor must fall back to the full registry instead of
+        // showing an empty picker.
+        XCTAssertEqual(KanbanLogic.candidateProperties(tagName: nil, items: [], registry: registry()), [])
+        XCTAssertEqual(
+            KanbanLogic.editorCandidateProperties(tagName: nil, registry: registry()).map(\.name),
+            ["Status"],
+            "Priority (no choices) and Notes (text) stay excluded; only Status qualifies"
+        )
+    }
+
+    func testEditorCandidatesEmptyRegistryYieldsEmptyList() {
+        let empty = PropertyRegistry()
+        XCTAssertTrue(KanbanLogic.editorCandidateProperties(tagName: nil, registry: empty).isEmpty)
+        XCTAssertTrue(KanbanLogic.editorCandidateProperties(tagName: "Task", registry: empty).isEmpty)
+    }
+
+    func testEditorCandidatesNonTagScopedFallbackIsSortedByName() {
+        let reg = PropertyRegistry.build(from: [
+            statusPage,
+            note("Zebra", "Property", ["value_type": "select", "choices": ["z1", "z2"]]),
+            note("Alpha", "Property", ["value_type": "select", "choices": ["a1", "a2"]]),
+        ])
+        XCTAssertEqual(
+            KanbanLogic.editorCandidateProperties(tagName: nil, registry: reg).map(\.name),
+            ["Alpha", "Status", "Zebra"]
+        )
+    }
+
     // MARK: - resolveDef
 
     func testResolveDefHonorsExplicitOverrideOutsideCandidateList() {
