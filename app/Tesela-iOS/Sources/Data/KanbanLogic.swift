@@ -64,6 +64,33 @@ enum KanbanLogic {
             .sorted { $0.name < $1.name }
     }
 
+    /// Group-by candidates for the saved-view EDITOR's picker (tesela-ya4.7,
+    /// spec decision 4/G7) — `GrViewEditorSheet` has a draft DSL but never
+    /// runs a query, so it has no `items` to pass to `candidateProperties`.
+    /// For a tag-scoped draft this defers straight to `candidateProperties`
+    /// (that branch never reads `items`, so it's identical to what the live
+    /// board would show). For a non-tag-scoped draft, `candidateProperties`
+    /// would always return `[]` (its `items`-presence filter can never pass
+    /// with an empty items list) — so this falls back to every
+    /// select-with-choices property in the registry instead. That fallback
+    /// is a strict SUPERSET of what the board would offer, never a mismatch
+    /// that could make a picked value silently no-op: `resolveDef` (the
+    /// actual accept gate the board applies to `displayGroupBy` at render
+    /// time) doesn't filter by `candidateProperties` membership at all for
+    /// a non-tag-scoped view — it only requires the picked name to resolve
+    /// to a select-with-choices def somewhere in the registry.
+    static func editorCandidateProperties(
+        tagName: String?,
+        registry: PropertyRegistry
+    ) -> [PropertyDef] {
+        if let tagName {
+            return candidateProperties(tagName: tagName, items: [], registry: registry)
+        }
+        return registry.properties.values
+            .filter(isSelectWithChoices)
+            .sorted { $0.name < $1.name }
+    }
+
     /// Resolve ANY property name (not just a `candidateProperties` member)
     /// to its select-with-choices def — an explicit `displayGroupBy` must be
     /// honored even when it isn't in the candidate list (decision 3a

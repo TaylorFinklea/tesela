@@ -38,6 +38,10 @@ struct GrViewEditorSheet: View {
     @State private var name: String
     @State private var dsl: String
     @State private var displayMode: String
+    /// Kanban group-by pick (tesela-ya4.7). `nil` = "Default" — decision
+    /// 3's resolution order (a → c → d) takes over rather than an
+    /// explicit override.
+    @State private var displayGroupBy: String?
     @State private var errorText: String? = nil
     @State private var busy = false
     @State private var confirmDelete = false
@@ -57,6 +61,7 @@ struct GrViewEditorSheet: View {
         self._name = State(initialValue: existing?.name ?? "")
         self._dsl = State(initialValue: existing?.dsl ?? "")
         self._displayMode = State(initialValue: existing?.displayMode ?? "list")
+        self._displayGroupBy = State(initialValue: existing?.displayGroupBy)
     }
 
     private var isNew: Bool { existing == nil }
@@ -78,6 +83,7 @@ struct GrViewEditorSheet: View {
                         querySection
                         insertersSection
                         displaySection
+                        groupBySection
                         saveSection
                         if !isNew {
                             deleteSection
@@ -318,6 +324,53 @@ struct GrViewEditorSheet: View {
         .buttonStyle(.plain)
     }
 
+    /// Group-by candidates for the draft's current tag scope (tesela-ya4.7,
+    /// `KanbanLogic.editorCandidateProperties`'s doc). Re-derives on every
+    /// access, so it reflects live edits to `dsl` — typing a different
+    /// `tag:X` swaps the candidate set immediately (spec requirement 2).
+    private var groupByCandidates: [PropertyDef] {
+        KanbanLogic.editorCandidateProperties(
+            tagName: KanbanLogic.inferredTag(fromDsl: dsl),
+            registry: propertyRegistry
+        )
+    }
+
+    /// "Group by" picker — visible only for kanban (decision 4/G7): kanban
+    /// is the only display mode either platform's editor lets a group-by
+    /// drive (web only ever edits `display_group_by` inline on the live
+    /// `KanbanBoard.svelte`, never for table), and iOS's own table render
+    /// is still `ya4.6` (list-only, no columns to group). Builtins stay
+    /// editable here just like every other field in this sheet — the
+    /// delete affordance is the only builtin restriction (`deleteSection`).
+    @ViewBuilder
+    private var groupBySection: some View {
+        if displayMode == "kanban" {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionLabel("Group by")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        groupByChip(nil, label: "Default")
+                        ForEach(groupByCandidates, id: \.name) { def in
+                            groupByChip(def.name, label: def.name)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .scrollClipDisabled()
+                sectionCaption(
+                    "Kanban columns. Default follows the saved view's own "
+                    + "group-by, then the first matching select property."
+                )
+            }
+        }
+    }
+
+    private func groupByChip(_ value: String?, label: String) -> some View {
+        GrChip(label: label, active: displayGroupBy == value) {
+            displayGroupBy = value
+        }
+    }
+
     private var saveSection: some View {
         GrButton(
             variant: .cta,
@@ -380,7 +433,7 @@ struct GrViewEditorSheet: View {
         }
         busy = true
         defer { busy = false }
-        var record = existing ?? SavedView(
+        let base = existing ?? SavedView(
             id: UUID().uuidString,
             name: trimmedName,
             dsl: trimmedDsl,
@@ -392,9 +445,13 @@ struct GrViewEditorSheet: View {
             displayGroupBy: nil,
             displayShowDone: nil
         )
-        record.name = trimmedName
-        record.dsl = trimmedDsl
-        record.displayMode = displayMode
+        let record = SavedViewLogic.applyingDraft(
+            to: base,
+            name: trimmedName,
+            dsl: trimmedDsl,
+            displayMode: displayMode,
+            displayGroupBy: displayGroupBy
+        )
         do {
             try await onSave(record, isNew)
             dismiss()

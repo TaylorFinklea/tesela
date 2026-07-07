@@ -98,6 +98,58 @@ final class SavedViewsTests: XCTestCase {
         XCTAssertFalse(SavedViewLogic.fragmentActive("-has:status", in: "kind:block has:status"))
     }
 
+    // MARK: - Editor draft merge (tesela-ya4.7 — GrViewEditorSheet.save())
+
+    func testApplyingDraftRoundTripsGroupByPick() {
+        // Mirrors GrViewEditorSheet's "editing an existing view" path: the
+        // sheet's picker sets `displayGroupBy` draft state, and `save()`
+        // must land that pick on the persisted record.
+        let base = SavedView(
+            id: "v-board", name: "Board", dsl: "tag:project", order: 10,
+            builtin: false, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
+        )
+        let updated = SavedViewLogic.applyingDraft(
+            to: base, name: "Board", dsl: "tag:project", displayMode: "kanban", displayGroupBy: "Status"
+        )
+        XCTAssertEqual(updated.displayGroupBy, "Status")
+        XCTAssertEqual(updated.displayMode, "kanban")
+    }
+
+    func testApplyingDraftDefaultOptionClearsGroupBy() {
+        // Picking "Default" in the picker is `nil` — must clear a
+        // previously-set explicit override so decision 3's a → c → d
+        // resolution order takes over again, not persist a stale value.
+        let base = SavedView(
+            id: "v-board", name: "Board", dsl: "tag:project", order: 10,
+            builtin: false, displayMode: "kanban", displayGroupBy: "Status", displayShowDone: nil
+        )
+        let updated = SavedViewLogic.applyingDraft(
+            to: base, name: "Board", dsl: "tag:project", displayMode: "kanban", displayGroupBy: nil
+        )
+        XCTAssertNil(updated.displayGroupBy)
+    }
+
+    func testApplyingDraftPreservesFieldsOutsideTheDraft() {
+        // id/order/builtin/displayShowDone/displayTableConfig are never
+        // part of the sheet's draft — a save must never clobber them, and
+        // a builtin's `builtin` flag specifically must survive (builtins
+        // stay editable-not-deletable).
+        let base = SavedView(
+            id: "builtin-inbox", name: "Inbox", dsl: "status:todo", order: 0,
+            builtin: true, displayMode: "kanban", displayGroupBy: "Priority", displayShowDone: true,
+            displayTableConfig: SavedViewTableConfig(hidden: ["Notes"], order: [], sortBy: nil, sortDir: nil)
+        )
+        let updated = SavedViewLogic.applyingDraft(
+            to: base, name: "Inbox", dsl: "status:todo", displayMode: "kanban", displayGroupBy: "Status"
+        )
+        XCTAssertEqual(updated.id, "builtin-inbox")
+        XCTAssertEqual(updated.order, 0)
+        XCTAssertTrue(updated.builtin)
+        XCTAssertEqual(updated.displayShowDone, true)
+        XCTAssertEqual(updated.displayTableConfig?.hidden, ["Notes"])
+        XCTAssertEqual(updated.displayGroupBy, "Status")
+    }
+
     // MARK: - Selection persistence + resolution
 
     private let userViews = [
