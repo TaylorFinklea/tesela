@@ -13,7 +13,22 @@
  * UI can render them as read-only "raw" pills — the user always sees
  * everything that's filtering the inbox, even when chips don't cover
  * every clause.
+ *
+ * `ChipDef.clauses` now hold JQL predicate strings (tesela-vp9.3, decision
+ * 5 in `.docs/ai/phases/2026-07-07-jql-authoring-spec.md`) — e.g.
+ * `"status IS NULL"` instead of the old colon-DSL `"-has:status"` — so a
+ * clause can be several whitespace-separated words. `chipsFromDsl`
+ * therefore detects active chips PARSE-AWARE (via `view-dsl.ts`'s
+ * `clausesActiveInDsl`, which compares parsed predicates, not raw tokens)
+ * and strips claimed chips' spans out (via `toggleClausesInDsl`) before
+ * falling back to whitespace tokenization for the remaining dynamic groups
+ * (`tag-in:`/`-page:`/`-block:`) and any truly unknown clauses — those stay
+ * single-token colon-DSL and are unaffected by the JQL migration.
  */
+// Relative (not `$lib`) — mirrors view-dsl.ts's own import of
+// query-language.ts so the node test runner can resolve this without the
+// SvelteKit alias map.
+import { clausesActiveInDsl, toggleClausesInDsl } from "../../views/view-dsl.ts";
 
 /** A toggleable filter exposed in the chip toolbar. */
 export type ChipDef = {
@@ -26,10 +41,12 @@ export type ChipDef = {
   /** Compact one-line explanation, used as `title` / tooltip. */
   hint: string;
   /**
-   * DSL fragment(s) the chip contributes when active. Most chips are a
-   * single token; the `notSystemPages` chip is a four-token group
-   * because the "system pages" concept covers four note-type values.
-   * Order matters for round-tripping — keep the list canonical.
+   * JQL predicate fragment(s) the chip contributes when active (e.g.
+   * `"status IS NULL"`) — each element is a whole predicate, not a single
+   * token. Every chip today contributes exactly one; the array shape stays
+   * open for a future chip whose "on" state needs more than one predicate
+   * ANDed together. Order matters for round-tripping — keep the list
+   * canonical.
    */
   clauses: readonly string[];
   /**
@@ -52,7 +69,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "Untriaged",
     glyph: "📥",
     hint: "Only blocks without a status:: property",
-    clauses: ["-has:status"],
+    clauses: ["status IS NULL"],
     defaultOn: true,
     category: "scope",
   },
@@ -61,7 +78,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "No headings",
     glyph: "🧱",
     hint: "Hide markdown section headings (### …) — they're dividers, not tasks",
-    clauses: ["-is:heading"],
+    clauses: ["is != heading"],
     defaultOn: true,
     category: "scope",
   },
@@ -70,7 +87,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "No daily pages",
     glyph: "📅",
     hint: "Hide blocks on YYYY-MM-DD daily notes — journal captures aren't triage items",
-    clauses: ["-on:daily-page"],
+    clauses: ["on != daily-page"],
     defaultOn: true,
     category: "scope",
   },
@@ -79,7 +96,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "No system pages",
     glyph: "⚙️",
     hint: "Hide blocks on Tag / Property / Query / Template pages",
-    clauses: ["-on:system-pages"],
+    clauses: ["on != system-pages"],
     defaultOn: true,
     category: "scope",
   },
@@ -89,7 +106,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "Has scheduled",
     glyph: "🕒",
     hint: "Only blocks with a scheduled:: date",
-    clauses: ["has:scheduled"],
+    clauses: ["scheduled IS NOT NULL"],
     defaultOn: false,
     category: "dates",
   },
@@ -98,7 +115,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "Has deadline",
     glyph: "⚑",
     hint: "Only blocks with a deadline:: date",
-    clauses: ["has:deadline"],
+    clauses: ["deadline IS NOT NULL"],
     defaultOn: false,
     category: "dates",
   },
@@ -108,7 +125,7 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
     label: "Untagged",
     glyph: "🏷️",
     hint: "Only blocks without any tags",
-    clauses: ["-has:tag"],
+    clauses: ["tag IS NULL"],
     defaultOn: false,
     category: "tags",
   },
@@ -153,22 +170,20 @@ export type ChipState = {
  * unknown clauses — it's always there for the Inbox by design.
  */
 export function chipsFromDsl(dsl: string): ChipState {
-  const tokens = tokenize(dsl);
   const active: Record<string, boolean> = {};
+  // A chip's JQL clause(s) can span several whitespace-separated words
+  // (`status IS NULL`), so active-detection is parse-aware (compares
+  // predicates, not tokens) and claimed chips' spans are stripped out
+  // (via the SAME span-removal `toggleClausesInDsl` uses) before what's
+  // left is whitespace-tokenized for the still-colon-DSL dynamic groups
+  // below.
+  let remainingDsl = dsl;
   for (const chip of CHIP_REGISTRY) {
-    active[chip.id] = false;
+    const isActive = clausesActiveInDsl(dsl, chip.clauses);
+    active[chip.id] = isActive;
+    if (isActive) remainingDsl = toggleClausesInDsl(remainingDsl, chip.clauses);
   }
-  // Walk chip registry; a chip is active iff EVERY one of its clauses
-  // appears in the token list (handles multi-clause chips). When a
-  // chip claims its clauses, remove them from `remaining` so they
-  // don't end up in `unknownClauses`.
-  const remaining = new Set(tokens);
-  for (const chip of CHIP_REGISTRY) {
-    if (chip.clauses.every((c) => remaining.has(c))) {
-      active[chip.id] = true;
-      for (const c of chip.clauses) remaining.delete(c);
-    }
-  }
+  const remaining = new Set(tokenize(remainingDsl));
   // Strip the implicit `kind:block` baseline from unknowns.
   remaining.delete("kind:block");
 
