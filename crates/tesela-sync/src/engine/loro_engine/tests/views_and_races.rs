@@ -1,6 +1,64 @@
 use super::*;
+use crate::engine::TableColumnConfig;
 
 // ─── Views registry (saved-views spec, 2026-06-10) ───────────────────
+
+// ─── tesela-ya4.4 — table column config persistence ───────────────────
+
+#[tokio::test]
+async fn views_upsert_persists_and_clears_table_config() {
+    let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+    let mut table_view = user_view("v-table", "Tasks", "tag:task", 10);
+    table_view.display_mode = "table".to_string();
+    table_view.display_table_config = Some(TableColumnConfig {
+        hidden: vec!["notes".to_string()],
+        order: vec!["priority".to_string(), "status".to_string()],
+        sort_by: Some("priority".to_string()),
+        sort_dir: Some("desc".to_string()),
+    });
+    e.views_upsert(table_view.clone()).await.unwrap();
+
+    let views = e.views_list().await;
+    assert_eq!(views.len(), 1);
+    assert_eq!(
+        views[0].display_table_config,
+        table_view.display_table_config,
+        "hide/reorder/sort config round-trips through the CRDT store"
+    );
+
+    // Clearing the config (None) deletes the underlying field rather than
+    // persisting a stale JSON blob.
+    let mut cleared = table_view.clone();
+    cleared.display_table_config = None;
+    e.views_upsert(cleared).await.unwrap();
+    let views = e.views_list().await;
+    assert_eq!(views[0].display_table_config, None, "config clears back to None");
+}
+
+#[tokio::test]
+async fn views_upsert_table_config_survives_unrelated_field_update() {
+    // Field-level LWW: updating `name` must not clobber a previously-saved
+    // `display_table_config` (mirrors the group-by/show-done coverage in
+    // `views_upsert_list_round_trip_sorted_by_order` above).
+    let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+    let mut table_view = user_view("v-table", "Tasks", "tag:task", 10);
+    table_view.display_mode = "table".to_string();
+    table_view.display_table_config = Some(TableColumnConfig {
+        hidden: vec![],
+        order: vec!["status".to_string()],
+        sort_by: Some("status".to_string()),
+        sort_dir: Some("asc".to_string()),
+    });
+    e.views_upsert(table_view.clone()).await.unwrap();
+
+    let mut renamed = table_view.clone();
+    renamed.name = "My tasks".to_string();
+    e.views_upsert(renamed).await.unwrap();
+
+    let views = e.views_list().await;
+    assert_eq!(views[0].name, "My tasks");
+    assert_eq!(views[0].display_table_config, table_view.display_table_config);
+}
 
 #[tokio::test]
 async fn views_upsert_list_round_trip_sorted_by_order() {
