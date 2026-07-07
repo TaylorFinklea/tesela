@@ -1,14 +1,15 @@
 # Current State
-Branch: main (3 commits + 1 merge ahead of origin — NOT pushed)
+Branch: main (NOT pushed — Taylor reviews+pushes; ~20 commits/merges today)
 
 ## Plan
-- [x] fix(core) 7f91d6bf: atomic upsert_note (handler-vs-watcher UNIQUE race → POST /notes 500)
-- [x] tesela-baa a0fffb5d: multi-doc splice registry (spec `phases/2026-07-07-per-edit-splices-spec.md`; ADR 2026-07-07) — unit/check/cargo green; bead open pending storm-e2e run (env-blocked below)
-- [x] tesela-engc.6 merged (6 pure-motion commits, Lead-verified multiset diff) — bead open pending verify re-run (env-blocked below)
-- [ ] ENV BLOCKED: 17 leaked test tesela-servers → trustd 98% → machine-wide loopback failure. Taylor must kill PIDs (see chat), then: `cargo test -p tesela-sync -p tesela-sync-ffi -p tesela-server`, `npx playwright install chromium`, `pnpm --dir web test:e2e` → close engc.6 (+epic) and baa. Verify: those commands green
+- [x] AM: sqlite upsert race fix · tesela-baa multi-doc splice registry · engc.6 loro_engine split merged
+- [x] PM: Query & Views feature set COMPLETE — epics ya4 + vp9 closed (10/10 beads; ADR 2026-07-07 "Query & Views"; specs phases/2026-07-02-typesystem-views-spec.md + 2026-07-07-jql-authoring-spec.md)
+- [ ] ENV-BLOCKED closes (need Taylor's orphan kill, PIDs in chat): engc.6+epic (verify: cargo test -p tesela-sync -p tesela-sync-ffi -p tesela-server) · tesela-baa (verify: pnpm --dir web test:e2e storm spec; needs npx playwright install chromium)
+- [ ] Product test deck published (harness-deck) — Taylor runs it; findings → next fix batch
 
 ## Blockers
-- Loopback/trustd meltdown (orphan kill needs Taylor; classifier blocks agent kills)
+- Loopback/trustd env until orphan kill (also blocks tesela-server spawn suites)
 
 ## Open Questions
-- Taylor: build-74 deck still unanswered (`tesela/20260703-build74-product-test`)
+- Taylor: build-74 deck (`tesela/20260703-build74-product-test`) still unanswered
+- New audit findings await triage-into-Now: tesela-jow (decimal truncation, lead), tesela-0rc (untagged chip no-op)

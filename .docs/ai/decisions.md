@@ -4,6 +4,16 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-07-07 — Query & Views feature set shipped (epics ya4 + vp9 closed); the calls that outlived the specs
+
+Both epics landed in one orchestrated day (10 beads, 7 worktree agents, Lead-reviewed merges, per-merge platform verifies). Design homes: `phases/2026-07-02-typesystem-views-spec.md` (views) + `phases/2026-07-07-jql-authoring-spec.md` (JQL authoring). Decisions made DURING landing, not in the specs:
+
+- **Chip surface strings are cross-platform-canonical in infix JQL** (`is != heading`, not `NOT is:heading`). Both forms canonicalize to the same predicate (shared NOT/cmp inversion), so this is cosmetic-but-locked: chips must insert identical text on web and iOS since the strings persist in synced saved views.
+- **QueryWidgetView's row-list died with ya4.3** — and with it the direct-opened-Inbox-note triage chords/status-cycle (the machinery was reachable only there; GrInbox lists + agenda keep theirs). Deliberate removal, not an accident: one table component was the acceptance bar. Parity follow-up: `tesela-9b1`.
+- **iOS never writes table column config** (v1): stored `display_table_config` is honored read-only on iOS; header-tap sort is session-local. The web editor owns the stored config (mirror of decision 4's round-trip-authority, scoped per-platform).
+- **The conformance fixture is the drift tripwire and it worked**: extended 182→217 cases with ZERO cross-engine disagreements, but the audit surfaced two REAL shared bugs — decimal literals silently truncate in all three tokenizers (`tesela-jow`, lead-floor: semantics change) and the Untagged chip filter is a no-op because `has:tag` never checks `block.tags` (`tesela-0rc`). Both pre-existing, both pinned in the fixture as quirk cases until fixed.
+- **Fleet-ops lesson (recurred 4×): Sonnet agents park themselves on background builds despite FOREGROUND instructions** — every long-running dispatch prompt needs the foreground clause, and the orchestrator should expect one nudge per iOS agent. Also: agent worktrees with Rust targets eat ~5-15GB each — remove them at merge (`worktree-disk-pressure` memory; disk hit 99% mid-day).
+
 ### 2026-07-07 — tesela-baa ships as a MULTI-DOC registry: extend the client-replica splice model to every mounted editor; server-side splice RPC rejected
 
 A 6-reader mapping pass found the bead's premise stale: web/desktop ALREADY had true per-keystroke splice collab (C2.2/C2.3, 68f8100e/faeffdd4, 2026-06-04 — client wasm LoroDoc → TLR2 WS → `apply_inbound_delta`), but keyed to a process-wide SINGLETON bound to the shell's focused buffer, and the journal's default daily buffer resolves to TODAY only. That singleton scope IS the 9iy storm mechanism on the authoring side: typing into the Jul-2 daily on Jul-3 never spliced — it fell back to 500ms whole-block writes (`write_block_text`), producing the monolithic 105-char rewrite the investigation found. Decisions:
