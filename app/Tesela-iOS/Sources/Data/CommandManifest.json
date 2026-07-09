@@ -703,6 +703,35 @@
     "description": null
   },
   {
+    "id": "voice-capture",
+    "verb": "voice",
+    "label": "Voice capture — dictate to today's daily",
+    "glyph": "🎙",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "v"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "voice",
+      "dictate",
+      "dictation",
+      "mic",
+      "record",
+      "speech",
+      "transcribe"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "delete-tag",
     "verb": "delete-tag",
     "label": "Delete focused tag (with usage confirmation)",

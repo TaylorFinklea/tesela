@@ -19,6 +19,11 @@ export default defineConfig({
 				target: wsTarget,
 				ws: true,
 			},
+			// Live dictation session (dictation P2) — same-origin WS like /ws.
+			'/transcription/stream': {
+				target: wsTarget,
+				ws: true,
+			},
 		},
 	},
 });

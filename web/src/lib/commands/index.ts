@@ -19,6 +19,7 @@ import { openStation } from "$lib/stores/station.svelte";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
 import { getFocusedBlock } from "$lib/stores/current-block.svelte";
 import { toast } from "$lib/stores/toast.svelte";
+import { toggleVoiceCapture } from "$lib/voice/voice-capture.svelte";
 import { skipRecurrence } from "$lib/recurrence-actions";
 import {
   closeFocusedLeaf,
@@ -547,6 +548,16 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       chord: ["n", "p"],
       keywords: ["promote", "keep", "save", "scratch"],
       run: () => promoteFocusedScratch(),
+    },
+    {
+      id: "voice-capture",
+      verb: "voice",
+      label: "Voice capture — dictate to today's daily",
+      glyph: "🎙",
+      category: "create",
+      chord: ["a", "v"],
+      keywords: ["voice", "dictate", "dictation", "mic", "record", "speech", "transcribe"],
+      run: () => toggleVoiceCapture(),
     },
     {
       id: "delete-tag",

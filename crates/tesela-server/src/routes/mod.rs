@@ -188,7 +188,11 @@ pub fn build(state: AppState) -> Router {
         .route("/transcription/active", get(transcription::get_active))
         .route("/transcription/transcribe", post(transcription::transcribe))
         .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024))
-        .route("/ws", get(ws::ws_handler));
+        .route("/ws", get(ws::ws_handler))
+        // Dictation P2 — live streaming transcription session (binary
+        // PCM in, committed/tentative partial frames out). Registered
+        // after the body-limit layer like /ws; WS frames aren't bodies.
+        .route("/transcription/stream", get(transcription::stream_ws));
 
     // Optional static-file serving for the desktop (Tauri) shell: when
     // TESELA_STATIC_DIR points at a built SvelteKit `/g` bundle, serve it

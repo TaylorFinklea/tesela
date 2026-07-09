@@ -316,9 +316,9 @@ pub async fn download_model(
             )));
         }
     }
-    fs::rename(&part, &dest)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("move verified download into place: {e}")))?;
+    fs::rename(&part, &dest).await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("move verified download into place: {e}"))
+    })?;
 
     let size = fs::metadata(&dest)
         .await
@@ -400,6 +400,33 @@ pub async fn get_active(State(s): State<Arc<AppState>>) -> AppResult<Json<Active
 // single-slot model cache live in `crate::asr_engine`; this route only
 // decodes audio and dispatches on the active model's catalog family.
 
+/// Resolve the ACTIVE model into (catalog entry, engine kind, on-disk
+/// path), with the same validation the batch endpoint always did.
+/// Shared by `transcribe` and the streaming WS.
+async fn resolve_active_engine(
+    s: &AppState,
+) -> Result<(ModelCatalogEntry, asr_engine::EngineKind, PathBuf), String> {
+    let active_id = read_active(s)
+        .await
+        .ok_or_else(|| "No active transcription model".to_string())?;
+    let entry = catalog()
+        .into_iter()
+        .find(|e| e.id == active_id)
+        .ok_or_else(|| format!("Active model {active_id} is not in the catalog"))?;
+    let kind = asr_engine::kind_for_family(&entry.family)
+        .filter(|k| asr_engine::kind_supported(*k))
+        .ok_or_else(|| format!("Inference for {active_id} isn't supported on this Tesela build"))?;
+    let path = model_path_for_entry(s, &entry);
+    if fs::metadata(&path).await.is_err() {
+        return Err(format!("Active model {active_id} not on disk"));
+    }
+    Ok((entry, kind, path))
+}
+
+fn model_path_for_entry(state: &AppState, entry: &ModelCatalogEntry) -> PathBuf {
+    models_dir(state).join(&entry.file_name)
+}
+
 #[derive(Serialize)]
 pub struct TranscribeResponse {
     pub text: String,
@@ -419,28 +446,10 @@ pub async fn transcribe(
     State(s): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> AppResult<Json<TranscribeResponse>> {
-    let active_id = read_active(&s)
+    let (entry, kind, model_path) = resolve_active_engine(&s)
         .await
-        .ok_or_else(|| AppError::Validation("No active transcription model".into()))?;
-    let entry = catalog()
-        .into_iter()
-        .find(|e| e.id == active_id)
-        .ok_or_else(|| {
-            AppError::Validation(format!("Active model {active_id} is not in the catalog"))
-        })?;
-    let kind = asr_engine::kind_for_family(&entry.family)
-        .filter(|k| asr_engine::kind_supported(*k))
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "Inference for {active_id} isn't supported on this Tesela build"
-            ))
-        })?;
-    let model_path = model_path(&s, &active_id);
-    if fs::metadata(&model_path).await.is_err() {
-        return Err(AppError::Validation(format!(
-            "Active model {active_id} not on disk"
-        )));
-    }
+        .map_err(AppError::Validation)?;
+    let active_id = entry.id;
 
     // Pull the audio file out of the multipart body.
     let mut audio_bytes: Option<Vec<u8>> = None;
@@ -480,6 +489,137 @@ pub async fn transcribe(
         model_id: active_id,
         duration_ms: started.elapsed().as_millis() as u64,
     }))
+}
+
+// ── Streaming dictation WS (P2, tesela-v5t.2) ─────────────────────────
+
+/// GET /transcription/stream — WebSocket dictation session.
+///
+/// Wire protocol:
+/// - client → server: binary frames of 16 kHz mono f32-LE PCM;
+///   one text frame `{"type":"stop"}` to finalize.
+/// - server → client: JSON text frames (see [`asr_engine::StreamEvent`]):
+///   `ready` (model loaded; `streaming:false` = batch fallback, no
+///   partials), `partial` (committed/tentative, only on change),
+///   `final` (full transcript), `error`. The socket closes after
+///   `final`/`error`. Closing without `stop` cancels the session.
+pub async fn stream_ws(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(s): State<Arc<AppState>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    ws.on_upgrade(move |socket| handle_stream_socket(socket, s))
+        .into_response()
+}
+
+async fn handle_stream_socket(socket: axum::extract::ws::WebSocket, s: Arc<AppState>) {
+    use axum::extract::ws::Message;
+    use futures::{SinkExt, StreamExt};
+
+    let (mut sink, mut inbound) = socket.split();
+
+    let (entry, kind, path) = match resolve_active_engine(&s).await {
+        Ok(t) => t,
+        Err(message) => {
+            let frame = serde_json::to_string(&asr_engine::StreamEvent::Error { message })
+                .unwrap_or_default();
+            let _ = sink.send(Message::Text(frame.into())).await;
+            return;
+        }
+    };
+
+    // Bounded command channel: backpressure from the inference worker
+    // propagates to the socket reads instead of buffering audio without
+    // limit. Events come back unbounded (small JSON, worker never blocks).
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<asr_engine::StreamCmd>(64);
+    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<asr_engine::StreamEvent>();
+    let worker_id = entry.id.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        asr_engine::stream_session_blocking(kind, &worker_id, &path, cmd_rx, evt_tx)
+    });
+
+    loop {
+        tokio::select! {
+            evt = evt_rx.recv() => match evt {
+                Some(evt) => {
+                    let terminal = matches!(
+                        evt,
+                        asr_engine::StreamEvent::Final { .. } | asr_engine::StreamEvent::Error { .. }
+                    );
+                    let frame = serde_json::to_string(&evt).unwrap_or_default();
+                    if sink.send(Message::Text(frame.into())).await.is_err() {
+                        break;
+                    }
+                    if terminal {
+                        break;
+                    }
+                }
+                // Worker ended without a terminal frame (cancel path).
+                None => break,
+            },
+            msg = inbound.next() => match msg {
+                Some(Ok(Message::Binary(bytes))) => match decode_f32le_frame(&bytes) {
+                    Ok(chunk) => {
+                        // Awaiting here is the backpressure point.
+                        if cmd_tx.send(asr_engine::StreamCmd::Audio(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(message) => {
+                        let frame = serde_json::to_string(&asr_engine::StreamEvent::Error {
+                            message,
+                        })
+                        .unwrap_or_default();
+                        let _ = sink.send(Message::Text(frame.into())).await;
+                        break;
+                    }
+                },
+                Some(Ok(Message::Text(text))) => {
+                    if text_frame_is_stop(&text) {
+                        // Keep looping after stop: the final frame still
+                        // has to come back through evt_rx.
+                        if cmd_tx.send(asr_engine::StreamCmd::Stop).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => break, // cancel
+                Some(Ok(_)) => {}   // ping/pong — axum answers pings itself
+                Some(Err(_)) => break,
+            },
+        }
+    }
+
+    // Dropping the command sender cancels a still-running worker; the
+    // lease-return in `stream_session_blocking` runs on every path.
+    drop(cmd_tx);
+    let _ = worker.await;
+}
+
+/// Decode one binary WS frame of little-endian f32 PCM.
+fn decode_f32le_frame(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    if bytes.is_empty() {
+        return Err("empty audio frame".into());
+    }
+    if !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "audio frame length {} is not a multiple of 4 (expected f32-LE PCM)",
+            bytes.len()
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect())
+}
+
+/// True when a client text frame is the `{"type":"stop"}` control
+/// message (any other text frame is ignored).
+fn text_frame_is_stop(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == "stop"))
+        .unwrap_or(false)
 }
 
 /// Decode a WAV byte buffer to mono 16kHz f32 samples.
@@ -569,7 +709,10 @@ mod tests {
                 e.id,
                 e.family
             );
-            let sha = e.sha256.as_ref().expect("all shipped entries carry a sha256");
+            let sha = e
+                .sha256
+                .as_ref()
+                .expect("all shipped entries carry a sha256");
             assert_eq!(sha.len(), 64, "{}: sha256 must be 64 hex chars", e.id);
             assert!(
                 sha.chars().all(|c| c.is_ascii_hexdigit()),
@@ -602,7 +745,11 @@ mod tests {
                 "{}: inference_supported should mirror the feature",
                 e.id
             );
-            assert!(e.file_name.ends_with(".gguf"), "{}: expected a GGUF artifact", e.id);
+            assert!(
+                e.file_name.ends_with(".gguf"),
+                "{}: expected a GGUF artifact",
+                e.id
+            );
             let url_tail = e.download_url.rsplit('/').next().unwrap();
             assert_eq!(
                 url_tail, e.file_name,
@@ -649,10 +796,56 @@ mod tests {
             sample_format: hound::SampleFormat::Int,
         };
         // L = 1000, R = -1000 → averaged mono ≈ 0.
-        let samples: Vec<i16> = (0..640).map(|i| if i % 2 == 0 { 1000 } else { -1000 }).collect();
+        let samples: Vec<i16> = (0..640)
+            .map(|i| if i % 2 == 0 { 1000 } else { -1000 })
+            .collect();
         let out = decode_audio_to_16k_mono(&wav_bytes(spec, &samples)).unwrap();
         assert_eq!(out.len(), 320);
         assert!(out.iter().all(|s| s.abs() < 1e-3));
+    }
+
+    #[test]
+    fn f32le_frame_roundtrips_and_rejects_misalignment() {
+        let samples = [0.0f32, 0.5, -0.5, 1.0];
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        assert_eq!(decode_f32le_frame(&bytes).unwrap(), samples);
+        assert!(decode_f32le_frame(&bytes[..7])
+            .unwrap_err()
+            .contains("multiple of 4"));
+        assert!(decode_f32le_frame(&[]).unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn stop_control_frame_detection() {
+        assert!(text_frame_is_stop(r#"{"type":"stop"}"#));
+        assert!(text_frame_is_stop(r#"{ "type" : "stop", "extra": 1 }"#));
+        assert!(!text_frame_is_stop(r#"{"type":"start"}"#));
+        assert!(!text_frame_is_stop("stop"));
+        assert!(!text_frame_is_stop(""));
+    }
+
+    #[test]
+    fn stream_events_serialize_to_wire_shape() {
+        let partial = asr_engine::StreamEvent::Partial {
+            committed: "hello ".into(),
+            tentative: "wor".into(),
+            revision: 7,
+        };
+        let json = serde_json::to_string(&partial).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "partial");
+        assert_eq!(v["committed"], "hello ");
+        assert_eq!(v["tentative"], "wor");
+        assert_eq!(v["revision"], 7);
+
+        let ready = asr_engine::StreamEvent::Ready {
+            model_id: "m".into(),
+            streaming: false,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ready).unwrap()).unwrap();
+        assert_eq!(v["type"], "ready");
+        assert_eq!(v["streaming"], false);
     }
 
     #[test]
@@ -675,6 +868,8 @@ mod tests {
             writer.finalize().unwrap();
         }
         let err = decode_audio_to_16k_mono(&cursor.into_inner()).unwrap_err();
-        assert!(matches!(err, AppError::Validation(ref m) if m.contains("expected 16-bit PCM WAV")));
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m.contains("expected 16-bit PCM WAV"))
+        );
     }
 }

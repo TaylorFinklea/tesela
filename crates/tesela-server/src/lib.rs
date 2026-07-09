@@ -1771,4 +1771,86 @@ mod tests {
             "HTTP GET shows the merged A text: {body}"
         );
     }
+
+    /// Dictation P2: the streaming WS answers with a structured error
+    /// frame (not a hang or a silent close) when no model is active —
+    /// exercises upgrade, the resolve step, and the frame codec over a
+    /// real socket without needing a model on disk.
+    #[tokio::test]
+    async fn ws_transcription_stream_errors_without_active_model() {
+        use futures::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+
+        let sdev = tesela_sync::DeviceId::from_bytes([0x77; 16]);
+        let engine = tesela_sync::LoroEngine::new(sdev, Arc::new(tesela_sync::Hlc::new(sdev)));
+
+        let store = Arc::new(FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        ));
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let (ws_tx, _) = broadcast::channel::<WsEvent>(8);
+        let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(8);
+        let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::new_random(),
+            group_key: tesela_sync::GroupKey::random(),
+        }));
+        let app_state = AppState {
+            mosaic_root: mosaic.clone(),
+            store,
+            index,
+            ws_tx,
+            ws_delta_tx,
+            ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+            type_registry: tesela_core::types::TypeRegistry::load(&mosaic),
+            auto_sync: Arc::new(reminders::auto::AutoSync::new()),
+            sync_engine: Arc::new(engine) as Arc<dyn tesela_sync::SyncEngine>,
+            lan_discovery: None,
+            group_identity,
+            display_name: "test".into(),
+            public_url: "http://127.0.0.1:0".into(),
+            relay_url: None,
+            relay: None,
+            backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                crate::backup_scheduler::SchedulerConfig::from_env(),
+            ),
+        };
+        let router = routes::build(app_state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let url = format!("ws://{addr}/transcription/stream");
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+            .await
+            .expect("an error frame within 5s")
+            .expect("stream yields a frame")
+            .expect("frame is not a transport error");
+        match msg {
+            TMessage::Text(t) => {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                assert_eq!(v["type"], "error");
+                assert!(
+                    v["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("No active transcription model"),
+                    "unexpected error message: {t}"
+                );
+            }
+            other => panic!("expected a text error frame, got {other:?}"),
+        }
+    }
 }

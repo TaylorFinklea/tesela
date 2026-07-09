@@ -12,6 +12,7 @@
    * Only the markup + CSS (the mockup's `.gr-top`) is new.
    */
   import GrIcon from '$lib/graphite/GrIcon.svelte';
+  import GrVoicePopover from '$lib/graphite/shell/GrVoicePopover.svelte';
   import { getWorkspace, switchTab, newTab } from '$lib/buffer/state.svelte';
   import { openStation } from '$lib/stores/station.svelte';
   import {
@@ -19,8 +20,10 @@
     openSettingsOverlay,
   } from '$lib/stores/fullscreen-overlay.svelte';
   import { getConnected } from '$lib/ws-client.svelte';
+  import { toggleVoiceCapture, voiceOpen, voicePhase } from '$lib/voice/voice-capture.svelte';
 
   const workspace = $derived(getWorkspace());
+  const voiceBusy = $derived(voicePhase() !== 'idle' && voicePhase() !== 'error');
 </script>
 
 <div class="gr-top">
@@ -66,9 +69,20 @@
   </button>
 
   <div class="gr-icons">
-    <button type="button" class="gr-ic" title="Voice capture" aria-label="Voice capture">
+    <button
+      type="button"
+      class="gr-ic"
+      class:rec={voiceBusy}
+      onclick={() => toggleVoiceCapture()}
+      title={voiceBusy ? 'Finish dictation' : 'Voice capture — dictate to today’s daily'}
+      aria-label="Voice capture"
+      aria-pressed={voiceBusy}
+    >
       <GrIcon name="microphone" size={16} />
     </button>
+    {#if voiceOpen()}
+      <GrVoicePopover />
+    {/if}
     <button
       type="button"
       class="gr-conn"
@@ -215,6 +229,8 @@
     display: flex;
     align-items: center;
     gap: 2px;
+    /* Anchor for the voice popover (GrVoicePopover is absolute). */
+    position: relative;
   }
   .gr-ic {
     width: 30px;
@@ -231,6 +247,20 @@
   .gr-ic:hover {
     color: var(--fg);
     background: var(--raised);
+  }
+  .gr-ic.rec {
+    color: var(--coral);
+    background: var(--raised);
+    animation: gr-mic-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes gr-mic-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(224, 122, 95, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 0 4px rgba(224, 122, 95, 0.08);
+    }
   }
   .gr-tab-add {
     width: 26px;
