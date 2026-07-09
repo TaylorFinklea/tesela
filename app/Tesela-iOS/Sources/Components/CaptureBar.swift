@@ -66,7 +66,7 @@ struct CaptureBar: View {
         case .alwaysInbox:    return .inbox
         case .contextAware:
             switch activeTab {
-            case .inbox:                return .inbox
+            case .views:                return .inbox
             case .library:
                 if let page = context.currentPage {
                     return .page(slug: page.slug, title: page.title)
@@ -282,7 +282,7 @@ struct CaptureBar: View {
             Button {
                 composer.manualTarget = .inbox
             } label: {
-                Label("Inbox", systemImage: "tray")
+                Label("Views", systemImage: "tray")
             }
             if let page = context.currentPage {
                 Button {

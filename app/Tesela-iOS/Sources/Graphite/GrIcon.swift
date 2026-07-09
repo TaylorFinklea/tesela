@@ -23,6 +23,7 @@ struct GrIcon: View {
         "pin": "pin",
         "bolt": "bolt",
         "graph": "point.3.connected.trianglepath.dotted",
+        "views": "rectangle.grid.2x2",
         "inbox": "tray",
         "calendar": "calendar",
         "search": "magnifyingglass",

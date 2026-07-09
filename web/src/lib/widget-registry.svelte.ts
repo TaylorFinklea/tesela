@@ -22,6 +22,7 @@ const SYSTEM_WIDGET_IDS: ReadonlySet<string> = new Set([
   "tasks",
   "projects",
   "people",
+  "views",
   "inbox",
   "calendar",
   "recent",
@@ -63,9 +64,10 @@ export function widgetFromNote(note: Note): Widget {
   const icon = fm("icon");
   const color = fm("color");
   const section = asSection(fm("section"));
+  const title = note.id === "inbox" && note.title === "Inbox" ? "Views" : note.title;
   return {
     id: note.id,
-    title: note.title,
+    title,
     query: fm("query") ?? "",
     group: fm("group"),
     sort: fm("sort"),

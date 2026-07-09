@@ -135,12 +135,12 @@ final class SavedViewsTests: XCTestCase {
         // a builtin's `builtin` flag specifically must survive (builtins
         // stay editable-not-deletable).
         let base = SavedView(
-            id: "builtin-inbox", name: "Inbox", dsl: "status:todo", order: 0,
+            id: "builtin-inbox", name: "Views", dsl: "status:todo", order: 0,
             builtin: true, displayMode: "kanban", displayGroupBy: "Priority", displayShowDone: true,
             displayTableConfig: SavedViewTableConfig(hidden: ["Notes"], order: [], sortBy: nil, sortDir: nil)
         )
         let updated = SavedViewLogic.applyingDraft(
-            to: base, name: "Inbox", dsl: "status:todo", displayMode: "kanban", displayGroupBy: "Status"
+            to: base, name: "Views", dsl: "status:todo", displayMode: "kanban", displayGroupBy: "Status"
         )
         XCTAssertEqual(updated.id, "builtin-inbox")
         XCTAssertEqual(updated.order, 0)
@@ -154,7 +154,7 @@ final class SavedViewsTests: XCTestCase {
 
     private let userViews = [
         SavedView(
-            id: SavedView.builtinInboxId, name: "Inbox", dsl: "status:todo", order: 0,
+            id: SavedView.builtinInboxId, name: "Views", dsl: "status:todo", order: 0,
             builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         ),
         SavedView(
@@ -225,10 +225,24 @@ final class SavedViewsTests: XCTestCase {
 
     // MARK: - Server JSON shape (tesela_sync::ViewRecord serde parity)
 
+    func testBuiltinInboxDisplayCompatibilityNormalizesToViews() {
+        let legacy = SavedView(
+            id: SavedView.builtinInboxId, name: "Inbox", dsl: "status:todo", order: 0,
+            builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
+        )
+        XCTAssertEqual(legacy.displayCompatible().name, "Views")
+
+        let custom = SavedView(
+            id: SavedView.builtinInboxId, name: "Triage", dsl: "status:todo", order: 0,
+            builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
+        )
+        XCTAssertEqual(custom.displayCompatible().name, "Triage")
+    }
+
     func testDecodesServerViewsJSON() throws {
         let json = """
         [
-          {"id": "builtin-inbox", "name": "Inbox",
+          {"id": "builtin-inbox", "name": "Views",
            "dsl": "status:backlog,todo -has:scheduled -has:deadline",
            "order": 0, "builtin": true, "display_mode": "list",
            "display_group_by": null, "display_show_done": null},
@@ -334,7 +348,7 @@ final class SavedViewsTests: XCTestCase {
         // v-week first, inbox second: inbox keeps order 10 → only v-week
         // (20 → 10 slot mismatch) and inbox (0 → 20)… compute explicitly:
         let inbox = SavedView(
-            id: SavedView.builtinInboxId, name: "Inbox", dsl: "status:todo", order: 10,
+            id: SavedView.builtinInboxId, name: "Views", dsl: "status:todo", order: 10,
             builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
         let week = SavedView(
@@ -352,7 +366,7 @@ final class SavedViewsTests: XCTestCase {
             builtin: false, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
         let reinbox = SavedView(
-            id: SavedView.builtinInboxId, name: "Inbox", dsl: "status:todo", order: 20,
+            id: SavedView.builtinInboxId, name: "Views", dsl: "status:todo", order: 20,
             builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
         try await service.reorderViews([reweek, reinbox])

@@ -47,7 +47,7 @@ struct InboxRawDslSheet: View {
             }
             .padding(16)
             .background(theme.bg)
-            .navigationTitle("Edit Inbox query")
+            .navigationTitle("Edit Views query")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

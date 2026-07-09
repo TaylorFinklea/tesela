@@ -78,7 +78,7 @@
     ((allNotesQuery.data ?? []) as Note[])
       .filter((n) => n.metadata.note_type === "Query")
       .filter((n) => n.id === DEFAULT_FILTER_SLUG || n.id.startsWith("inbox-"))
-      .map((n) => ({ slug: n.id, title: n.title || n.id }))
+      .map((n) => ({ slug: n.id, title: titleForExistingFilter(n.id, n.title) }))
       .sort((a, b) => a.title.localeCompare(b.title)),
   );
 
@@ -288,7 +288,7 @@
       // the seed fallback is no longer needed. Safe to clear.
       pendingSeedDsl = null;
     } catch {
-      toast("Failed to save Inbox query", "error");
+      toast("Failed to save Views query", "error");
     }
   }
 
@@ -296,7 +296,7 @@
    *  frontmatter when present (preserving icon/color/section), splicing
    *  in a fresh `query::` line. Greenfield case writes a minimal
    *  frontmatter + body — title derived from the active slug so a
-   *  saved filter at `inbox-work` reads as "Inbox Work" in the sidebar. */
+   *  saved filter at `inbox-work` reads as "Views Work" in the sidebar. */
   function buildInboxNoteContent(existing: Note | null | undefined, dsl: string): string {
     if (existing) {
       const content = existing.content;
@@ -332,15 +332,25 @@
     ].join("\n");
   }
 
-  /** Render a friendly title from a slug. `inbox` → "Inbox"; any
-   *  other slug becomes Title Case with hyphens replaced by spaces. */
+  /** Render a friendly title from a slug. `inbox` → "Views"; any
+   *  `inbox-*` compatibility slug is displayed as a Views filter. */
   function titleForNewFilter(slug: string): string {
-    if (slug === DEFAULT_FILTER_SLUG) return "Inbox";
-    return slug
+    if (slug === DEFAULT_FILTER_SLUG) return "Views";
+    const displaySlug = slug.startsWith("inbox-") ? `views-${slug.slice("inbox-".length)}` : slug;
+    return displaySlug
       .split("-")
       .filter((w) => w.length > 0)
       .map((w) => w[0].toUpperCase() + w.slice(1))
       .join(" ");
+  }
+
+  function titleForExistingFilter(slug: string, title: string): string {
+    if (!title) return titleForNewFilter(slug);
+    if (slug === DEFAULT_FILTER_SLUG && title === "Inbox") return "Views";
+    if (slug.startsWith("inbox-") && title.startsWith("Inbox ")) {
+      return `Views ${title.slice("Inbox ".length)}`;
+    }
+    return title;
   }
 
   /** Slugify a user-entered filter name. Lowercases, replaces
@@ -360,7 +370,7 @@
   async function saveAsFilter() {
     if (savingFilter) return;
     const name = window.prompt(
-      "Name this filter:\n(e.g. \"Work\" → :inbox-work)",
+      "Name this view:\n(e.g. \"Work\" → :views-work)",
       "",
     );
     if (!name) return;
@@ -447,7 +457,7 @@
       hiddenPages: [...chipState.hiddenPages, pageId],
     };
     scheduleSave(dslFromChips(next));
-    toast(`Hidden ${pageId} from Inbox`, "info");
+    toast(`Hidden ${pageId} from Views`, "info");
   }
 
   function unhidePage(pageId: string) {
@@ -587,7 +597,7 @@
 >
   <header class="flex items-center justify-between mb-2 text-[12px]">
     <div class="font-semibold">
-      📥 Inbox
+      ▦ Views
       <span class="text-muted-foreground/40 font-normal text-[11px]">
         j/k · ↵ open · t todo · d doing · x done · s schedule
       </span>
@@ -618,7 +628,7 @@
   {#if rowsQuery.isLoading}
     <div class="text-muted-foreground/60 text-[12px]">loading…</div>
   {:else if rows.length === 0}
-    <div class="text-muted-foreground/50 text-[12px] italic">Inbox clear ✓</div>
+    <div class="text-muted-foreground/50 text-[12px] italic">Views clear ✓</div>
   {:else}
     {#each rows as row (rowKey(row))}
       <InboxRow

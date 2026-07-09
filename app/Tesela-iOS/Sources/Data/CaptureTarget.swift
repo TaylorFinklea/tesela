@@ -20,7 +20,7 @@ enum CaptureTarget: Hashable, Sendable {
     var label: String {
         switch self {
         case .today:                          return "Today"
-        case .inbox:                          return "Inbox"
+        case .inbox:                          return "Views"
         case .page(_, let title):             return title
         case .childOf(_, let preview, _):     return "Child of " + previewLabel(preview)
         }
@@ -60,7 +60,7 @@ enum CaptureDefault: String, CaseIterable, Codable, Sendable {
         switch self {
         case .contextAware: return "Context-aware"
         case .alwaysToday:  return "Always Today"
-        case .alwaysInbox:  return "Always Inbox"
+        case .alwaysInbox:  return "Always Views"
         }
     }
 }

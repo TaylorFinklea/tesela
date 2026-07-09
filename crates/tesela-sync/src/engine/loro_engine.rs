@@ -188,7 +188,7 @@ fn builtin_views_seed_update() -> SyncResult<Vec<u8>> {
         .map_err(|e| SyncError::Storage(format!("views seed insert_container: {e}")))?;
     let ins = |e: loro::LoroError| SyncError::Storage(format!("views seed insert: {e}"));
     entry.insert("id", INBOX_VIEW_ID).map_err(ins)?;
-    entry.insert("name", "Inbox").map_err(ins)?;
+    entry.insert("name", "Views").map_err(ins)?;
     entry.insert("dsl", INBOX_DEFAULT_DSL).map_err(ins)?;
     entry.insert("order", 0i64).map_err(ins)?;
     entry.insert("builtin", true).map_err(ins)?;
@@ -1559,9 +1559,14 @@ impl LoroEngine {
                         }
                     })
                 };
+                let id = get_str("id").unwrap_or_else(|| key.to_string());
+                let mut name = get_str("name").unwrap_or_default();
+                if id == INBOX_VIEW_ID && name == "Inbox" {
+                    name = "Views".to_string();
+                }
                 out.push(crate::engine::ViewRecord {
-                    id: get_str("id").unwrap_or_else(|| key.to_string()),
-                    name: get_str("name").unwrap_or_default(),
+                    id,
+                    name,
                     dsl: get_str("dsl").unwrap_or_default(),
                     order: get_i64("order").unwrap_or(0),
                     builtin: get_bool("builtin").unwrap_or(false),

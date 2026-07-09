@@ -55,7 +55,7 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
     /// still triages against the canonical default.
     static let fallbackInbox = SavedView(
         id: builtinInboxId,
-        name: "Inbox",
+        name: "Views",
         dsl: "status:backlog,todo -has:scheduled -has:deadline",
         order: 0,
         builtin: true,
@@ -64,11 +64,21 @@ struct SavedView: Identifiable, Equatable, Hashable, Codable {
         displayShowDone: nil
     )
 
+    static func compatibleDisplayName(id: String, name: String) -> String {
+        id == builtinInboxId && name == "Inbox" ? "Views" : name
+    }
+
+    func displayCompatible() -> SavedView {
+        var copy = self
+        copy.name = Self.compatibleDisplayName(id: copy.id, name: copy.name)
+        return copy
+    }
+
     /// Bridge from the FFI record (the `.relay` read path).
     init(ffi: ViewRecord) {
         self.init(
             id: ffi.id,
-            name: ffi.name,
+            name: Self.compatibleDisplayName(id: ffi.id, name: ffi.name),
             dsl: ffi.dsl,
             order: ffi.order,
             builtin: ffi.builtin,

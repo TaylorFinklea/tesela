@@ -36,7 +36,7 @@ struct GrTabPlaceholder: View {
         switch tab {
         case .daily:   return "JOURNAL"
         case .agenda:  return "PLANNING"
-        case .inbox:   return "TRIAGE"
+        case .views:   return "VIEWS"
         case .library: return "REFERENCE"
         case .search:  return "FIND"
         }
@@ -47,7 +47,7 @@ struct GrTabPlaceholder: View {
         switch tab {
         case .daily:   return "calendar"
         case .agenda:  return "file-text"
-        case .inbox:   return "inbox"
+        case .views:   return "views"
         case .library: return "folder"
         case .search:  return "search"
         }

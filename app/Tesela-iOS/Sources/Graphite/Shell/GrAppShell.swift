@@ -443,7 +443,7 @@ struct GrAppShell: View {
             Tab(AppTab.agenda.label, systemImage: AppTab.agenda.systemImage, value: AppTab.agenda) {
                 GrAgendaView(mosaic: mosaic, backend: backend)
             }
-            Tab(AppTab.inbox.label, systemImage: AppTab.inbox.systemImage, value: AppTab.inbox) {
+            Tab(AppTab.views.label, systemImage: AppTab.views.systemImage, value: AppTab.views) {
                 GrInboxView(mosaic: mosaic, backend: backend)
             }
             Tab(AppTab.library.label, systemImage: AppTab.library.systemImage, value: AppTab.library) {
@@ -511,7 +511,7 @@ struct GrAppShell: View {
         switch cmd.id {
         case "daily":  activeTab = .daily
         case "agenda": activeTab = .agenda
-        case "inbox":  activeTab = .inbox
+        case "views", "inbox": activeTab = .views
         case "settings-general", "settings-devices", "settings-sync",
              "settings-mosaic", "settings-data":
             Task { @MainActor in

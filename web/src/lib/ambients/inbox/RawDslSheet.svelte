@@ -48,7 +48,7 @@
     onclick={(e) => e.stopPropagation()}
   >
     <header class="flex items-center justify-between mb-3">
-      <h2 class="text-[13px] font-semibold">Edit Inbox query</h2>
+      <h2 class="text-[13px] font-semibold">Edit Views query</h2>
       <span class="text-[10px] text-muted-foreground font-mono">⌘↵ save · Esc cancel</span>
     </header>
     <QueryInput

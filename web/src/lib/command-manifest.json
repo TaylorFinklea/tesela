@@ -573,15 +573,15 @@
     "description": null
   },
   {
-    "id": "inbox",
-    "verb": "inbox",
-    "label": "Open Inbox",
-    "glyph": "📥",
+    "id": "views",
+    "verb": "views",
+    "label": "Open Views",
+    "glyph": "▦",
     "category": "ambient",
     "shortcut": null,
     "chord": [
       "g",
-      "I"
+      "V"
     ],
     "surfaces": [
       "colon",
@@ -589,9 +589,9 @@
       "palette"
     ],
     "keywords": [
-      "inbox",
+      "views",
       "ambient",
-      "inbox"
+      "views"
     ],
     "takes_arg": false,
     "arg_prompt": null,
@@ -1903,7 +1903,8 @@
       "remove"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.unhide-all-columns",
@@ -1930,7 +1931,8 @@
       "reset"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.move-column-left",
@@ -1958,7 +1960,8 @@
       "reorder"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "table.move-column-right",
@@ -1986,7 +1989,8 @@
       "reorder"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.collection",

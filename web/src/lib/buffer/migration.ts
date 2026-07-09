@@ -78,7 +78,8 @@ type V4State = {
 const WIDGET_TO_AMBIENT: Record<string, string> = {
   calendar: "calendar",
   tasks: "today-in-progress",
-  inbox: "today-in-progress",
+  views: "views",
+  inbox: "views",
   pinned: "workspace-dashboard",
   recent: "workspace-dashboard",
   pages: "workspace-dashboard",

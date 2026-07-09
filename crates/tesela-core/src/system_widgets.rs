@@ -1,5 +1,5 @@
 //! Default Query widgets that ship with every new mosaic — keeps the
-//! rail nav (Dailies / Pages / Tasks / Projects / People / Inbox /
+//! rail nav (Dailies / Pages / Tasks / Projects / People / Views /
 //! Calendar / Recent / Pinned) populated from the moment a fresh
 //! mosaic is created.
 //!
@@ -80,7 +80,7 @@ pub const SYSTEM_WIDGETS: &[SystemWidget] = &[
     },
     SystemWidget {
         id: "inbox",
-        title: "Inbox",
+        title: "Views",
         query: "kind:block -has:status",
         group: None,
         sort: None,

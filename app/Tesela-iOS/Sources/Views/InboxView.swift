@@ -62,7 +62,7 @@ struct InboxView: View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
                 TabHeader(
-                    title: "Inbox",
+                    title: "Views",
                     syncStatus: TabHeader.SyncDotState(mosaic.connection),
                     onTapSettings: { showSettings = true },
                     onTapMosaic: { showMosaicSwitcher = true }
@@ -154,7 +154,7 @@ struct InboxView: View {
             .environment(\.theme, theme)
         }
         .alert("Save filter as…", isPresented: $showSaveAsPrompt) {
-            TextField("Name (e.g. Work → :inbox-work)", text: $saveAsName)
+            TextField("Name (e.g. Work → :views-work)", text: $saveAsName)
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
             Button("Save") {
@@ -182,7 +182,7 @@ struct InboxView: View {
                 .background(theme.bg)
         } else if rows.isEmpty {
             ContentUnavailableView {
-                Label("Inbox clear", systemImage: "checkmark.circle")
+                Label("Views clear", systemImage: "checkmark.circle")
             } description: {
                 Text("Every block has a status — nothing to triage right now.")
             }

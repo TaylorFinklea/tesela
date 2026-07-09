@@ -48,3 +48,12 @@ test("command-manifest.json entries carry only manifest fields — no run/when c
     assert.equal(typeof entry.takes_arg, "boolean");
   }
 });
+
+test("ambient views command is labeled Views, not Inbox", () => {
+  const entry = manifest.find((e) => e.id === "views");
+  assert.ok(entry, "expected a views ambient command entry");
+  assert.equal(manifest.some((e) => e.id === "inbox"), false, "inbox command id should not remain primary");
+  assert.equal(entry.label, "Open Views");
+  assert.ok(entry.keywords.includes("views"), "Views command should be searchable as views");
+  assert.equal(entry.keywords.includes("inbox"), false, "Inbox should not be visible command search copy");
+});

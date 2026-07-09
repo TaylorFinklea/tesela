@@ -41,9 +41,17 @@ final class GrCommandTests: XCTestCase {
 
     func testKnownNavigationCommandsPresent() {
         let ids = Set(GrCommand.palette(from: manifest).map(\.id))
-        for id in ["daily", "agenda", "inbox"] {
+        for id in ["daily", "agenda", "views"] {
             XCTAssertTrue(ids.contains(id), "missing command \(id)")
         }
+        XCTAssertFalse(ids.contains("inbox"), "Views should be the primary visible command id")
+    }
+
+    func testViewsCommandIsNotLabeledInbox() {
+        let views = GrCommand.palette(from: manifest).first { $0.id == "views" }
+        XCTAssertEqual(views?.label, "Open Views")
+        XCTAssertTrue(views?.keywords.contains("views") == true)
+        XCTAssertFalse(views?.keywords.contains("inbox") == true)
     }
 
     func testUnmappedManifestCommandIsHidden() {

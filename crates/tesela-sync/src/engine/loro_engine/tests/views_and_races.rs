@@ -91,6 +91,22 @@ async fn views_upsert_list_round_trip_sorted_by_order() {
 }
 
 #[tokio::test]
+async fn views_list_displays_legacy_builtin_inbox_name_as_views() {
+    let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+    e.views_upsert(user_view(INBOX_VIEW_ID, "Inbox", INBOX_DEFAULT_DSL, 0))
+        .await
+        .unwrap();
+
+    let views = e.views_list().await;
+    assert_eq!(views[0].id, INBOX_VIEW_ID);
+    assert_eq!(views[0].name, "Views");
+
+    let custom = user_view(INBOX_VIEW_ID, "Triage", INBOX_DEFAULT_DSL, 0);
+    e.views_upsert(custom).await.unwrap();
+    assert_eq!(e.views_list().await[0].name, "Triage");
+}
+
+#[tokio::test]
 async fn views_delete_guards_builtin_and_removes_user_view() {
     let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
     e.ensure_builtin_views().await.unwrap();

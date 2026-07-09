@@ -1077,7 +1077,7 @@ mod tests {
         // body content from non-outliner notes (the `inbox` Query note,
         // Tag pages, Property pages, Templates). The pruner must bail
         // when nothing changes so those bodies survive every PUT.
-        let content = "---\ntitle: \"Inbox\"\ntype: \"Query\"\ntags: []\n---\n\nquery:: kind:block -has:status tag-in:Task\n";
+        let content = "---\ntitle: \"Views\"\ntype: \"Query\"\ntags: []\n---\n\nquery:: kind:block -has:status tag-in:Task\n";
         assert_eq!(prune_bare_leaf_blocks(content), content);
     }
 

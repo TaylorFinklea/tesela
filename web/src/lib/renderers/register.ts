@@ -43,4 +43,6 @@ registerAmbient("today-in-progress", todayInProgress);
 registerAmbient("workspace-dashboard", workspaceDashboard);
 registerAmbient("ai-workspace", aiWorkspace);
 registerAmbient("agenda", agenda);
+registerAmbient("views", inbox);
+// Compatibility alias for existing workspaces/buffers that stored the old ambient id.
 registerAmbient("inbox", inbox);

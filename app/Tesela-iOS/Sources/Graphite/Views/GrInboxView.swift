@@ -43,7 +43,7 @@ struct GrInboxView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                GrHeader(title: activeView?.name ?? "Inbox", subtitle: subtitle)
+                GrHeader(title: activeView?.name ?? "Views", subtitle: subtitle)
                 viewChipBar
                 content
             }
@@ -256,9 +256,9 @@ struct GrInboxView: View {
     private var emptyState: some View {
         if isInboxActive {
             ContentUnavailableView {
-                Label("Inbox clear", systemImage: "checkmark.circle")
+                Label("Views clear", systemImage: "checkmark.circle")
             } description: {
-                Text("Nothing matches the Inbox query right now.")
+                Text("Nothing matches the Views query right now.")
             }
             .background(theme.bg)
         } else {

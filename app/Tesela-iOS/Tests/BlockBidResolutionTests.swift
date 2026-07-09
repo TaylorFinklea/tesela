@@ -221,7 +221,7 @@ final class BlockBidResolutionTests: XCTestCase {
         let dsl = "kind:block -has:status -is:heading"
         try await service.saveInboxDsl(slug: "inbox-work", dsl: dsl)
         XCTAssertEqual(captured?.slug, "inbox-work")
-        XCTAssertEqual(captured?.title, "Inbox Work")
+        XCTAssertEqual(captured?.title, "Views Work")
         XCTAssertTrue(
             captured?.content.contains("query:: \(dsl)") == true,
             "saved-filter note carries the new DSL: \(captured?.content ?? "nil")"

@@ -71,7 +71,7 @@ const AMBIENTS: { name: string; label: string; verb: string; glyph: string; chor
   { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦", chord: ["g", "h"] },
   { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺", chord: ["g", "a"] },
   { name: "agenda", label: "Agenda", verb: "agenda", glyph: "📋", chord: ["g", "A"] },
-  { name: "inbox", label: "Inbox", verb: "inbox", glyph: "📥", chord: ["g", "I"] },
+  { name: "views", label: "Views", verb: "views", glyph: "▦", chord: ["g", "V"] },
 ];
 
 export type BuiltinCommand = {

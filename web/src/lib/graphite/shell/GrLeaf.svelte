@@ -38,11 +38,11 @@
     return pageId === '' || /^\d{4}-\d{2}-\d{2}$/.test(pageId);
   }
 
-  type ViewKind = 'daily' | 'page' | 'inbox' | 'agenda' | 'placeholder';
+  type ViewKind = 'daily' | 'page' | 'views' | 'agenda' | 'placeholder';
   const view = $derived.by<ViewKind>(() => {
     if (buffer.kind === 'page') return isDailyPageId(buffer.pageId) ? 'daily' : 'page';
     if (buffer.kind === 'ambient') {
-      if (buffer.ambientName === 'inbox') return 'inbox';
+      if (buffer.ambientName === 'views' || buffer.ambientName === 'inbox') return 'views';
       if (buffer.ambientName === 'agenda') return 'agenda';
     }
     return 'placeholder';
@@ -95,7 +95,7 @@
     {#key pageId}
       <GrPage {pageId} paneId={leafId as unknown as string} />
     {/key}
-  {:else if view === 'inbox'}
+  {:else if view === 'views'}
     <GrInbox />
   {:else if view === 'agenda'}
     <GrAgenda />

@@ -4,7 +4,7 @@
  * Graph / Properties) is reframed here as Query widgets so the rail is purely
  * data-driven from 9.1 onward.
  *
- * Widgets that don't have real middle-column behavior yet (Calendar, Inbox)
+ * Widgets that don't have real middle-column behavior yet (Calendar, Views)
  * still ship as Query notes — their middle-column renderers stub to
  * "Coming in 9.x" until the corresponding phase lands.
  */
@@ -72,7 +72,7 @@ export const SYSTEM_WIDGETS: SystemWidgetSpec[] = [
   },
   {
     id: "inbox",
-    title: "Inbox",
+    title: "Views",
     // 9.2 will refine to "no parent project, not daily, no status".
     query: "kind:block -has:status",
     section: "browse",

@@ -23,7 +23,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "hsplit",
@@ -49,7 +50,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "close-pane",
@@ -74,7 +76,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-left",
@@ -100,7 +103,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-right",
@@ -126,7 +130,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-up",
@@ -152,7 +157,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "move-down",
@@ -178,7 +184,8 @@
       "pane"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tabnew",
@@ -203,7 +210,8 @@
       "window"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tab-close",
@@ -227,7 +235,8 @@
       "kill"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "jump",
@@ -254,7 +263,8 @@
       "page"
     ],
     "takes_arg": true,
-    "arg_prompt": "note slug or id"
+    "arg_prompt": "note slug or id",
+    "description": null
   },
   {
     "id": "backlinks",
@@ -279,7 +289,8 @@
       "backlinks-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "outline",
@@ -304,7 +315,8 @@
       "outline-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "properties",
@@ -329,7 +341,8 @@
       "properties-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tasks",
@@ -354,7 +367,8 @@
       "tasks-linked-to-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "graph-local",
@@ -379,7 +393,8 @@
       "local-graph-of-page"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "instances-of-tag",
@@ -404,7 +419,8 @@
       "uses"
     ],
     "takes_arg": true,
-    "arg_prompt": "tag slug"
+    "arg_prompt": "tag slug",
+    "description": null
   },
   {
     "id": "backlinks-of-tag",
@@ -428,7 +444,8 @@
       "uses"
     ],
     "takes_arg": true,
-    "arg_prompt": "tag slug"
+    "arg_prompt": "tag slug",
+    "description": null
   },
   {
     "id": "calendar",
@@ -452,7 +469,8 @@
       "calendar"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "in-progress",
@@ -476,7 +494,8 @@
       "today-in-progress"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "dashboard",
@@ -500,7 +519,8 @@
       "workspace-dashboard"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "ai",
@@ -524,7 +544,8 @@
       "ai-workspace"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "agenda",
@@ -548,18 +569,19 @@
       "agenda"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
-    "id": "inbox",
-    "verb": "inbox",
-    "label": "Open Inbox",
-    "glyph": "📥",
+    "id": "views",
+    "verb": "views",
+    "label": "Open Views",
+    "glyph": "▦",
     "category": "ambient",
     "shortcut": null,
     "chord": [
       "g",
-      "I"
+      "V"
     ],
     "surfaces": [
       "colon",
@@ -567,12 +589,13 @@
       "palette"
     ],
     "keywords": [
-      "inbox",
+      "views",
       "ambient",
-      "inbox"
+      "views"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "daily",
@@ -596,7 +619,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "goto",
@@ -623,7 +647,8 @@
       "daily"
     ],
     "takes_arg": true,
-    "arg_prompt": "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd"
+    "arg_prompt": "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd",
+    "description": null
   },
   {
     "id": "scratch",
@@ -648,7 +673,8 @@
       "new"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "promote",
@@ -673,7 +699,8 @@
       "scratch"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "delete-tag",
@@ -697,7 +724,8 @@
       "remove"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "convert-to-tag",
@@ -721,7 +749,8 @@
       "type"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "convert-to-note",
@@ -745,7 +774,8 @@
       "type"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "rename-slug",
@@ -770,7 +800,8 @@
       "disambiguate"
     ],
     "takes_arg": true,
-    "arg_prompt": "new slug (e.g., cardinal-religion)"
+    "arg_prompt": "new slug (e.g., cardinal-religion)",
+    "description": null
   },
   {
     "id": "prune-scratches",
@@ -796,7 +827,8 @@
       "delete"
     ],
     "takes_arg": true,
-    "arg_prompt": "days threshold (default: workspace setting)"
+    "arg_prompt": "days threshold (default: workspace setting)",
+    "description": null
   },
   {
     "id": "settings-general",
@@ -822,7 +854,8 @@
       "general"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-devices",
@@ -848,7 +881,8 @@
       "devices"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-sync",
@@ -874,7 +908,8 @@
       "sync"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-mosaic",
@@ -900,7 +935,8 @@
       "mosaic"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "settings-data",
@@ -926,7 +962,8 @@
       "data"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "new-note",
@@ -951,7 +988,8 @@
       "page"
     ],
     "takes_arg": true,
-    "arg_prompt": "note title"
+    "arg_prompt": "note title",
+    "description": null
   },
   {
     "id": "peek",
@@ -975,7 +1013,8 @@
       "popover"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "fullscreen-graph",
@@ -999,7 +1038,8 @@
       "visual"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "command-station",
@@ -1023,7 +1063,8 @@
       "cmdk"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "yesterday-daily",
@@ -1047,7 +1088,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "tomorrow-daily",
@@ -1071,7 +1113,8 @@
       "journal"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "keymap",
@@ -1096,7 +1139,8 @@
       "keyboard"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "skip-occurrence",
@@ -1122,7 +1166,831 @@
       "occurrence"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.cycle-group-by",
+    "verb": null,
+    "label": "Kanban: cycle group-by forward",
+    "glyph": "⇋",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "s"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "group",
+      "switch",
+      "cycle",
+      "groupby"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.cycle-group-by-back",
+    "verb": null,
+    "label": "Kanban: cycle group-by backward",
+    "glyph": "⇌",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "S"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "group",
+      "switch",
+      "cycle",
+      "groupby",
+      "back"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.new-card",
+    "verb": null,
+    "label": "Kanban: new card in focused column",
+    "glyph": "✚",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "n"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "new",
+      "create",
+      "card",
+      "add"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-down",
+    "verb": null,
+    "label": "Kanban: focus card below",
+    "glyph": "↓",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "j"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "down",
+      "next"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-up",
+    "verb": null,
+    "label": "Kanban: focus card above",
+    "glyph": "↑",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "k"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "up",
+      "prev"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-left",
+    "verb": null,
+    "label": "Kanban: focus previous column",
+    "glyph": "←",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "h"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "left",
+      "prev",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-right",
+    "verb": null,
+    "label": "Kanban: focus next column",
+    "glyph": "→",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "l"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "right",
+      "next",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-first",
+    "verb": null,
+    "label": "Kanban: focus first card in column",
+    "glyph": "⇱",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "g"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "first",
+      "top"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.focus-last",
+    "verb": null,
+    "label": "Kanban: focus last card in column",
+    "glyph": "⇲",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "G"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "focus",
+      "last",
+      "bottom"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.open-card",
+    "verb": null,
+    "label": "Kanban: open focused card",
+    "glyph": "↵",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "o"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "open",
+      "goto",
+      "jump",
+      "card"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.open-move-picker",
+    "verb": null,
+    "label": "Kanban: move focused card…",
+    "glyph": "⇄",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "m"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "picker",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.move-card-prev-col",
+    "verb": null,
+    "label": "Kanban: move focused card to previous column",
+    "glyph": "◀",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "H"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "card",
+      "prev",
+      "left",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.move-card-next-col",
+    "verb": null,
+    "label": "Kanban: move focused card to next column",
+    "glyph": "▶",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "L"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "move",
+      "card",
+      "next",
+      "right",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "kanban.edit-properties",
+    "verb": null,
+    "label": "Kanban: edit focused card properties",
+    "glyph": "⚙",
+    "category": "kanban",
+    "shortcut": null,
+    "chord": [
+      "k",
+      "i"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "kanban",
+      "board",
+      "edit",
+      "properties",
+      "drawer",
+      "inspect"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-down",
+    "verb": null,
+    "label": "Table: focus row below",
+    "glyph": "↓",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "j"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "down",
+      "next",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-up",
+    "verb": null,
+    "label": "Table: focus row above",
+    "glyph": "↑",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "k"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "up",
+      "prev",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-first-row",
+    "verb": null,
+    "label": "Table: focus first row",
+    "glyph": "⇱",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "g"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "first",
+      "top",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-last-row",
+    "verb": null,
+    "label": "Table: focus last row",
+    "glyph": "⇲",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "G"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "last",
+      "bottom",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-left",
+    "verb": null,
+    "label": "Table: focus previous column",
+    "glyph": "←",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "h"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "left",
+      "prev",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-right",
+    "verb": null,
+    "label": "Table: focus next column",
+    "glyph": "→",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "l"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "right",
+      "next",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-first-col",
+    "verb": null,
+    "label": "Table: focus first column",
+    "glyph": "⇤",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "0"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "first",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.focus-last-col",
+    "verb": null,
+    "label": "Table: focus last column",
+    "glyph": "⇥",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "$"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "focus",
+      "last",
+      "column"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.open-row",
+    "verb": null,
+    "label": "Table: open focused row",
+    "glyph": "↵",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "o"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "open",
+      "goto",
+      "jump",
+      "row"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.edit-cell",
+    "verb": null,
+    "label": "Table: edit focused cell",
+    "glyph": "✎",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "e"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "edit",
+      "cell",
+      "property",
+      "value"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.edit-properties",
+    "verb": null,
+    "label": "Table: edit focused row properties",
+    "glyph": "⚙",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "i"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "edit",
+      "properties",
+      "drawer",
+      "inspect"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.sort-column",
+    "verb": null,
+    "label": "Table: sort by focused column",
+    "glyph": "⇅",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "s"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "sort",
+      "column",
+      "toggle",
+      "order"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.hide-column",
+    "verb": null,
+    "label": "Table: hide focused column",
+    "glyph": "⊘",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "x"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "hide",
+      "column",
+      "remove"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.unhide-all-columns",
+    "verb": null,
+    "label": "Table: unhide all columns",
+    "glyph": "◎",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "U"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "unhide",
+      "show",
+      "column",
+      "reset"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.move-column-left",
+    "verb": null,
+    "label": "Table: move focused column left",
+    "glyph": "◀",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "H"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "move",
+      "column",
+      "prev",
+      "left",
+      "reorder"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "table.move-column-right",
+    "verb": null,
+    "label": "Table: move focused column right",
+    "glyph": "▶",
+    "category": "table",
+    "shortcut": null,
+    "chord": [
+      "s",
+      "L"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "table",
+      "sets",
+      "columns",
+      "move",
+      "column",
+      "next",
+      "right",
+      "reorder"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.collection",
@@ -1145,7 +2013,8 @@
       "cards"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.date",
@@ -1169,7 +2038,8 @@
       "calendar"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.heading",
@@ -1194,7 +2064,8 @@
       "block"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.link",
@@ -1217,7 +2088,8 @@
       "reference"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.property",
@@ -1241,7 +2113,8 @@
       "attribute"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.query",
@@ -1264,7 +2137,8 @@
       "search"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": "Insert a live query:: block — filters/sorts blocks or pages by JQL. Examples: \"status = todo AND priority > 2\", \"type = project AND scheduled IS NULL\", \"tag = urgent ORDER BY deadline ASC\"."
   },
   {
     "id": "editor.tag",
@@ -1287,7 +2161,8 @@
       "category"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.task",
@@ -1312,7 +2187,8 @@
       "tag"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.template",
@@ -1335,7 +2211,8 @@
       "boilerplate"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   },
   {
     "id": "editor.widget",
@@ -1358,6 +2235,7 @@
       "collection"
     ],
     "takes_arg": false,
-    "arg_prompt": null
+    "arg_prompt": null,
+    "description": null
   }
 ]

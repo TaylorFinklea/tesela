@@ -2,7 +2,7 @@
      (saved-views spec 2026-06-10: views ARE the Inbox).
 
      The inbox pane is now a saved-views switcher over the synced registry
-     (`GET /views`; the seeded builtin Inbox is the default selection). The
+     (`GET /views`; the seeded builtin Views entry is the default selection). The
      selected view's DSL runs through the SAME pipeline as before
      (api.executeQuery → kind==="block" rows, capped) in list mode, with
      the triage verbs (t/d/x keys, snooze, Process all) unchanged;
@@ -49,7 +49,12 @@
   const BUILTIN_DELETE_MSG =
     "builtin and cannot be deleted — builtins are editable; reset it to its default instead";
   const DISPLAY_MODES = ["list", "table", "kanban"] as const;
+  const BUILTIN_VIEW_ID = "builtin-inbox";
   type DisplayMode = (typeof DISPLAY_MODES)[number];
+
+  function displayViewName(v: Pick<ViewRecord, "id" | "name">): string {
+    return v.id === BUILTIN_VIEW_ID && v.name === "Inbox" ? "Views" : v.name;
+  }
 
   // ── views registry ─────────────────────────────────────────────────────
   const viewsQuery = createQuery(() => ({
@@ -62,8 +67,8 @@
   // the stored id no longer exists (deleted on another device).
   const SELECTED_KEY = "tesela:graphite:views-selected";
   function loadSelected(): string {
-    if (typeof localStorage === "undefined") return "builtin-inbox";
-    return localStorage.getItem(SELECTED_KEY) ?? "builtin-inbox";
+    if (typeof localStorage === "undefined") return BUILTIN_VIEW_ID;
+    return localStorage.getItem(SELECTED_KEY) ?? BUILTIN_VIEW_ID;
   }
   let selectedId = $state<string>(loadSelected());
   const selected = $derived<ViewRecord | null>(
@@ -96,7 +101,7 @@
     selected && displayMode !== "list"
       ? {
           id: `view:${selected.id}:${displayMode}`,
-          title: selected.name,
+          title: displayViewName(selected),
           query: selected.dsl,
           group: selected.display_group_by,
           sort: null,
@@ -168,7 +173,7 @@
     editor = {
       id: v.id,
       builtin: v.builtin,
-      name: v.name,
+      name: displayViewName(v),
       dsl: v.dsl,
       displayMode: (DISPLAY_MODES as readonly string[]).includes(v.display_mode)
         ? (v.display_mode as DisplayMode)
@@ -245,7 +250,7 @@
     try {
       await api.deleteView(editor.id);
       await invalidateViews();
-      if (selectedId === editor.id) selectView("builtin-inbox");
+      if (selectedId === editor.id) selectView(BUILTIN_VIEW_ID);
       closeEditor();
     } catch (e) {
       if (editor) editor.serverError = apiErrorMessage(e);
@@ -275,7 +280,7 @@
     queryInputRef?.focus();
   }
 
-  /** Reset a builtin's draft to its shipped default (Inbox only today). */
+  /** Reset a builtin's draft to its shipped default (Views only today). */
   function resetBuiltinDraft() {
     if (!editor?.builtin) return;
     editor.dsl = INBOX_VIEW_DSL;
@@ -474,14 +479,14 @@
             class:active={selected?.id === v.id}
             title={v.dsl}
             onclick={() => selectView(v.id)}
-          >{v.name}</button>
+          >{displayViewName(v)}</button>
         {/each}
       {/if}
     </div>
     {#if selected}
       <GrButton
         icon="pencil"
-        title={`Edit view "${selected.name}"`}
+        title={`Edit view "${displayViewName(selected)}"`}
         onclick={() => selected && openEditor(selected)}
       />
     {/if}
@@ -525,7 +530,7 @@
           {#if editor.builtin}
             <GrButton
               icon="restore"
-              title="Reset the query to the Inbox default"
+              title="Reset the query to the Views default"
               onclick={resetBuiltinDraft}
             />
           {/if}
@@ -596,7 +601,7 @@
       {#if viewsQuery.isLoading || rowsQuery.isLoading}
         <div class="gr-empty">loading…</div>
       {:else if rows.length === 0}
-        <div class="gr-empty">{selected?.builtin ? "Inbox clear ✓" : "No matches"}</div>
+        <div class="gr-empty">{selected?.builtin ? "Views clear ✓" : "No matches"}</div>
       {:else}
         {#each rows as row (rowKey(row))}
           {@const sel = selectedRow ? rowKey(selectedRow) === rowKey(row) : false}

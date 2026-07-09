@@ -4082,7 +4082,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return notes
             .filter { $0.metadata.note_type == "Query" }
             .filter { $0.id == "inbox" || $0.id.hasPrefix("inbox-") }
-            .map { InboxFilterRef(slug: $0.id, title: $0.title.isEmpty ? $0.id : $0.title) }
+            .map { InboxFilterRef(slug: $0.id, title: Self.displayTitleForInboxFilter(slug: $0.id, title: $0.title)) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
@@ -4168,14 +4168,24 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    static func displayTitleForInboxFilter(slug: String, title: String) -> String {
+        if title.isEmpty { return titleForInboxFilterSlug(slug) }
+        if slug == "inbox", title == "Inbox" { return "Views" }
+        if slug.hasPrefix("inbox-"), title.hasPrefix("Inbox ") {
+            return "Views " + String(title.dropFirst("Inbox ".count))
+        }
+        return title
+    }
+
     /// Human-readable title derived from a saved-filter slug. `inbox`
-    /// is the canonical default and reads as "Inbox"; everything else
-    /// title-cases the slug with hyphens turned into spaces
-    /// (`inbox-work` → "Inbox Work"). Mirrors the web's
-    /// `titleForNewFilter` in `Inbox.svelte`.
+    /// is the compatibility default and reads as "Views"; `inbox-*`
+    /// compatibility slugs display as Views filters.
     static func titleForInboxFilterSlug(_ slug: String) -> String {
-        if slug == "inbox" { return "Inbox" }
-        return slug.split(separator: "-")
+        if slug == "inbox" { return "Views" }
+        let displaySlug: String = slug.hasPrefix("inbox-")
+            ? "views-" + String(slug.dropFirst("inbox-".count))
+            : slug
+        return displaySlug.split(separator: "-")
             .filter { !$0.isEmpty }
             .map { word -> String in
                 let first = word.prefix(1).uppercased()
@@ -4337,11 +4347,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
             guard let views = await onViewsList?(), !views.isEmpty else {
                 return [SavedView.fallbackInbox]
             }
-            return SavedViewLogic.sorted(views)
+            return SavedViewLogic.sorted(views.map { $0.displayCompatible() })
         case .http(let baseURL):
             do {
                 let views: [SavedView] = try await httpGet("/views", baseURL: baseURL)
-                return views.isEmpty ? [SavedView.fallbackInbox] : views
+                return views.isEmpty ? [SavedView.fallbackInbox] : SavedViewLogic.sorted(views.map { $0.displayCompatible() })
             } catch {
                 return [SavedView.fallbackInbox]
             }
@@ -4417,7 +4427,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 .cannotWriteToFile,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "the built-in Inbox cannot be deleted"
+                        "the built-in Views entry cannot be deleted"
                 ]
             )
         }

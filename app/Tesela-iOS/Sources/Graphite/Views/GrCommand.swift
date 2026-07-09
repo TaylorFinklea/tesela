@@ -22,7 +22,7 @@ struct GrCommand: Identifiable, Equatable, Hashable {
 
     /// Manifest ids this iOS build knows how to run natively.
     static let executableIds: Set<String> = [
-        "daily", "agenda", "inbox",
+        "daily", "agenda", "views",
         "settings-general", "settings-devices", "settings-sync",
         "settings-mosaic", "settings-data",
     ]

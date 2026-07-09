@@ -186,7 +186,7 @@ final class LocalQueryEngineTests: XCTestCase {
     func testSystemPageBlocksAreExcluded() {
         let bs = blocks("- query:: kind:block", noteId: "inbox")
         let items = LocalQueryEngine.queryItems(
-            blocks: bs, noteId: "inbox", noteTitle: "Inbox",
+            blocks: bs, noteId: "inbox", noteTitle: "Views",
             pageNoteType: "Query", dsl: defaultDsl
         )
         XCTAssertTrue(items.isEmpty)
