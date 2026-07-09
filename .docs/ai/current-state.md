@@ -8,12 +8,14 @@ Branch: main (NOT pushed — Taylor reviews+pushes; build 75 bump local)
 - [x] qv-web-jql "broken" answer QA'd (sandbox mosaic, live UI drive): flow SOUND — sighting = inbox→views rename mid-flight (resolved, 785/785 green) or by-design empty number-prop popup; follow-up ask `qv-web-jql-followup` appended to build-75 deck
 - [x] inbox→views rename: implemented + verified
 - [ ] ENV-BLOCKED closes (need Taylor's orphan kill, PIDs in chat): engc.6+epic (verify: cargo test -p tesela-sync -p tesela-sync-ffi -p tesela-server) · tesela-baa (verify: pnpm --dir web test:e2e storm spec; needs npx playwright install chromium)
-- [ ] Product test deck (build 75) live — iOS uploaded; desktop bundle dist/ untracked; first answer in: qv-web-jql broken
+- [ ] Product tests live: dictation P2 (`tesela/20260709-dictation-p2-product-test` — web mic path + desktop WKWebView resampler; I couldn't test real getUserMedia) · build-75 (`20260707-query-views` qv-web-jql-followup)
+- [ ] Desktop: rebuild+relaunch to pick up P2 (web bundle rebuilt; desktop binary link-checks clean) — offered in deck, do on request
 
 ## Blockers
 - Loopback/trustd env until orphan kill (also blocks tesela-server spawn suites)
 
 ## Open Questions
-- Taylor: build-75 deck — answer qv-web-jql-followup (which breakage was it?) + remaining blocks (tables, iOS, verdict) · dictation deck direction ask
+- Taylor: run dictation P2 product test (deck) — esp. desktop WKWebView (resampler correctness) + real browser mic path
+- Taylor: build-75 deck — answer qv-web-jql-followup (which breakage was it?) + remaining blocks (tables, iOS, verdict)
 - Taylor: build-74 deck (tesela/20260703-build74-product-test) still unanswered
 - Audit findings await triage-into-Now: tesela-jow (decimal truncation, lead), tesela-0rc (untagged chip no-op)
