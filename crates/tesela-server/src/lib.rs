@@ -4,6 +4,7 @@
 //! embedder's tokio runtime (the desktop Tauri shell) without spawning a
 //! child. Mirrors the `tesela-relay` lib+bin split.
 
+pub mod asr_engine;
 pub mod backup_scheduler;
 pub mod error;
 pub mod notifications;

@@ -2,6 +2,7 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
 
 /// Unified error type for all route handlers.
+#[derive(Debug)]
 pub enum AppError {
     NotFound(String),
     Validation(String),

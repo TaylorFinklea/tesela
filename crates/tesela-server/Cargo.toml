@@ -17,6 +17,20 @@ path = "src/main.rs"
 # `--save-baseline` flag isn't intercepted by an unrelated harness.
 bench = false
 
+[features]
+default = ["transcribecpp"]
+# Dictation P1 (tesela-v5t.1) — transcribe.cpp runs ALL families
+# (Whisper GGML/GGUF auto-detected, Canary + Parakeet GGUF). MUTUALLY
+# EXCLUSIVE with `whisper-fallback`: both engines statically vendor
+# ggml, and two ggml copies in one binary interleave at link time —
+# whisper.cpp's backend registry then walks transcribe.cpp's Metal
+# backend and aborts (GGML_ASSERT(index == 0), ggml-metal.m:3889).
+# This is why Handy v0.9.0 deleted whisper-rs outright.
+transcribecpp = ["dep:transcribe-cpp"]
+# Emergency whisper-only build while transcribe.cpp (v0.1.x) proves out:
+# `--no-default-features --features whisper-fallback`.
+whisper-fallback = ["dep:whisper-rs"]
+
 [dependencies]
 tesela-core = { path = "../tesela-core" }
 # Hex encode/decode for relay status output (device ids in warnings).
@@ -38,11 +52,18 @@ chrono.workspace = true
 regex.workspace = true
 reqwest = { workspace = true }
 futures = { workspace = true }
-# Phase 26 — Whisper inference via whisper.cpp Rust bindings. The
-# crate compiles whisper.cpp from source via build.rs; on macOS it
-# picks up Metal acceleration automatically.
-whisper-rs = { version = "0.13", default-features = false, features = ["metal"] }
+# Phase 26 — Whisper inference via whisper.cpp Rust bindings. Now the
+# OPTIONAL `whisper-fallback` engine (see [features]): default builds
+# run Whisper through transcribe.cpp instead — the two vendored ggml
+# copies cannot be linked into one binary.
+whisper-rs = { version = "0.13", default-features = false, features = ["metal"], optional = true }
 hound = "3.5"
+# Dictation P1 — transcribe.cpp, the ggml runtime for Whisper GGML/GGUF
+# plus NeMo-family GGUF STT (Canary, Parakeet). Static-linked from
+# source via CMake by the -sys crate; Metal like whisper-rs before it.
+transcribe-cpp = { version = "0.1.2", optional = true, features = ["metal"] }
+# Stream-hash model downloads against the catalog's expected sha256.
+sha2 = { workspace = true }
 postcard.workspace = true
 uuid.workspace = true
 blake3.workspace = true

@@ -7420,6 +7420,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tesela-backup",
  "tesela-core",
@@ -7431,6 +7432,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "transcribe-cpp",
  "uuid",
  "walkdir",
  "whisper-rs",
@@ -7971,6 +7973,27 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "transcribe-cpp"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d77cafeaa8818547b7d52755e061aee75fff6d2b118085e0bf52802ec88f333"
+dependencies = [
+ "log",
+ "thiserror 2.0.18",
+ "transcribe-cpp-sys",
+]
+
+[[package]]
+name = "transcribe-cpp-sys"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4df6436154f7b8c5212b959dda97af90b60100388bab4cb378acf7a8ca560211"
+dependencies = [
+ "cmake",
+ "serde_json",
 ]
 
 [[package]]
