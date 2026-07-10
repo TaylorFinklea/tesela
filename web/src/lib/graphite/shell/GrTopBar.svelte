@@ -7,11 +7,13 @@
    *     switchTab), the active tab gets the coral `.kdot`
    *   - the command bar opens the Command Station (openStation), same as
    *     v4's `.v4-command-bar`
-   *   - the connection dot reflects ws-client's getConnected()
+   *   - the sync dot blends ws-client's getConnected() with real relay health
    *   - graph / settings icons open the existing fullscreen overlays
    * Only the markup + CSS (the mockup's `.gr-top`) is new.
    */
+  import { onMount } from 'svelte';
   import GrIcon from '$lib/graphite/GrIcon.svelte';
+  import GrSyncPopover from '$lib/graphite/shell/GrSyncPopover.svelte';
   import GrVoicePopover from '$lib/graphite/shell/GrVoicePopover.svelte';
   import { getWorkspace, switchTab, newTab } from '$lib/buffer/state.svelte';
   import { openStation } from '$lib/stores/station.svelte';
@@ -21,10 +23,37 @@
   } from '$lib/stores/fullscreen-overlay.svelte';
   import { getConnected } from '$lib/ws-client.svelte';
   import { toggleVoiceCapture, voiceOpen, voicePhase } from '$lib/voice/voice-capture.svelte';
+  import { blendSyncStatus } from '$lib/sync-health';
+  import {
+    getRelayStatus,
+    getRelayStatusError,
+    startRelayStatusPolling,
+  } from '$lib/relay-status.svelte';
 
   const workspace = $derived(getWorkspace());
   const voiceBusy = $derived(voicePhase() !== 'idle' && voicePhase() !== 'error');
+  const relayStatus = $derived(getRelayStatus());
+  const relayStatusError = $derived(getRelayStatusError());
+  const syncTone = $derived(
+    blendSyncStatus(getConnected(), relayStatus, Date.now(), relayStatusError),
+  );
+  const syncLabel = $derived(
+    syncTone === 'green'
+      ? 'Connected — live sync and relay healthy. Click for details.'
+      : syncTone === 'amber'
+        ? 'Connected — relay sync needs attention. Click for details.'
+        : 'Disconnected from server. Click for Sync settings.',
+  );
+  let syncDetailOpen = $state(false);
+
+  onMount(() => startRelayStatusPolling());
+
+  function closeSyncDetailOnEscape(event: KeyboardEvent) {
+    if (event.key === 'Escape') syncDetailOpen = false;
+  }
 </script>
+
+<svelte:window onkeydown={closeSyncDetailOnEscape} />
 
 <div class="gr-top">
   <div class="gr-top-left">
@@ -83,16 +112,26 @@
     {#if voiceOpen()}
       <GrVoicePopover />
     {/if}
-    <button
-      type="button"
-      class="gr-conn"
-      class:offline={!getConnected()}
-      onclick={() => openSettingsOverlay('sync')}
-      title={getConnected() ? 'Connected — live sync running. Click for Sync settings.' : 'Disconnected from server. Click for Sync settings.'}
-      aria-label={getConnected() ? 'Connected' : 'Disconnected'}
-    >
-      <i></i>
-    </button>
+    <div class="gr-sync-anchor" class:open={syncDetailOpen}>
+      <button
+        type="button"
+        class="gr-conn"
+        class:offline={syncTone === 'red'}
+        class:degraded={syncTone === 'amber'}
+        onclick={() => (syncDetailOpen = !syncDetailOpen)}
+        title={syncLabel}
+        aria-label={syncLabel}
+        aria-haspopup="dialog"
+        aria-expanded={syncDetailOpen}
+      >
+        <i></i>
+      </button>
+      <GrSyncPopover
+        tone={syncTone}
+        relay={relayStatus}
+        statusError={relayStatusError}
+      />
+    </div>
     <button
       type="button"
       class="gr-ic"
@@ -267,6 +306,17 @@
     height: 26px;
     flex-shrink: 0;
   }
+  .gr-sync-anchor {
+    position: relative;
+  }
+  .gr-sync-anchor :global(.gr-sync-popover) {
+    display: none;
+  }
+  .gr-sync-anchor:hover :global(.gr-sync-popover),
+  .gr-sync-anchor:focus-within :global(.gr-sync-popover),
+  .gr-sync-anchor.open :global(.gr-sync-popover) {
+    display: block;
+  }
   .gr-conn {
     width: 30px;
     height: 30px;
@@ -283,8 +333,12 @@
     background: var(--query);
     box-shadow: 0 0 0 3px rgba(133, 188, 99, 0.16);
   }
+  .gr-conn.degraded i {
+    background: #d9a441;
+    box-shadow: 0 0 0 3px rgba(217, 164, 65, 0.15);
+  }
   .gr-conn.offline i {
-    background: var(--faint);
-    box-shadow: none;
+    background: var(--coral);
+    box-shadow: 0 0 0 3px rgba(224, 122, 95, 0.14);
   }
 </style>
