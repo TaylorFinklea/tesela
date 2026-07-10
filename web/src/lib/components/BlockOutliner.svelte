@@ -49,6 +49,12 @@
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
   import { spliceNoteBlock, acquireNoteDoc, releaseNoteDoc } from "$lib/loro/note-doc-registry.svelte";
+  import {
+    moveSubtreeDown,
+    moveSubtreeUnder,
+    moveSubtreeUp,
+    outdentSubtreeToRoot,
+  } from "$lib/block-tree-move";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
@@ -1552,6 +1558,13 @@
     return ids;
   }
 
+  function refocusBlock(blockId: string) {
+    queueMicrotask(() => {
+      const next = visibleBlocks.findIndex((b) => b.id === blockId);
+      if (next >= 0) focusedIndex = next;
+    });
+  }
+
   function handleIndent(vi: number, direction: "indent" | "outdent") {
     lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
@@ -1575,6 +1588,51 @@
     // thus parent) on a known set of block ids → one `move` op each, NOT a
     // whole-body PUT. One path per save.
     saveBlocksViaOps(blocks, moveOpsForIds(blocks, ids));
+  }
+
+  function handleMoveBlock(vi: number, direction: "up" | "down") {
+    lastLocalEditAt = Date.now();
+    const block = visibleBlocks[vi];
+    if (!block) return;
+    const result = direction === "up"
+      ? moveSubtreeUp(blocks, block.id)
+      : moveSubtreeDown(blocks, block.id);
+    if (!result.changed) return;
+    pushUndo();
+    blocks = result.blocks;
+    // Sibling reorders are order changes. The current block-granular `move`
+    // payload carries parent/indent only, so persist this via the whole-note
+    // body path (with base) rather than emitting a no-op order-less move batch.
+    saveBlocks(blocks);
+    refocusBlock(block.id);
+  }
+
+  function handleMoveUnderPrevious(vi: number) {
+    lastLocalEditAt = Date.now();
+    const block = visibleBlocks[vi];
+    const prev = visibleBlocks[vi - 1];
+    if (!block || !prev) return;
+    const result = moveSubtreeUnder(blocks, block.id, prev.id);
+    if (!result.changed) return;
+    pushUndo();
+    blocks = result.blocks;
+    // This operation both reparents and reorders under the target parent; use
+    // the body path because the granular move op cannot express sibling order.
+    saveBlocks(blocks);
+    refocusBlock(block.id);
+  }
+
+  function handleOutdentToRoot(vi: number) {
+    lastLocalEditAt = Date.now();
+    const block = visibleBlocks[vi];
+    if (!block) return;
+    const ids = subtreeIds(block);
+    const result = outdentSubtreeToRoot(blocks, block.id);
+    if (!result.changed) return;
+    pushUndo();
+    blocks = result.blocks;
+    saveBlocksViaOps(blocks, moveOpsForIds(blocks, ids));
+    refocusBlock(block.id);
   }
 
   function handleBackspace(vi: number) {
@@ -2278,6 +2336,9 @@
             onescape={() => {}}
             onenter={(textAfter: string) => handleEnter(vi, textAfter)}
             onindent={(dir) => handleIndent(vi, dir)}
+            onmoveblock={(dir) => handleMoveBlock(vi, dir)}
+            onmoveunderprevious={() => handleMoveUnderPrevious(vi)}
+            onoutdenttoroot={() => handleOutdentToRoot(vi)}
             onbackspaceempty={() => handleBackspace(vi)}
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}

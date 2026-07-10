@@ -537,6 +537,9 @@
     onescape: onEscape,
     onenter: onEnter,
     onindent: onIndent,
+    onmoveblock: onMoveBlock,
+    onmoveunderprevious: onMoveUnderPrevious,
+    onoutdenttoroot: onOutdentToRoot,
     onbackspaceempty: onBackspaceEmpty,
     onbackspacemerge: onBackspaceMerge,
     initialCursorPos,
@@ -600,6 +603,9 @@
     onescape?: () => void;
     onenter?: (textAfterCursor: string) => void;
     onindent?: (direction: "indent" | "outdent") => void;
+    onmoveblock?: (direction: "up" | "down") => void;
+    onmoveunderprevious?: () => void;
+    onoutdenttoroot?: () => void;
     onbackspaceempty?: () => void;
     onbackspacemerge?: (text: string) => void;
     initialCursorPos?: number;
@@ -2046,6 +2052,10 @@
       },
       { key: "Tab", run: () => { if (onIndent) { onIndent("indent"); return true; } return false; } },
       { key: "Shift-Tab", run: () => { if (onIndent) { onIndent("outdent"); return true; } return false; } },
+      { key: "Alt-ArrowUp", run: () => { if (onMoveBlock) { onMoveBlock("up"); return true; } return false; } },
+      { key: "Alt-ArrowDown", run: () => { if (onMoveBlock) { onMoveBlock("down"); return true; } return false; } },
+      { key: "Alt-ArrowRight", run: () => { if (onMoveUnderPrevious) { onMoveUnderPrevious(); return true; } return false; } },
+      { key: "Alt-Shift-ArrowLeft", run: () => { if (onOutdentToRoot) { onOutdentToRoot(); return true; } return false; } },
       // Phase 9.9 follow-up — Ctrl+U / Ctrl+D as outliner page-jump in vim
       // NORMAL mode. Routed through blockKeymap (cm6 level) instead of vim
       // mapCommand because cm6's standardKeymap on macOS catches Ctrl+D as
