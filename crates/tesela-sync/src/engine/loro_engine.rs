@@ -1383,14 +1383,18 @@ impl LoroEngine {
         self.inner.outbound_strand_alarms.load(Ordering::Relaxed)
     }
 
-    /// Reseed every note's Loro doc from the authoritative `.md` files in
-    /// `notes_dir` by replaying a `NoteUpsert` per file. For notes already
-    /// resident, `apply_payload`'s NoteUpsert tree-reconcile corrects a
-    /// drifted/stale doc to match disk (the fix for the stale-shadow
-    /// divergences the materialization dry-run found). For new notes it
-    /// seeds them. This is the canonical-device bootstrap for the cutover
-    /// — the source of truth on first authoritative boot is DISK, not the
-    /// frozen oplog/snapshots. Returns the number of files processed.
+    /// Reseed every content-preserving note's Loro doc from the authoritative
+    /// `.md` files in `notes_dir` by replaying a `NoteUpsert` per file. For
+    /// notes already resident, `apply_payload`'s NoteUpsert tree-reconcile
+    /// corrects a drifted/stale doc to match disk (the fix for the stale-shadow
+    /// divergences the materialization dry-run found). For new notes it seeds
+    /// them. Notes whose parse→serialize round trip would alter more than bid
+    /// comments are skipped because the current tree/doc model cannot represent
+    /// their non-bullet content losslessly. This is the canonical-device
+    /// bootstrap for the cutover — the source of truth on first authoritative
+    /// boot is DISK, not the frozen oplog/snapshots. Returns the number of files
+    /// successfully applied; warnings report each skipped note and the skipped
+    /// count.
     ///
     /// NOTE: independent disk-reseed on multiple devices mints
     /// non-merging Loro nodes; only the designated canonical device
@@ -1407,6 +1411,7 @@ impl LoroEngine {
             }
         };
         let mut count = 0usize;
+        let mut skipped = 0usize;
         while let Some(entry) = entries.next_entry().await.map_err(|e| {
             SyncError::Storage(format!("reseed read_dir {}: {e}", notes_dir.display()))
         })? {
@@ -1424,6 +1429,17 @@ impl LoroEngine {
                     continue;
                 }
             };
+            let parsed = tesela_core::note_tree::parse_note(&content);
+            let serialized = tesela_core::note_tree::serialize_note(&parsed);
+            if !tesela_core::note_tree::stamp_is_content_preserving(&content, &serialized) {
+                tracing::warn!(
+                    "tesela-sync/loro: reseed skip {stem} — its body would not survive the \
+                     parse→serialize round trip (non-bullet or non-canonical content); \
+                     leaving the file byte-identical and Loro state untouched"
+                );
+                skipped += 1;
+                continue;
+            }
             let hash = blake3::hash(stem.as_bytes());
             let mut note_id = [0u8; 16];
             note_id.copy_from_slice(&hash.as_bytes()[..16]);
@@ -1440,6 +1456,14 @@ impl LoroEngine {
                 continue;
             }
             count += 1;
+        }
+        if skipped == 0 {
+            tracing::info!("tesela-sync/loro: reseed summary: {count} applied, 0 skipped");
+        } else {
+            tracing::warn!(
+                "tesela-sync/loro: reseed summary: {count} applied, {skipped} skipped because \
+                 their parse→serialize round trip was not content-preserving"
+            );
         }
         Ok(count)
     }

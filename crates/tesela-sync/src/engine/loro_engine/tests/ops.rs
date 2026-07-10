@@ -2771,3 +2771,82 @@ async fn reseed_from_disk_tracks_and_canonicalizes() {
         "beta canonicalized: {rb:?}"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn reseed_from_disk_skips_lossy_note_and_hydrates_pure_bullets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snap = tmp.path().join("loro");
+    let notes = tmp.path().join("notes");
+    tokio::fs::create_dir_all(&notes).await.unwrap();
+
+    let lossy = "# Heading\n\nA prose paragraph.\n\n- retained on disk\n  - nested bullet\n";
+    let lossy_path = notes.join("heading.md");
+    tokio::fs::write(&lossy_path, lossy).await.unwrap();
+    tokio::fs::write(
+        notes.join("bullets.md"),
+        "- pure bullet\n  - nested bullet\n",
+    )
+    .await
+    .unwrap();
+
+    #[derive(Clone)]
+    struct LogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let logs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer_logs = Arc::clone(&logs);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || LogWriter(Arc::clone(&writer_logs)))
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let dev = test_device();
+    let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes.clone()))
+        .await
+        .unwrap();
+    let count = engine.reseed_from_disk(&notes).await.unwrap();
+
+    drop(guard);
+    let warnings = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert_eq!(count, 1, "only the content-preserving note is reseeded");
+    assert_eq!(
+        tokio::fs::read_to_string(&lossy_path).await.unwrap(),
+        lossy,
+        "the lossy note must remain byte-identical"
+    );
+    assert!(
+        engine
+            .doc_version(blake3_note_id("heading"))
+            .await
+            .is_none(),
+        "the skipped note must not gain a Loro doc"
+    );
+    assert!(
+        engine
+            .doc_version(blake3_note_id("bullets"))
+            .await
+            .is_some(),
+        "the pure-bullet note hydrates normally"
+    );
+    assert!(
+        warnings.contains("reseed skip heading"),
+        "a per-note warning names the skipped note: {warnings:?}"
+    );
+    assert!(
+        warnings.contains("reseed summary: 1 applied, 1 skipped"),
+        "the reseed summary counts skipped notes: {warnings:?}"
+    );
+}
