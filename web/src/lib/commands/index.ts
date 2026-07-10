@@ -35,6 +35,7 @@ import {
   vsplit,
 } from "$lib/buffer/state.svelte";
 import { runScratchPrune } from "$lib/state/scratch-prune";
+import { toggleFavorite } from "$lib/stores/favorites.svelte";
 import {
   asPageId,
   type DerivedBinding,
@@ -171,6 +172,12 @@ async function jumpToDate(arg: string | undefined): Promise<void> {
 async function createNoteAndJump(title: string) {
   const note = await api.createNote(title, "");
   openPageInFocused(asPageId(note.id));
+}
+
+function toggleFocusedFavorite() {
+  const buffer = getFocusedBuffer();
+  if (!buffer || buffer.kind !== "page" || !buffer.pageId) return;
+  toggleFavorite(buffer.pageId);
 }
 
 async function createScratchAndJump() {
@@ -653,6 +660,17 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       run: (arg) => {
         if (arg) return createNoteAndJump(arg);
       },
+    },
+
+    {
+      id: "toggle-favorite",
+      verb: "favorite",
+      label: "Toggle Favorite",
+      glyph: "★",
+      category: "navigate",
+      when: (ctx) => ctx.bufferKind === "page",
+      keywords: ["favorite", "favorites", "star", "bookmark", "pin", "pinned"],
+      run: () => toggleFocusedFavorite(),
     },
 
     // ── leader-only registry entries (no palette shortcut) ────────────────

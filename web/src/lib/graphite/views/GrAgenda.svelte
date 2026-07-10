@@ -26,6 +26,7 @@
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import Agenda from "$lib/ambients/agenda/Agenda.svelte";
+  import { agendaQueryKey } from "$lib/graphite/rail-utils";
 
   // ── mode (list = triage surface, week = time grid) ──────────────────
   type AgendaMode = "list" | "week";
@@ -118,7 +119,7 @@
   const toIso = $derived(days[4]?.iso ?? isoDate(weekStart));
 
   const q = createQuery(() => ({
-    queryKey: ["agenda", { from: fromIso, to: toIso, includeDone: false }] as const,
+    queryKey: agendaQueryKey(fromIso, toIso),
     queryFn: () => api.getAgenda(fromIso, toIso, false),
     enabled: mode === "week" && !!fromIso && !!toIso,
   }));
@@ -134,10 +135,7 @@
   })();
   const overdueToIso = isoDate(new Date());
   const overdueQ = createQuery(() => ({
-    queryKey: [
-      "agenda",
-      { from: overdueFromIso, to: overdueToIso, includeDone: false },
-    ] as const,
+    queryKey: agendaQueryKey(overdueFromIso, overdueToIso),
     queryFn: () => api.getAgenda(overdueFromIso, overdueToIso, false),
     enabled: mode === "week",
   }));
