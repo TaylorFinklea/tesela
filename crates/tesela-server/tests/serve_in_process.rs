@@ -123,6 +123,37 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
         .expect("on_bound fired with the address");
 
     let client = reqwest::Client::new();
+    let uploaded = client
+        .post(format!("http://{addr}/attachments?filename=photo.png"))
+        .body(vec![0x01, 0x02, 0x03])
+        .send()
+        .await
+        .expect("upload request");
+    let uploaded_status = uploaded.status();
+    let uploaded_json: serde_json::Value = uploaded.json().await.expect("upload response");
+
+    let collision = client
+        .post(format!("http://{addr}/attachments?filename=photo.png"))
+        .body(vec![0x04])
+        .send()
+        .await
+        .expect("collision upload request");
+    let collision_status = collision.status();
+    let collision_json: serde_json::Value = collision.json().await.expect("collision response");
+
+    let uploaded_bytes =
+        fs::read(dir.path().join("attachments/photo.png")).expect("uploaded bytes");
+    let collision_bytes =
+        fs::read(dir.path().join("attachments/photo-1.png")).expect("collision bytes");
+
+    let traversal_upload = client
+        .post(format!("http://{addr}/attachments?filename=../outside.txt"))
+        .body(vec![0x05])
+        .send()
+        .await
+        .expect("traversal upload request");
+    let traversal_upload_status = traversal_upload.status();
+
     let served = client
         .get(format!("http://{addr}/attachments/icon.png"))
         .send()
@@ -150,6 +181,14 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
         .expect("serve task did not panic")
         .expect("serve returned Ok");
 
+    assert_eq!(uploaded_status, reqwest::StatusCode::OK);
+    assert_eq!(uploaded_json["name"], "photo.png");
+    assert_eq!(uploaded_json["path"], "attachments/photo.png");
+    assert_eq!(collision_status, reqwest::StatusCode::OK);
+    assert_eq!(collision_json["name"], "photo-1.png");
+    assert_eq!(uploaded_bytes, [0x01, 0x02, 0x03]);
+    assert_eq!(collision_bytes, [0x04]);
+    assert_eq!(traversal_upload_status, reqwest::StatusCode::BAD_REQUEST);
     assert_eq!(served_status, reqwest::StatusCode::OK);
     assert_eq!(served_content_type.as_deref(), Some("image/png"));
     assert_eq!(served_bytes.as_ref(), [0x89, 0x50, 0x4e, 0x47]);

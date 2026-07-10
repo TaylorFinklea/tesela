@@ -71,6 +71,21 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
   return (await res.json()) as T;
 }
 
+async function uploadImage(file: File): Promise<{ path: string; name: string }> {
+  const path = `/attachments?filename=${encodeURIComponent(file.name)}`;
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      Accept: "application/json",
+    },
+    body: file,
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  return (await res.json()) as { path: string; name: string };
+}
+
 async function put<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const res = await fetch(url, {
@@ -85,6 +100,7 @@ async function put<T>(path: string, body: unknown, signal?: AbortSignal): Promis
 
 export const api = {
   health: () => get<{ status: string }>("/health"),
+  uploadImage,
   listNotes: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams();
     if (params.tag) q.set("tag", params.tag);

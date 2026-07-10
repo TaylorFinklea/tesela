@@ -460,6 +460,7 @@
   import "$lib/editor/commands/property";
   import { assignChords } from "$lib/chord-keys";
   import { buildSlashTree } from "$lib/editor/slash-tree";
+  import { api } from "$lib/api-client";
 
   // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
   // Reserving here keeps the assigner from handing it out to any node, so
@@ -506,6 +507,25 @@
     } finally {
       localApplyInProgress = false;
     }
+  }
+
+  async function uploadImage(file: File): Promise<void> {
+    if (!view || !file.type.startsWith("image/")) return;
+    const selection = view.state.selection.main;
+    const uploaded = await api.uploadImage(file);
+    const markdown = `![](${uploaded.path})`;
+    view.dispatch({
+      changes: { from: selection.from, to: selection.to, insert: markdown },
+      selection: { anchor: selection.from + markdown.length },
+    });
+  }
+
+  function imageFile(files: FileList | null): File | null {
+    if (!files) return null;
+    for (const file of files) {
+      if (file.type.startsWith("image/")) return file;
+    }
+    return null;
   }
 
   let {
@@ -1763,6 +1783,20 @@
         }
         if (!showSlashMenu) onBlur();
         return false;
+      },
+      paste: (e) => {
+        const file = imageFile(e.clipboardData?.files ?? null);
+        if (!file) return false;
+        e.preventDefault();
+        void uploadImage(file);
+        return true;
+      },
+      drop: (e) => {
+        const file = imageFile(e.dataTransfer?.files ?? null);
+        if (!file) return false;
+        e.preventDefault();
+        void uploadImage(file);
+        return true;
       },
       // Phase 9.5b — wiki-link click navigates via gotoNote when vim is in
       // NORMAL mode. INSERT mode falls through so the click places the cursor.
