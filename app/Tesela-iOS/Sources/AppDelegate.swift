@@ -8,10 +8,13 @@ import UIKit
 ///
 /// The relay SERVER (separate, future work) will send a
 /// `content-available: 1` silent push when a new batch lands for the
-/// group. The token-send-to-relay endpoint does NOT exist yet — this
-/// delegate captures + exposes the token + logs it; it does NOT
-/// invent a network call. Enabling Push for the App ID
-/// (`aps-environment` entitlement) is also a SEPARATE step, out of
+/// group. The token-send-to-relay endpoint exists and IS called — see
+/// `RelayTicker.tickOnce` (relay-scoped `registerDevice(apnsToken:)`,
+/// keyed by `apnsRegistrationKey` so HA→CF migrations re-register with
+/// the new relay). This delegate captures + exposes the token + logs
+/// it; the actual POST lives in `RelayTicker`, not here, so the
+/// delegate stays free of relay references. Enabling Push for the App
+/// ID (`aps-environment` entitlement) is also a SEPARATE step, out of
 /// scope here; without it registration fails at RUNTIME, but the
 /// CODE must still build.
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -42,9 +45,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     /// APNs handed us a device token. Tokens arrive as 32 raw bytes;
     /// format as a lowercase hex string (the conventional wire format
-    /// for token registration endpoints) and stash it for the future
-    /// relay-side `POST /relay/devices` step. No network call here —
-    /// the relay registration endpoint doesn't exist yet.
+    /// for token registration endpoints) and stash it for the
+    /// relay-side `registerDevice(apnsToken:)` step called from
+    /// `RelayTicker.tickOnce` (relay-scoped, keyed by
+    /// `apnsRegistrationKey`). The endpoint exists (CF Worker
+    /// `handleRegisterDevice` in `cloudflare-relay/src/handlers.ts`);
+    /// the network call lives in `RelayTicker`, not here.
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
