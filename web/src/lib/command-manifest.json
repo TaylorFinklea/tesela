@@ -1021,6 +1021,30 @@
     "description": null
   },
   {
+    "id": "toggle-favorite",
+    "verb": "favorite",
+    "label": "Toggle Favorite",
+    "glyph": "★",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "favorite",
+      "favorites",
+      "star",
+      "bookmark",
+      "pin",
+      "pinned"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "peek",
     "verb": "peek",
     "label": "Toggle Peek popover",
