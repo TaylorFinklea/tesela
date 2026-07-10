@@ -14,6 +14,7 @@ struct VoiceSettingsView: View {
     @AppStorage("voice.language") private var language = "en-US"
     @AppStorage("voice.useOnDevice") private var useOnDevice = true
     @AppStorage("voice.streaming") private var streaming = true
+    @AppStorage("voice.streamingTier") private var streamingTierToken = ParakeetUnifiedTier.default.rawValue
 
     @Environment(\.theme) private var theme
 
@@ -64,10 +65,17 @@ struct VoiceSettingsView: View {
                 Toggle("Stream transcription", isOn: $streaming)
                 Toggle("Auto-punctuation", isOn: $autoPunctuation)
                 Toggle("Split on long pauses", isOn: $splitOnPauses)
+                if streaming, activeModel?.family == .parakeetUnified {
+                    Picker("Latency", selection: $streamingTierToken) {
+                        ForEach(ParakeetUnifiedTier.allCases) { tier in
+                            Text(tier.displayName).tag(tier.rawValue)
+                        }
+                    }
+                }
             } header: {
                 Text("Behavior")
             } footer: {
-                Text("On-device runs whisper.cpp through Accelerate + CoreML — works offline. Otherwise transcription rides the tesela-server. Auto-punctuation is heuristic only; split-on-pauses adds a block when you pause >1.5s.")
+                Text("On-device runs whisper.cpp through Accelerate + CoreML — works offline. Otherwise transcription rides the tesela-server. Auto-punctuation is heuristic only; split-on-pauses adds a block when you pause >1.5s. Latency only applies to the Parakeet Unified streaming model — a lower latency tier means a separate ~590 MB encoder download.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(theme.fgFaint)
             }

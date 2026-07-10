@@ -318,6 +318,11 @@ struct GrCaptureSheet: View {
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
     @AppStorage("voice.useOnDevice") private var useOnDevice: Bool = true
+    /// The resurrected `voice.streaming` toggle (`VoiceSettingsView`) — was
+    /// written but never read (tesela-v5t.3). Gates whether `toggleRecording`
+    /// even attempts a streaming session; an engine that doesn't support
+    /// streaming falls back to whole-clip regardless.
+    @AppStorage("voice.streaming") private var streamingEnabled: Bool = true
 
     /// Same engine selection as `CaptureBar`: on-device when enabled and
     /// a store is wired, else the server engine.
@@ -490,12 +495,29 @@ struct GrCaptureSheet: View {
     private var composeField: some View {
         switch recorder.state {
         case .recording(let elapsed):
-            HStack(spacing: 8) {
-                VoiceWaveformView(monitor: recorder.levelMonitor)
-                Text(elapsedLabel(elapsed))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(theme.fgMuted)
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    VoiceWaveformView(monitor: recorder.levelMonitor)
+                    Text(elapsedLabel(elapsed))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(theme.fgMuted)
+                    Spacer(minLength: 0)
+                }
+                // Live COMMITTED transcript for a streaming engine
+                // (Parakeet Unified) — no dimmed tentative tail, since
+                // FluidAudio emits one monotonic committed string (see
+                // TranscriptionEngine's streaming docs). `nil` for
+                // non-streaming engines, which show nothing here and
+                // reveal the transcript only once `stop()` finishes.
+                if let partial = recorder.livePartial, !partial.isEmpty {
+                    ScrollView {
+                        Text(partial)
+                            .font(.system(size: 14))
+                            .foregroundStyle(theme.fgDefault)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                }
             }
             .frame(minHeight: 54, alignment: .top)
         case .denied:
@@ -644,6 +666,6 @@ struct GrCaptureSheet: View {
             recorder.stop()
             return
         }
-        _ = await recorder.start(using: engine)
+        _ = await recorder.start(using: engine, preferStreaming: streamingEnabled)
     }
 }

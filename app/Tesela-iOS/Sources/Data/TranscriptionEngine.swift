@@ -23,6 +23,63 @@ protocol TranscriptionEngine: AnyObject {
     /// Human-readable label for the active engine — shown in the
     /// composer's helper row.
     var displayLabel: String { get }
+
+    /// True when this engine can stream partial transcripts as audio
+    /// arrives (today: only `LocalTranscriptionEngine` on the Parakeet
+    /// Unified model). Non-streaming engines fall back to the whole-clip
+    /// `transcribe(samples:)` path — `StreamingVoiceRecorder` checks this
+    /// before attempting a streaming session and never calls the
+    /// streaming methods below when it's false.
+    var supportsStreaming: Bool { get }
+
+    /// Begin a streaming session. `onPartial` fires on the MAIN ACTOR with
+    /// the full COMMITTED transcript so far, every time it advances.
+    /// FluidAudio's unified streaming manager emits one monotonic
+    /// committed string — never a tentative tail — so there is no
+    /// separate "tentative" callback to wire (unlike the web dictation
+    /// popover's committed+tentative split; see tesela-v5t.3 notes).
+    func startStreaming(onPartial: @escaping @MainActor (String) -> Void) async throws
+
+    /// Feed a chunk of 16 kHz mono float32 samples to the active
+    /// streaming session.
+    func appendStreaming(samples: [Float]) async throws
+
+    /// Flush remaining audio and return the final transcript, ending the
+    /// streaming session.
+    func finishStreaming() async throws -> String
+
+    /// Abort the streaming session without producing a final transcript
+    /// — e.g. the recording was cancelled, or an AVAudioSession
+    /// interruption ended it early.
+    func cancelStreaming() async
+}
+
+/// Default (non-streaming) behavior — `ServerTranscriptionEngine` and the
+/// whisper.cpp path through `LocalTranscriptionEngine` don't override any
+/// of this; they rely entirely on `transcribe(samples:)`.
+extension TranscriptionEngine {
+    var supportsStreaming: Bool { false }
+
+    func startStreaming(onPartial: @escaping @MainActor (String) -> Void) async throws {
+        throw TranscriptionEngineError.streamingNotSupported
+    }
+
+    func appendStreaming(samples: [Float]) async throws {}
+
+    func finishStreaming() async throws -> String { "" }
+
+    func cancelStreaming() async {}
+}
+
+enum TranscriptionEngineError: Error, LocalizedError {
+    case streamingNotSupported
+
+    var errorDescription: String? {
+        switch self {
+        case .streamingNotSupported:
+            return "This engine doesn't support live streaming."
+        }
+    }
 }
 
 /// Map a catalog `parakeetVersion` token to FluidAudio's model version.
@@ -53,6 +110,11 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
     /// Cached FluidAudio manager for the active Parakeet model — also
     /// `static`, same reasoning.
     private static var cachedParakeet: (id: String, manager: AsrManager)? = nil
+    /// Cached FluidAudio unified-streaming manager, keyed by
+    /// `"<modelId>-<tier>"` so switching the latency tier mid-app-lifetime
+    /// rebuilds it (each tier is a distinct encoder — `ParakeetUnifiedTier`).
+    /// `static`, same reasoning as `cachedParakeet`.
+    private static var cachedUnified: (key: String, manager: StreamingUnifiedAsrManager)? = nil
 
     init(store: TranscriptionStore) {
         self.store = store
@@ -94,12 +156,98 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
             voiceDiag("Parakeet inference done — \(result.text.count) chars")
             return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if family == .parakeetUnified {
+            // Whole-clip fallback for the streaming model: drive the same
+            // `StreamingUnifiedAsrManager` as a one-shot append + finish
+            // rather than adding a second (offline `UnifiedAsrManager`)
+            // model type just for this path.
+            let manager = try await loadUnifiedStreaming()
+            try await manager.reset()
+            guard let buffer = Self.makeStreamingBuffer(from: samples) else { return "" }
+            try await manager.appendAudio(buffer)
+            let text = try await manager.finish()
+            voiceDiag("Parakeet Unified whole-clip inference done — \(text.count) chars")
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let whisper = try await loadWhisper()
         let segments = try await whisper.transcribe(audioFrames: samples)
         return segments
             .map { $0.text }
             .joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Streaming (Parakeet Unified)
+
+    var supportsStreaming: Bool {
+        TranscriptionCatalog.find(store.activeModelId)?.family == .parakeetUnified
+    }
+
+    func startStreaming(onPartial: @escaping @MainActor (String) -> Void) async throws {
+        let manager = try await loadUnifiedStreaming()
+        try await manager.reset()
+        await manager.setPartialTranscriptCallback { text in
+            Task { @MainActor in onPartial(text) }
+        }
+    }
+
+    func appendStreaming(samples: [Float]) async throws {
+        guard let manager = Self.cachedUnified?.manager,
+              let buffer = Self.makeStreamingBuffer(from: samples)
+        else { return }
+        try await manager.appendAudio(buffer)
+        try await manager.processBufferedAudio()
+    }
+
+    func finishStreaming() async throws -> String {
+        guard let manager = Self.cachedUnified?.manager else { return "" }
+        return try await manager.finish()
+    }
+
+    func cancelStreaming() async {
+        guard let manager = Self.cachedUnified?.manager else { return }
+        try? await manager.reset()
+    }
+
+    /// Resolve (downloading if needed) and cache the FluidAudio
+    /// `StreamingUnifiedAsrManager` for the active tier
+    /// (`ParakeetUnifiedTier.active`). Idempotent once the tier's encoder
+    /// is cached on disk, same shape as `loadParakeet()`.
+    private func loadUnifiedStreaming() async throws -> StreamingUnifiedAsrManager {
+        let id = store.activeModelId
+        let tier = ParakeetUnifiedTier.active
+        let key = "\(id)-\(tier.rawValue)"
+        if let cached = Self.cachedUnified, cached.key == key {
+            return cached.manager
+        }
+        let frames = tier.contextFrames
+        let config = UnifiedConfig(leftFrames: frames.left, chunkFrames: frames.chunk, rightFrames: frames.right)
+        let manager = StreamingUnifiedAsrManager(config: config, encoderPrecision: .int8)
+        voiceDiag("loadUnifiedStreaming: downloading/loading tier \(tier.rawValue)")
+        try await manager.loadModels(to: TranscriptionStore.parakeetUnifiedCacheURL())
+        voiceDiag("loadUnifiedStreaming: ready")
+        Self.cachedUnified = (key, manager)
+        return manager
+    }
+
+    /// Wrap 16 kHz mono float32 samples in an `AVAudioPCMBuffer` —
+    /// `StreamingUnifiedAsrManager.appendAudio` takes a buffer, not a raw
+    /// array (its internal `AudioConverter` fast-paths a buffer already in
+    /// this format, so no resampling happens).
+    private static func makeStreamingBuffer(from samples: [Float]) -> AVAudioPCMBuffer? {
+        guard !samples.isEmpty else { return nil }
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
+        ), let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
+            return nil
+        }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        guard let ptr = buffer.floatChannelData?.pointee else { return nil }
+        samples.withUnsafeBufferPointer { src in
+            guard let base = src.baseAddress else { return }
+            ptr.update(from: base, count: samples.count)
+        }
+        return buffer
     }
 
     // MARK: - Helpers
