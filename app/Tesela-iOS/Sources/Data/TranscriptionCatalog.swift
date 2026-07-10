@@ -28,12 +28,82 @@ struct TranscriptionModel: Identifiable, Codable, Hashable {
 enum ModelFamily: String, Codable, Hashable {
     case whisper
     case parakeet
+    /// Parakeet Unified 0.6B via FluidAudio's `StreamingUnifiedAsrManager`
+    /// — the only family that streams live partials (see `TranscriptionEngine`
+    /// protocol's streaming methods and `ParakeetUnifiedTier`). A distinct
+    /// case from `.parakeet` because it has its own download shape (a
+    /// per-tier encoder, not a single fixed model set) and its own engine.
+    case parakeetUnified
 
     var displayName: String {
         switch self {
-        case .whisper:  return "Whisper"
-        case .parakeet: return "Parakeet"
+        case .whisper:         return "Whisper"
+        case .parakeet:        return "Parakeet"
+        case .parakeetUnified: return "Parakeet Unified"
         }
+    }
+}
+
+/// The Parakeet Unified streaming latency tiers FluidAudio ships as
+/// distinct CoreML encoder downloads — the `[left, chunk, right]` attention
+/// context is baked into the encoder at conversion time (FluidAudio
+/// `UnifiedConfig`/`StreamingModelVariant.parakeetUnified*`, v0.15.5), so
+/// switching tiers means downloading a different ~565 MB encoder rather
+/// than flipping a runtime parameter. Raw values match FluidAudio's own
+/// `StreamingModelVariant` display convention and are what's persisted at
+/// `voice.streamingTier`.
+enum ParakeetUnifiedTier: String, CaseIterable, Identifiable, Codable {
+    case tier320ms = "320ms"
+    case tier640ms = "640ms"
+    case tier1120ms = "1120ms"
+    case tier2080ms = "2080ms"
+
+    var id: String { rawValue }
+
+    /// Shipped default pending a real-device memory profile (tesela-v5t.3
+    /// re-spec note 2): 640ms int8 is the target for live-partial latency,
+    /// but its peak RSS on older/lower-RAM devices hasn't been measured
+    /// yet. If that profile shows it's too tight, flip this to
+    /// `.tier1120ms` (the documented fallback) rather than re-deriving the
+    /// choice from scratch.
+    static let `default` = ParakeetUnifiedTier.tier640ms
+
+    var displayName: String {
+        switch self {
+        case .tier320ms:  return "320ms · lowest latency"
+        case .tier640ms:  return "640ms · balanced (default)"
+        case .tier1120ms: return "1.12s · better accuracy"
+        case .tier2080ms: return "2.08s · best accuracy"
+        }
+    }
+
+    /// `[left, chunk, right]` encoder frames (80 ms each) — mirrors
+    /// FluidAudio's `StreamingModelVariant.unifiedConfig` exactly
+    /// (ParakeetModelVariant.swift, FluidAudio v0.15.5).
+    var contextFrames: (left: Int, chunk: Int, right: Int) {
+        switch self {
+        case .tier320ms:  return (70, 2, 2)
+        case .tier640ms:  return (70, 7, 1)
+        case .tier1120ms: return (70, 7, 7)
+        case .tier2080ms: return (70, 13, 13)
+        }
+    }
+
+    /// FluidAudio's encoder filename suffix for this tier (e.g. `"70_7_1"`)
+    /// — keys both the on-disk cache lookup and the `ModelHub.download`
+    /// request (`ModelNames.ParakeetUnified.streamingEncoderFile`).
+    var contextSuffix: String {
+        "\(contextFrames.left)_\(contextFrames.chunk)_\(contextFrames.right)"
+    }
+
+    /// The active tier from `voice.streamingTier` (written by
+    /// `VoiceSettingsView`'s picker), falling back to `.default` when
+    /// unset or holding a stale/invalid raw value.
+    static var active: ParakeetUnifiedTier {
+        guard let raw = UserDefaults.standard.string(forKey: "voice.streamingTier"),
+              let tier = ParakeetUnifiedTier(rawValue: raw)
+        else { return .default }
+        return tier
     }
 }
 
@@ -151,6 +221,30 @@ enum TranscriptionCatalog {
             inferenceSupported: true,
             parakeetVersion: "tdtCtc110m"
         ),
+
+        // ── Parakeet Unified (streaming, on-device via FluidAudio's
+        //    StreamingUnifiedAsrManager) ─────────────────────────────
+        // ONE catalog entry: which of the 4 latency-tier encoders is
+        // actually downloaded/active is a runtime choice
+        // (`ParakeetUnifiedTier.active`, set from Voice settings), not a
+        // separate catalog row per tier. `sizeBytes` is the download for
+        // ONE tier (encoder + shared decoder/joint/vocab) — verified via
+        // HEAD requests against the HF repo 2026-07-09: int8 streaming
+        // encoder weight ≈590 MB (consistent across all 4 tiers) + shared
+        // decoder/jointDecision/vocab/metadata ≈18 MB ≈ 608 MB total.
+        // Switching tiers after the first download only adds the new
+        // tier's ~590 MB encoder — decoder/joint/vocab are shared.
+        TranscriptionModel(
+            id: "parakeet-unified-en-0.6b",
+            family: .parakeetUnified,
+            displayName: "Parakeet Unified 0.6B (streaming)",
+            shortDescription: "Live partials as you speak. English only.",
+            sizeBytes: 608_000_000,
+            downloadURL: nil,
+            suggestedFor: ["live dictation", "streaming", "english"],
+            onDevice: true,
+            inferenceSupported: true
+        ),
     ]
 
     static func find(_ id: String) -> TranscriptionModel? {
@@ -160,7 +254,7 @@ enum TranscriptionCatalog {
     /// Group by family for the Settings UI.
     static var grouped: [(family: ModelFamily, models: [TranscriptionModel])] {
         let byFamily = Dictionary(grouping: all, by: \.family)
-        let order: [ModelFamily] = [.whisper, .parakeet]
+        let order: [ModelFamily] = [.whisper, .parakeet, .parakeetUnified]
         return order.compactMap { f in
             guard let m = byFamily[f] else { return nil }
             return (family: f, models: m)

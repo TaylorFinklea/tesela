@@ -29,9 +29,18 @@ packages:
     branch: master
   # FluidAudio — on-device Parakeet (NVIDIA TDT) ASR via CoreML.
   # Downloads + caches its own model set; see TranscriptionEngine.
+  #
+  # Pinned (tesela-v5t.3, 2026-07-09) — was `branch: main`, which is NOT
+  # reproducible: the checked-in Package.resolved workspace pin (50aa0719,
+  # 2026-05-19) predates `StreamingUnifiedAsrManager` entirely. v0.15.3 is
+  # the first tag that ships it, but only as the fixed default 70_13_13
+  # (2.08s) context; the configurable 320/640/1120/2080ms latency tiers
+  # (`StreamingModelVariant.parakeetUnified*`) land in v0.15.5, which also
+  # renames `DownloadUtils` → `ModelHub` (migrated in TranscriptionEngine.swift
+  # / TranscriptionStore.swift). Verified by checking out each tag.
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    branch: main
+    exactVersion: 0.15.5
 
 targets:
   TeselaTests:
