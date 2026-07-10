@@ -90,7 +90,7 @@ async fn bring_up_seeds_inbox_and_builtin_delete_is_refused() {
     assert_eq!(views.len(), 1, "fresh server carries exactly the Inbox");
     let inbox = &views[0];
     assert_eq!(inbox["id"], "builtin-inbox");
-    assert_eq!(inbox["name"], "Inbox");
+    assert_eq!(inbox["name"], "Views");
     assert_eq!(
         inbox["dsl"].as_str().unwrap(),
         tesela_core::query::INBOX_VIEW_DSL,
