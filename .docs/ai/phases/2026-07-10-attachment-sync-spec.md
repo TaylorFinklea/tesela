@@ -1,229 +1,381 @@
 # Cross-device encrypted attachment availability
 
-**Bead:** `tesela-8zd.3` · **Tier:** Lead · **Status:** implementation spec only
+**Bead:** `tesela-8zd.3` · **Tier:** Lead · **Status:** revised implementation spec
 
-## Problem and scope
+## Review disposition
 
-Logseq import copies source `assets/` into the mosaic's `attachments/` folder
-and rewrites `../assets/` links to `../attachments/`
-(`crates/tesela-core/src/import_logseq.rs:471-500`, `:708-712`). The files
-never traverse the Loro/relay path. Consequently, the current cross-device
-system can converge note text while an iPhone shows broken images for the
-imported asset corpus (about 94 files / 91 MB in the audit).
+This revision adopts every blocker and major finding in the 2026-07-10 Sol
+adversarial review. There are no contested findings.
 
-This spec decides how attachment bytes become available to every paired device.
-It does not block independently planned web attachment view/paste routes; they
-can proceed against the local `attachments/` contract. It covers byte transfer,
-metadata, client materialization, storage limits, integrity, and restore.
+- The approved encrypted, content-addressed Cloudflare R2 channel remains the
+  decision, but now has a full Loro registry/container schema and FFI surface.
+- Attachment path/reference semantics, causal deletion, corpus inventory and
+  resumable upload are specified.
+- `AttachmentManifestV1`, exact R2 layout, sealed wire body, limits, and
+  verify-before-publish rules are fixed.
+- Restoring to a sibling path must restore the GroupKey before an engine opens.
+- V1 is explicitly Cloudflare-only; relay capability discovery prevents a
+  Rust self-host from publishing metadata it cannot serve.
 
-## Decision: an encrypted, content-addressed R2 blob channel
+## Verified baseline
 
-Ship a dedicated attachment blob channel through the Cloudflare relay:
+The Logseq importer copies `assets/` into `attachments/` and rewrites markdown
+references to `../attachments/`; neither bytes nor attachment metadata travel
+in current Loro relay updates. The corpus found by the audit is roughly 94
+files / 91 MB.
 
-- **R2 holds sealed chunks.** The Worker is the only R2 caller; bucket objects
-  are never public URLs. This is the byte store appropriate for the 91 MB
-  corpus.
-- **The per-group Durable Object remains the authorization/control plane.** It
-  reuses the existing authenticated group route model; it does not become a
-  binary store.
-- **Loro carries metadata only.** The already-reserved `AttachmentUpsert` and
-  `AttachmentDelete` variants say exactly this in
-  `crates/tesela-sync/src/oplog/op.rs:156-178`: bytes flow out-of-band through
-  a content-addressed blob store. This work completes that designed seam
-  instead of creating a parallel metadata channel.
-- **A client seals before upload and opens after download.** Existing relay
-  envelopes already use XChaCha20-Poly1305 client-side
-  (`crates/tesela-sync/src/crypto/aead.rs`) and the relay authenticates members
-  with an HKDF-derived per-group key plus request MAC
-  (`crates/tesela-sync/src/crypto/relay_auth.rs`). Blob requests use the same
-  group authentication model and do not trust relay/R2 encryption as the
-  confidentiality boundary.
+`OpPayload` reserves metadata-only `AttachmentUpsert` and `AttachmentDelete`,
+but `LoroEngine` currently handles both as no-ops. The actual Loro data model
+already has an always-resident index document and a dedicated views registry,
+so a dedicated attachment registry document follows an established pattern.
 
-This preserves the Mac-off invariant: after upload, any paired device can
-retrieve an attachment without contacting its authoring device.
+`tesela-8zd.1` is landed: the server has a traversal-safe
+`GET /attachments/{path}` route and the web editor resolves relative image
+URLs at render time. It is a local-materialization consumer, not a transport.
+iOS has no equivalent attachment renderer/context yet; its capture attachment
+control is a stub.
 
-### Alternatives considered
+Backups include `attachments/`, Loro snapshots, and identity files, but the
+macOS GroupKey store is scoped to the mosaic's absolute `.tesela` path in the
+Keychain. Opening a restore at a sibling path without an explicit identity
+restore can therefore mint a new GroupKey. The existing recovery phrase derives
+the GroupKey, and `adopt_group_identity` writes an identity through the active
+Keychain/file-store seam.
 
-| Option | Result | Reason |
+The Cloudflare Worker currently has Durable Object bindings only; it has no R2
+binding or blob routes. The current Rust relay has no blob object store. Both
+use the same MAC canonical-request shape. Cloudflare's current R2 API supports
+`head`, conditional `put(..., { onlyIf })`, and strongly consistent reads after
+a successful put; the Worker must use those semantics rather than assuming
+blind overwrite is safe.
+
+## Decision
+
+V1 supplies attachments through a **Cloudflare-only, group-authenticated,
+client-encrypted, content-addressed R2 channel**. R2 stores ciphertext only.
+The Group Durable Object verifies group membership/MACs and authorizes access;
+it never receives plaintext. A paired iPhone can fetch after the authoring Mac
+is off.
+
+The existing 16 MiB relay-envelope limit remains unrelated to blobs. Loro
+carries only attachment registry metadata. The reserved attachment op family
+is replaced by registry operations; it must no longer be a no-op.
+
+### Alternatives rejected
+
+| Option | Decision | Reason |
 | --- | --- | --- |
-| Encrypted R2 blob store behind the existing relay | **Chosen** | Available while the authoring Mac is off; keeps ciphertext and object identifiers opaque; R2 holds large bytes while the Worker/DO enforces group authorization. |
-| Durable Object/relay-op storage for bytes | Rejected | The current relay is a 16 MiB request envelope store (`TESELA_RELAY_MAX_BODY = 16777216` in `cloudflare-relay/wrangler.toml`), not a 91 MB binary store. Keeping byte chunks in a DO also makes retention/cost and hot-object behavior the wrong concern. |
-| On-demand fetch from the authoring device | Rejected | Violates the locked Cloudflare mailbox topology and leaves iPhone rendering dependent on the Mac being awake/reachable. |
-| Explicit v1 desktop-only image descope | Rejected | It fails the named Logseq-parity blocker: files and images must render on the iPhone. |
+| R2 behind the authenticated Cloudflare relay | **Chosen** | Mac-off availability, bounded Worker requests, opaque per-group storage keys. |
+| Author-device fetch | Rejected | Violates the Cloudflare mailbox and Mac-off invariants. |
+| Relay envelopes / DO SQLite for the 91 MB corpus | Rejected | Wrong body-size, storage, and retention model. |
+| Desktop-only trial | Rejected | Fails the named iPhone image-rendering blocker. |
+| Claim Rust relay parity without a blob backend | Rejected | Current Rust relay has neither R2 nor blob routes. |
 
-## Wire and persistence contract
+## 1. CRDT registry and attachment semantics
 
-### Metadata is authoritative through Loro
+### Dedicated attachment registry Loro document
 
-Use the existing attachment op family, making it operational rather than a
-no-op. An attachment record must include its owning note, original filename,
-MIME type, byte length, content BLAKE3, and a validated mosaic-relative
-attachment path so `../attachments/...` Markdown resolves to the same local
-materialization on every device. The current reserved payload has all but the
-path; add only the field necessary to preserve nested attachment paths.
+Create one reserved, always-resident Loro document for attachment metadata,
+parallel to the existing views registry rather than embedding attachment state
+in per-note documents. It has `meta.schema_version = 1` and a `paths` map.
+The registry is synchronized as a normal Loro document/snapshot and is exposed
+by `tesela-sync` and FFI.
 
-Metadata is published only after every sealed chunk is accepted by the relay.
-A receiving client may see metadata before it has downloaded bytes, but never
-before the author has made those bytes retrievable. Deleting a reference removes
-metadata/local materialization; v1 does not eagerly delete the shared R2 object
-because another note, a delayed device, or a backup may still need it. Remote
-GC is a retention-aware follow-up.
+The **canonical validated relative path** is the `paths` map key. It is NFC,
+uses `/`, contains no empty, `.` or `..` segments, and is relative to the
+mosaic `attachments/` root. No Markdown path is changed; the existing local
+route continues serving that same path after verified materialization.
 
-### Opaque content addressing and sealing
+Each `paths/<path>` entry is a Loro map with these fields:
 
-The raw BLAKE3 is synchronization metadata inside the encrypted Loro stream;
-it must not become an R2 key. Derive a domain-separated blob-id key from the
-GroupKey and GroupId with HKDF, then HMAC the content BLAKE3 with that key.
-The resulting opaque digest is the per-group content address. Identical bytes
-deduplicate within one group but cannot be correlated by another group or the
-relay.
+| Field | CRDT shape | Meaning |
+| --- | --- | --- |
+| `manifest` | map, field-level LWW | Current `AttachmentManifestV1`; all fields are written together only after remote verification. |
+| `refs` | map keyed by stable reference id | References from every live note to this path. |
+| `refs/<ref>/adds` | append-only map keyed by add tag | Observed reference additions. |
+| `refs/<ref>/removes` | append-only map keyed by add tag | Causal removals of observed additions. |
+| `refs/<ref>/note_id` | scalar | Note owning this reference. |
+| `refs/<ref>/source_path` | scalar | Canonical path, repeated for audit/debug validation. |
 
-Seal each plaintext chunk independently with XChaCha20-Poly1305 under a
-separate domain-derived blob key. Its authenticated data binds the blob
-protocol version, GroupId, opaque content address, chunk ordinal, and declared
-plaintext length. A chunk cannot be substituted across groups, blobs, or
-positions. The manifest records ordered chunk count/lengths and the file BLAKE3;
-a receiver verifies AEAD for every chunk and the final file digest before making
-the file visible at `attachments/`.
+`ref_id = BLAKE3("tesela-attachment-ref-v1" || note_id || canonical_path)`;
+there is one semantic ref per note/path even if the Markdown repeats the same
+URL. `add_tag` is a new random UUID created for each add. A reference is live
+when it has at least one add tag not present in `removes`. A delete records
+only the add tags observed by that writer; it never deletes the map entry.
+Thus a concurrent add survives a delete that did not observe it. This is the
+required causal-delete behavior without relying on a map-key delete winning
+against concurrent interior edits.
 
-Chunk request bodies cap at 8 MiB, safely below the current 16 MiB relay body
-limit after sealing/encoding overhead. Worker routes reject a larger body before
-R2 write. The object protocol is immutable/idempotent: an already-present
-address/chunk is a successful retry, not an overwrite. Group members already
-have the content key; the integrity check detects corrupted or mismatched
-ciphertext before materialization.
+The registry projects a path's live-reference count from all refs. It may remove
+the local materialized file only when that count is zero. V1 never deletes an
+R2 blob, so it cannot delete bytes still needed by a delayed device or backup;
+a future retention/GC worker must retain a blob whenever any live registry ref
+remains and must additionally respect its recovery retention window.
 
-### Relay surface
+### Path collision and multi-reference policy
 
-Add authenticated group-scoped blob upload, existence-check, and download routes
-beside the existing relay operations. Reuse the canonical MAC path/body binding
-from `relay_auth`; do not invent unauthenticated R2 presigned URLs. The Worker
-validates membership and 8 MiB request bounds, proxies sealed bytes to/from an
-R2 binding, and never parses plaintext.
+A path is one registry identity. Multiple notes may reference the same path and
+share its manifest/bytes. The importer inventory detects two different local
+contents for one canonical path before it writes metadata. That is a blocking
+attachment-path collision in the serialized import plan; the user must rename
+or skip one source. It must not silently choose one file.
 
-The Worker configuration gains an R2 binding and a staged migration/deploy
-plan. The current `wrangler.toml` has only the two Durable Object bindings, so
-the binding and operational bucket provisioning are explicit work, not an
-assumption.
+A legitimate later replacement of a path writes a new fully verified manifest
+at the same path. All live refs for that path then see the new bytes, matching
+the existing Markdown/path contract. A receiver never exposes a partially
+changed file: it verifies the new manifest and materializes atomically.
 
-### Client behavior and iOS storage
+### Engine and FFI records
 
-Desktop/server materializes verified downloads in the existing mosaic
-`attachments/` path. iOS treats attachments as a bounded, evictable cache under
-its Application Support storage, not as an unbounded copy of every remote file.
-Follow the existing Application Support/background-download pattern in
-`app/Tesela-iOS/Sources/Data/TranscriptionStore.swift` after reading it; do not
-put blob transfer logic in a view.
+Replace the reserved opaque payload with named attachment-registry operations:
+add reference, causally remove observed add tags, and publish a verified
+manifest. Add `AttachmentRecord`, `AttachmentManifestRecord`, and availability
+records on the `tesela-sync` API and `tesela-sync-ffi` bridge. They include
+path, owning note/reference ids, live-ref state, manifest, and local state
+(`missing`, `downloading`, `verified`, `failed`, `unsupported_relay`).
 
-When a rendered attachment is referenced but absent locally, the client shows a
-loading/retry state and schedules a fetch. It only exposes the final local file
-after the authenticated decrypt-and-digest check. Cache eviction may remove
-verified local bytes, never Loro metadata; opening the reference fetches again.
-The implementation must report cache usage and a user-visible storage-limit
-state rather than silently exhausting iOS storage.
+The FFI is the iOS source of attachment state; it must not ask a Mac server to
+resolve attachment metadata. Transfer/file I/O runs in a non-main-actor data
+service, not a SwiftUI view or a `@MainActor` store.
 
-### Backup and restore
+## 2. AttachmentManifestV1 and crypto/wire contract
 
-Desktop backup already captures `attachments/` in
-`crates/tesela-backup/src/archive.rs:11-17` and verifies file checksums on
-restore. Keep that behavior: a restored local backup is immediately usable
-offline. The Loro authority/attachment metadata is also restored with the
-existing `.tesela/loro` capture. A device without local bytes reconstructs its
-cache from the encrypted blob channel. Remote blob retention must therefore
-outlive ordinary local cache eviction and normal backup/restore windows.
+### Versioned manifest
 
-## Sequencing and acceptance gates
+`AttachmentManifestV1` is stored as fields in the registry `manifest` map and
+is versioned independently of the Loro document schema:
 
-### 1. Lock attachment metadata and cryptographic vectors
+| Field | Value |
+| --- | --- |
+| `protocol_version` | integer `1` |
+| `path` | canonical relative attachment path |
+| `mime_type` | detected MIME, not trusted extension alone |
+| `plaintext_length` | exact final byte count |
+| `file_blake3` | 32-byte BLAKE3 of plaintext file |
+| `chunk_plaintext_bytes` | `4_194_304` (4 MiB) |
+| `chunk_count` | exact count; `ceil(length/chunk_size)`, or 0 only for an empty file |
+| `blob_id` | base64url HMAC-derived opaque group-scoped content address |
+| `chunks` | ordered list of `{ index, plaintext_length, sealed_sha256 }` |
 
-**Work:** Complete the reserved attachment-op semantics in `tesela-sync`, add
-the validated relative path, opaque-address derivation, chunk sealing/opening,
-and deterministic test vectors. Mirror the existing AEAD and relay-auth
-domain-separation patterns; do not reuse the envelope AAD unchanged.
+The receiver rejects unknown protocol versions, invalid path, count/length
+inconsistency, a non-final short chunk, missing indexes, or an aggregate
+plaintext length that does not equal `plaintext_length`.
 
-**Acceptance:** Same-group clients derive the same opaque address for the same
-file; different groups do not; swapped chunk/group/ordinal data fails to open;
-metadata contains no plaintext bytes; an attachment op is no longer a no-op.
+The raw file BLAKE3 is encrypted metadata in Loro. It is never an R2 key.
+Derive `blob_id` by HMAC-SHA256 over `file_blake3` with a domain-separated key
+from `(GroupKey, GroupId, "tesela-attachment-address-v1")`. Identical bytes
+deduplicate inside one group but do not create a cross-group object identifier.
 
-**Verify:** `cargo test -p tesela-sync`; `cargo clippy -p tesela-sync -- -D warnings`.
+For each chunk, derive a per-blob encryption key and a deterministic 24-byte
+XChaCha nonce from GroupKey, GroupId, blob id, and chunk index under separate
+`attachment-key-v1` / `attachment-nonce-v1` domains. Deterministic sealing is
+intentional: two devices uploading the same content produce identical sealed
+bytes for the same immutable object key. The AAD is the exact canonical binary
+concatenation of:
 
-### 2. Add the authenticated Worker/R2 blob gateway
+```text
+"tesela-attachment-v1\0" || GroupId(16) || blob_id(32) || chunk_index(u32-be) || plaintext_length(u32-be)
+```
 
-**Work:** Add the R2 binding, group-authenticated blob routes, maximum-body
-enforcement, immutable retry semantics, and Worker tests/mocks following the
-current `group-do.ts`/`handlers.ts` dispatch pattern. Read current Worker/R2
-API documentation during implementation; do not buffer a whole attachment in
-memory or depend on a public bucket URL.
+A ciphertext cannot be moved to another group, blob, chunk ordinal, or declared
+length. The AEAD tag plus final file BLAKE3 are both mandatory before local
+materialization.
 
-**Acceptance:** Unauthenticated/cross-group reads fail; a <=8 MiB sealed chunk
-round-trips; an oversized request is rejected; retrying a present chunk does
-not replace it; Worker/R2 never receives plaintext.
+### R2 layout and HTTP body
 
-**Verify:** `pnpm --dir cloudflare-relay exec tsc --noEmit`; `pnpm --dir cloudflare-relay exec wrangler deploy --dry-run`.
+The immutable R2 key is:
 
-### 3. Implement Rust upload, download, and local materialization
+```text
+v1/groups/<group-id-hex>/blobs/<blob-id-base64url>/chunks/<index-u32-decimal>
+```
 
-**Work:** Extend the existing relay transport with the blob client operations,
-stream/hash/seal on upload, authenticated download/open/final-digest validation,
-and atomic local materialization under `attachments/`. Publish metadata only
-after all chunk uploads complete. Reuse the current relay client's group auth
-and error model; do not relay bytes through Loro envelopes.
+No filename, MIME, plaintext hash, or note id appears in an R2 key. The
+authenticated request is:
 
-**Acceptance:** Two independent local mosaics in one group converge attachment
-metadata; the receiving one downloads and verifies the referenced bytes;
-corrupt ciphertext never appears as a file; a 91 MB fixture is chunked rather
-than sent as one request.
+```text
+PUT /groups/<group-id-hex>/attachments/v1/<blob-id-base64url>/chunks/<index>
+```
 
-**Verify:** `cargo test -p tesela-sync -p tesela-server`; `cargo clippy -p tesela-sync -p tesela-server -- -D warnings`.
+Its raw body is exactly:
 
-### 4. Bind clients to verified availability
+```text
+"TSA1" (4 bytes) || version (u8 = 1) || nonce (24 bytes) || ciphertext_and_poly1305_tag
+```
 
-**Work:** Expose attachment change/availability through the existing FFI and
-client data layers. Add iOS cache management and the render-triggered
-loading/retry state. Integrate the server/web local attachment route only at
-its established view/paste seam; do not duplicate attachment logic in Svelte
-components or SwiftUI views.
+`MAX_PLAINTEXT_CHUNK_BYTES = 4_194_304`; the maximum sealed body is
+`4_194_349` bytes (4-byte magic + 1-byte version + 24-byte nonce + plaintext +
+16-byte tag). The client streams and counts plaintext while creating chunks;
+it rejects a file that exceeds the product's configured attachment limit
+before publication. The Worker rejects a missing/oversized `Content-Length`
+before buffering and uses a counted body read that aborts if the cap is
+exceeded. The existing `canonical_request` MAC signs the exact external path,
+query, nonce, timestamp, and SHA-256 of these exact sealed body bytes.
 
-**Acceptance:** A paired iPhone can open a note with an imported image while
-the Mac is off, sees a clear loading/error state during transfer, then renders
-the verified image; cache eviction causes a safe refetch; storage exhaustion is
-visible.
+### Conditional create and poisoned-object defense
 
-**Verify:** `cargo test -p tesela-sync-ffi`; `pnpm --dir web check`; `xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`.
+For an upload the Worker:
 
-### 5. Prove backup, restore, and multi-device regression behavior
+1. MAC-authenticates the group request and validates all path components,
+   index, `Content-Length`, wire header, and cap before R2 I/O.
+2. Calls R2 `head`. If an object exists, it compares exact sealed length and
+   stored `sealed_sha256` metadata with the manifest candidate; mismatch is a
+   poisoned/collision error, never an overwrite.
+3. If absent, uses R2 conditional `put` with `onlyIf` creation semantics and
+   stores `sealed_sha256` as custom metadata. A failed condition re-runs step
+   2; it does not retry an overwrite.
+4. `head`s the successful/existing object and verifies the expected length and
+   sealed digest before replying success.
 
-**Work:** Add end-to-end fixtures covering imported `../attachments/` links,
-blob upload/download, offline local-backup restoration, and a receive-after-sync
-path. Keep the current backup checksum assertion as the local authority test.
+R2's documented conditional `put` returns `null` on a failed precondition and
+is strongly consistent after success; use that result explicitly. Metadata is
+published to Loro only after every chunk has passed step 4.
 
-**Acceptance:** A backup restore retains attachment bytes and renders without
-network; a clean second device reconstructs the same verified asset from R2;
-metadata with absent/corrupt bytes never yields a misleading successful render.
+Downloads use a MAC-authenticated GET under the same group/path scope. The
+Worker streams the R2 body; the client writes only to a temporary cache file,
+opens every chunk with the canonical AAD, validates every chunk and final
+BLAKE3, then atomically renames to `attachments/<path>`.
 
-**Verify:** `cargo test -p tesela-backup -p tesela-sync -p tesela-server && pnpm --dir web test:unit && xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`.
+## 3. Existing-corpus producer and availability
 
-## Proposed implementation beads
+The 94-file corpus is not assumed to upload itself. After a successful
+post-`tesela-ewj.1` Logseq import, and on later startup reconciliation, the
+attachment producer:
 
-These are triage recommendations only. This spec creates or claims none.
+1. scans the local `attachments/` tree safely, normalizes paths, streams each
+   file's BLAKE3/length/chunks, detects MIME, and parses local note references;
+2. builds the same registry ref set for every `(note_id, path)` and reports
+   blocking path/content collisions in the import plan;
+3. obtains relay capabilities before any upload;
+4. probes every deterministic R2 chunk key, uploads only missing chunks, and
+   verifies each result as above; a restart re-scans/probes, so no in-memory
+   queue is required for resumability;
+5. publishes the manifest plus reference adds only after the complete remote
+   blob is verified; and
+6. schedules download/materialization for metadata that is live locally but
+   missing from the local cache.
 
-| Suggested bead | Scope | Depends on | tier_floor | complexity | Verify |
-| --- | --- | --- | --- | --- | --- |
-| `8zd.3a attachment metadata + crypto` | Operationalize `AttachmentUpsert`, path validation, opaque addressing, chunk AEAD, vectors. | — | lead | L | `cargo test -p tesela-sync` |
-| `8zd.3b CF encrypted blob gateway` | R2 binding, authenticated Worker routes, size/immutability controls, deploy migration. | 3a contract | senior | L | `pnpm --dir cloudflare-relay exec tsc --noEmit` |
-| `8zd.3c Rust blob transport/materializer` | Relay client blob operations, streaming transfer, atomic `attachments/` materialization. | 3a, 3b | senior | L | `cargo test -p tesela-sync -p tesela-server` |
-| `8zd.3d iOS FFI + bounded cache` | Attachment-change bridge, Application Support cache, fetch/evict/error state. | 3a, 3c | senior | L | `xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'` |
-| `8zd.3e web/server availability integration` | Join existing attachment view/paste routes to verified local availability and status. | 3c | senior | M | `pnpm --dir web check && pnpm --dir web test:unit` |
-| `8zd.3f backup + cross-device acceptance` | Restore/offline and two-device fixtures; remote-retention regression guard. | 3b–3e | senior | M | `cargo test -p tesela-backup -p tesela-sync -p tesela-server` |
+The producer must be idempotent: rescanning an unchanged corpus adds no
+reference tags and performs no overwrite. Failed uploads leave no manifest
+published; UI reports a retryable availability error rather than a false
+"synced" image.
+
+The local server/web dependency is **`tesela-8zd.1` (landed)**. It consumes the
+verified local path using its existing attachment route/render-time URL
+resolution. The iOS renderer/cache is a required new dependency bead,
+**`tesela-8zd.3e iOS attachment renderer + bounded cache`**, and cannot be
+implicitly satisfied by `tesela-8zd.1`.
+
+iOS keeps an evictable Application Support cache under the data layer. A
+referenced missing image shows loading/retry/error, never a successful empty
+render. Cache accounting and a user-visible storage limit are required; cache
+eviction removes only verified local materializations and triggers a safe
+refetch on next use.
+
+## 4. Relay capability decision
+
+V1 support is **Cloudflare relay only**. Add a small public
+`GET /capabilities` response on both relay implementations with a versioned
+feature list and `max_sealed_attachment_chunk_bytes`. Cloudflare advertises
+`attachment_blob_v1`; the current Rust relay advertises no attachment blob
+feature. A missing route/404 is capability false.
+
+`RelayClient` checks capabilities before inventory/upload. If the active relay
+does not advertise `attachment_blob_v1`, it must not publish new attachment
+metadata or reference changes that require remote bytes; it reports a clear
+unsupported-relay state. Receivers preserve already-synced metadata but show
+unavailable rather than attempting an invented endpoint.
+
+A future self-host feature may implement blob storage and advertise the same
+capability only after it supplies equivalent authenticated routes, conditional
+object semantics, retention, and conformance vectors. It is not part of this
+bead and must not be presented as Rust-relay parity.
+
+## 5. Backup/recovery and GroupKey restore
+
+A local backup still includes `attachments/` and Loro authority, so restoring
+its bytes can render offline. However, remote R2 blobs remain decryptable only
+with the original GroupKey.
+
+Restore adds a mandatory identity phase before any `load_or_create` engine
+open at the destination path:
+
+1. restore `group_id` from the backup authority;
+2. obtain the original GroupKey through the age-protected identity envelope or
+   the existing recovery phrase; and
+3. call the existing identity-adoption path so the destination's active
+   Keychain/file store contains the recovered `(GroupId, GroupKey)`.
+
+A sibling-path restore must never silently mint a new key. If neither recovery
+source is available, restore may recover local bytes but is marked
+`remote_attachment_recovery_blocked` and must not start a sync engine that
+would publish/consume blobs under the wrong key.
+
+Add a restore-to-different-path drill: create/upload a fixture, back up,
+restore under a distinct mosaic path, recover/adopt the original identity,
+reopen, and prove the same group id/key derives the same blob id, opens a
+remote chunk, and preserves Loro lineage. Also test the negative path: opening
+without identity recovery is rejected before a new GroupKey can be used.
+
+## 6. Worker implementation constraints and tests
+
+Add an R2 binding through Wrangler configuration and generate Worker binding
+types; do not hand-write an `Env` interface. The Worker/DO uses its binding,
+not Cloudflare REST APIs or public/presigned URLs. Keep request-specific state
+in handlers/DO instance calls, await every R2 promise, emit structured
+non-secret observability events, and never log group keys, plaintext hashes,
+or ciphertext bodies.
+
+Workers-runtime tests use an actual R2 binding (Cloudflare's Workers Vitest
+pool is the preferred harness) and cover:
+
+- unauthenticated and cross-group GET/PUT rejection;
+- missing/oversized body rejection before object storage;
+- exact canonical MAC path/body mismatch rejection;
+- first conditional put, same-object retry, competing/poisoned object mismatch,
+  and post-put `head` verification;
+- ciphertext corruption, wrong AAD/group/index, and final digest failure;
+- capability false preventing metadata publication; and
+- no unawaited transfer/R2 promises.
+
+## Required acceptance and verify
+
+- Two Loro engines converge the registry's manifest, concurrent distinct refs,
+  and causal delete-vs-add outcome.
+- A 91 MB fixture is streamed as 4 MiB chunks, not sent in a relay envelope.
+- Import/startup inventory uploads the existing corpus idempotently and
+  publishes no metadata before all chunks verify.
+- A clean paired device with the Mac off obtains verified bytes and each client
+  renders via its local web/iOS path.
+- Backup restore at a different path preserves the GroupKey and decrypts an R2
+  blob.
+
+**Verify:**
+
+```bash
+cargo test -p tesela-sync -p tesela-sync-ffi -p tesela-server -p tesela-backup
+pnpm --dir cloudflare-relay exec wrangler types
+pnpm --dir cloudflare-relay exec tsc --noEmit
+pnpm --dir web check
+pnpm --dir web test:unit
+pnpm --dir web test:e2e
+xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+## Suggested implementation beads
+
+These are planned dependencies only; this specification claims none.
+
+| Suggested bead | Scope | Depends on |
+| --- | --- | --- |
+| `tesela-8zd.3a` | attachment registry CRDT, manifest v1, crypto vectors, FFI records | — |
+| `tesela-8zd.3b` | Cloudflare R2 binding, capabilities, authenticated blob gateway, Worker-runtime tests | 3a contract |
+| `tesela-8zd.3c` | Rust inventory producer, resumable transport, materializer, server availability integration | 3a, 3b, `tesela-8zd.1` |
+| `tesela-8zd.3d` | backup identity envelope/recovery-phrase sibling-path restore drill | 3a |
+| `tesela-8zd.3e` | iOS FFI consumer, bounded cache, relative attachment renderer | 3a, 3b, 3c |
+| `tesela-8zd.3f` | two-device corpus/retention acceptance and product gate | 3b–3e |
 
 ## Out of scope
 
-- Public/shareable attachment URLs, CDN delivery, browser-direct R2 access, or
-  server-side plaintext inspection/transcoding.
-- Mac-as-hub/on-demand author-device transport.
-- New attachment authoring UX, camera picker, OCR, thumbnail generation, or
-  document preview design.
-- Immediate remote blob deletion/garbage collection; that needs a separate
-  retention and restore-safety design.
-- Changing the local Markdown attachment syntax or rewriting imported links.
-- Cross-user ACLs, billing/quota product policy, and multi-mosaic blob sharing.
+- Public URLs, browser-direct R2, server plaintext inspection/transcoding,
+  attachment authoring/camera UX, thumbnail/OCR, immediate remote GC, sharing
+  ACLs/billing, and Rust self-host blob storage.

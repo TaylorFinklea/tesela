@@ -1,205 +1,215 @@
 # Bid-native Logseq block references
 
-**Bead:** `tesela-8zd.7` · **Tier:** Lead · **Status:** implementation spec only
-**Dependency:** `tesela-ewj.1` must land first so import writes through the
-sole engine path.
+**Bead:** `tesela-8zd.7` · **Tier:** Lead · **Status:** revised implementation spec
+**Dependency:** `tesela-ewj.1` must land first. Its engine-owned importer/hydration
+path is the only permitted apply path.
 
-## Scope
+## Review disposition
 
-Preserve Logseq `id::` anchors as Tesela block ids during import, then make
-`((bid))` a live web block reference: render its target text, navigate to the
-target, copy a stable reference, and degrade visibly when unavailable. Prove
-that a reference authored on one Loro engine resolves after sync on another.
+This revision adopts every blocker and major finding in the 2026-07-10 Sol
+adversarial review. There are no contested findings.
 
-This is deliberately bid-native. It adds no UUID translation table and no
-parallel block-reference registry.
+- Resolution has exactly three visible states: `invalid`, `resolved`, and
+  `unavailable` (valid UUID without a live local target).
+- Graphite reuses and extends the merged `content-jump.svelte.ts` store instead
+  of inventing a second pending-block mechanism.
+- Import diagnostics/replacement bids are serialized in the plan; duplicate
+  and malformed handling is replay-stable.
+- The target cache records target-note ownership and invalidates on target
+  note changes/deletes. The convergence test exercises the real Logseq
+  plan → ewj.1 hydration → relay sync path.
 
-## Grounded design
+## Verified baseline
 
-### 1. The existing pre-stamp is the bridge
+`tesela-core::note_tree` already preserves a valid pre-stamp comment as a
+block's UUID: `BID_PREFIX`/`BID_SUFFIX` are the persisted syntax and
+`parse_note` adopts the UUID before it would mint a new one. The Loro engine's
+`block_index` maps bid to note id, and `find_doc_for_block` uses the map then
+lazy-loads the note document. This is the only block-id map this work may use.
 
-`crates/tesela-core/src/note_tree.rs` already defines the persisted block-id
-syntax:
+The importer currently discards `id::` along with Logseq presentation metadata
+in `import_logseq.rs`; it preserves `((uuid))` prose. The existing import
+planner is a serde `ImportPlan`/`PlanItem` returned to the settings preview and
+then posted back for apply, so it is the correct place for deterministic
+anchor diagnostics.
 
-- `BID_PREFIX` is `<!-- bid:` at `:100`.
-- `BID_SUFFIX` is ` -->` at `:101`.
-- rendering appends the hyphenated UUID comment at `:314-316`.
-- parsing removes a valid comment and adopts its UUID at `:405-438`;
-  only an absent valid stamp falls through to `Uuid::now_v7()`.
+The Graphite shell already has a one-shot jump pipeline:
+`requestContentJump` stores a pending request, `GrPage` passes it to
+`BlockOutliner`, and the outliner focuses, scrolls, and clears the request.
+Today its target is query/snippet search only. The `/g` branch of `gotoNote`
+opens a buffer but drops its optional `targetBlockId`, which is why a new
+parallel navigation contract would be wrong.
 
-Therefore a Logseq `id:: 675f...` becomes the exact comment
-`<!-- bid:675f... -->` on its owning bullet. The comment is stripped from the
-presentational block text but stays in Markdown, so the Logseq UUID literally
-becomes the permanent Tesela bid. Do not create a `logseq_id → bid` map.
+`ParsedBlock` exposes both a legacy line id (`{note_id}:{line}`) and the
+canonical `bid`. Copying a block reference must use the latter.
 
-The importer currently strips `id::` along with presentation properties at
-`crates/tesela-core/src/import_logseq.rs:647-654`; that behavior changes only
-for a valid id anchor associated with a block. It already preserves `((uuid))`
-references as literal prose, which is correct until the renderer resolves them.
+## Decision
 
-### 2. Import-time anchor policy
+### 1. Preserve Logseq UUIDs as Tesela bids
 
-The import-plan pass, before any writes, scans every converted Logseq block in
-deterministic order: source-relative path lexicographically, then source block
-order. A valid hyphenated UUID in an `id::` property belongs to the immediately
-preceding Logseq block, is removed from rendered prose, and produces that
-block's bid pre-stamp.
+A valid Logseq `id:: <hyphenated UUID>` becomes the existing persisted
+comment on its owning Tesela bullet:
 
-Duplicate policy is graph-wide and deterministic:
+```text
+- target text <!-- bid:675f6317-... -->
+```
 
-1. The first occurrence in that deterministic scan keeps the source UUID.
-2. Each later occurrence receives a newly minted Tesela UUID pre-stamp.
-3. Every later occurrence creates a plan warning identifying the duplicate
-   UUID, winning source/block, rewritten source/block, and minted replacement.
-4. Apply proceeds only with that explicit plan result; it never lets the flat
-   Loro index silently last-writer-win the duplicate.
+No `logseq-id → bid` map is created. The source UUID is the resulting bid,
+survives Markdown materialization and Loro sync, and resolves through the
+existing global `block_index`.
 
-Malformed or detached `id::` values are not anchors: preserve the current
-non-rendering property behavior and emit a plan warning rather than writing an
-invalid bid comment. Existing blocks without `id::` keep the normal stamp path.
+Property ownership is determined by the importer's block/continuation parser,
+not line adjacency. While scanning converted Logseq source, maintain the open
+bullet indentation stack. An `id::` line belongs to the currently open block
+whose continuation/property region contains that line; a nested bullet closes
+its parent's current continuation region. A detached page property, a property
+outside any live block, and an `id::` that is not exactly one hyphenated UUID
+are not anchors. This handles real indented property lines rather than assuming
+that the physical preceding line is the owner.
 
-### 3. Resolution rides the Loro block index
+### 2. Serializable import-plan diagnostics
 
-`LoroEngine` already maintains a global, hydration-rebuilt
-`block_index: bid → note_id` (`crates/tesela-sync/src/engine/loro_engine.rs:248-251`,
-`:476-477`) and refreshes it whenever a note changes (`:919-922`). It supports
-lazy loading through the same mapping (`:1125-1139`). Expose the minimum
-read-only engine/server resolution seam needed to return the owning note and
-current target block text by bid; it must use this index and load the owning
-note if necessary. It must not scan all Markdown files or construct a second
-map.
+Extend the existing serde `ImportPlan` with a serializable anchor section,
+returned intact to the web preview and supplied unchanged to apply:
 
-The read-only block-reference response must distinguish:
+| Record | Required fields | Apply policy |
+| --- | --- | --- |
+| `adopted_anchor` | source-relative path, source block ordinal, source UUID, resulting bid | add that exact pre-stamp |
+| `duplicate_anchor` | duplicate UUID, winner source/block, rewritten source/block, **pre-minted replacement UUID** | add the baked replacement pre-stamp and show warning |
+| `invalid_anchor` | source-relative path, source block ordinal/line, raw value, reason | do not stamp; warn visibly |
+| `detached_anchor` | source-relative path, line, raw value, reason | do not stamp; warn visibly |
 
-- resolved: canonical bid, owning note id, and target block presentational text;
-- unresolved: malformed, unknown, deleted, or unavailable bid;
-- invalid input: not a UUID-shaped bid.
+Scan deterministically by source-relative path, then source block order. The
+first valid occurrence keeps its Logseq UUID. Every duplicate receives a
+replacement UUID while planning, not while applying, so retries of the same
+serialized plan produce exactly the same Markdown and Loro identity. The plan
+preview surfaces every diagnostic. Apply rejects a plan whose baked anchor
+mapping is missing or malformed; it must not regenerate ids or allow a flat
+last-writer-wins collision.
 
-The response is a lookup only. `((bid))` remains literal source text and does
-not become a separate Loro operation. A resolved target later changing its text
-must refresh web's rendered reference on normal note/WS invalidation; the
-reference's identity never changes.
+The converted Markdown removes the Logseq `id::` property only after it has
+become the comment. Invalid/detached input follows the existing non-rendering
+property behavior, but is now reported instead of silently discarded.
 
-### 4. Web rendering and navigation
+### 3. Engine resolution states
 
-Add a `((hyphenated-uuid))` pass to the existing CodeMirror decoration pipeline
-in `web/src/lib/cm-decorations.ts`. It follows the current wiki-link pass at
-`:864-871`: skip fenced-code and table ranges, preserve the underlying source,
-and decorate only a validated token. The decoration pipeline is synchronous;
-network resolution belongs in the block/editor data flow and provides a cache
-of resolved bids to the decoration pass. A ViewPlugin must never fetch.
+Add a narrow `tesela-sync` read capability that accepts a string token and
+returns precisely one of:
 
-For a resolved reference, render the target's current presentational text as
-the link label while retaining the raw `((bid))` in the document. Clicking in
-Normal mode follows the existing `BlockEditor.svelte:1767-1823` wiki-link
-mousedown pattern and navigates through `gotoNote(noteId, bid)`. Insert mode
-and modifier-click preserve their existing editing/new-tab behavior.
+- **invalid** — token is not a hyphenated UUID. It is never a live reference.
+- **resolved** — valid bid maps to a live block; return canonical bid, owning
+  note id, and presentational target text.
+- **unavailable** — valid bid has no currently live resolvable target. This
+  includes unknown, deleted, evicted-without-loadable snapshot, and a stale
+  index mapping. Do not claim to distinguish delete from unknown until a
+  durable bid tombstone exists.
 
-For an unresolved reference, retain the literal `((bid))`, style it visibly as
-unresolved, and expose an accessible reason/tooltip. A normal-mode click must
-not move to a guessed page; it reports an unobtrusive unavailable-reference
-notice. This is intentional visible degradation, not a silent dead link.
+The resolver reads the existing `block_index`, follows its established
+lazy-load path, then obtains text from the block's Loro document. It creates
+no persistent map and does not scan the Markdown corpus. The server exposes
+only a web adapter over this engine capability; future FFI/iOS consumers can
+use the engine capability directly.
 
-### 5. Copy command and manifest
+### 4. Decoration cache and invalidation
 
-Add a focused-block editor command alongside the existing
-`web/src/lib/editor/commands/` modules (for example, inspect `link.ts` before
-choosing the exact module shape). It copies exactly `((<hyphenated bid>))` to
-the system clipboard. It is available only when the focused block has a stable
-bid; otherwise it is disabled or reports that the block has not yet been
-stamped. It must never copy the legacy line-number id.
+The CodeMirror decoration pass remains synchronous and never fetches. A
+block-reference resolver/cache lives in the editor data layer and supplies the
+pass with records keyed by bid:
 
-The command registers through the real command registry and is emitted by
-`web/scripts/generate-command-manifest.mjs`, which loads both built-ins and all
-editor command modules. Regenerate the checked-in manifest; do not hand-edit
-it. The command must be reachable through the documented registry surfaces
-that its metadata enables.
+```text
+bid -> { state, targetNoteId?, targetText? }
+```
+
+A resolved `((bid))` displays target text but retains literal source text.
+The cache maintains the inverse `targetNoteId -> set<bid>` relation. Existing
+websocket `note_updated` invalidation removes every bid targeting that note;
+`note_deleted` removes those entries and makes subsequent rendering
+`unavailable`. A target edit must therefore refresh its ref labels rather than
+leaving a stale cached string. Tests cover edit, deletion, and two different
+bids owned by one target note.
+
+Only a valid resolved ref is clickable in Normal mode. A valid unavailable ref
+is visibly styled as unavailable and reports a concise notice when clicked.
+An invalid token remains visibly invalid/non-link text. This spec deliberately
+makes no modifier-click or new-tab claim; CodeMirror decorations are not
+anchors and no such behavior is in scope.
+
+### 5. Reuse the Graphite content-jump contract
+
+Extend `web/src/lib/stores/content-jump.svelte.ts`'s existing one-shot payload
+into a discriminated target:
+
+- `content` keeps the current `{ query, snippet }` search behavior.
+- `bid` carries a validated canonical bid.
+
+Keep its existing monotonically increasing id, note scoping, and clear-once
+behavior. Add a request helper for bid jumps rather than another global store.
+`GrPage` continues to obtain the pending request and passes it to
+`BlockOutliner`. For a bid target, the outliner finds `visibleBlocks` by
+`block.bid`, then uses the existing focus/scroll/clear sequence. It must not
+match the legacy line id.
+
+The block-ref click adapter first resolves the bid. On `resolved`, it queues a
+bid content jump, then opens the owning page through the buffer navigator. This
+preserves target focus in `/g`, where current `gotoNote(noteId, bid)` discards
+the bid. Non-Graphite routing may retain its existing `?block=` deep-link
+behavior, but `/g` is required to use the shared store.
+
+### 6. Copy command
+
+Register a focused-editor command in the real command registry and regenerate
+the command manifest. Its authoritative input is
+`ctx.editor.block.bid` (a canonical UUID), never `focusedBlock.id` (the
+`{note_id}:{line}` display address). It copies exactly `((<hyphenated-bid>))`.
+The command is disabled with a clear status when no canonical bid exists.
+
+## Required tests and acceptance
+
+1. **Importer/plan tests**
+   - Valid nested continuation ownership emits the exact bid comment and strips
+     only the source `id::` property.
+   - Duplicate anchors produce a deterministic winner, serialized pre-minted
+     replacement, and replay-identical apply output.
+   - malformed/detached ids yield serialized diagnostics and no stamp.
+2. **Engine tests**
+   - Resolved targets use `block_index` plus lazy load; valid missing/deleted
+     targets are `unavailable`; non-UUID tokens are `invalid`.
+   - The integration test starts with a Logseq fixture, calls plan, applies by
+     the post-`tesela-ewj.1` engine/hydration path, exports/imports real Loro
+     updates into device B, and resolves the imported bid on B.
+3. **Web tests**
+   - A resolved ref renders target text, Normal-mode click opens `/g` and
+     focuses/centers the target block through the existing content-jump store.
+   - An update/delete of the target note invalidates cached labels/states.
+   - unresolved/invalid references visibly degrade; Insert-mode editing is
+     unchanged; code fences and table ranges remain literal.
+   - The registry copy command reads `ctx.editor.block.bid` and copies the
+     exact source syntax.
+4. **Manual Graphite check**
+   - Open a note containing a ref, click it in Normal mode, verify the target
+     page opens with the referenced block focused; press Escape/cancel and
+     verify the editor focus behavior remains normal.
+
+**Verify:**
+
+```bash
+cargo test -p tesela-core -p tesela-sync -p tesela-server
+pnpm --dir web check
+pnpm --dir web test:unit
+pnpm --dir web test:e2e
+```
 
 ## Sequencing
 
-### 1. Gate on the sole-writer importer path
-
-**Work:** Confirm `tesela-ewj.1` is complete before changing import apply. Read
-its resulting importer/engine write path and retain its single-authority rule.
-
-**Acceptance:** The implementation never writes an imported pre-stamped file
-outside the engine-managed import path.
-
-**Verify:** `cargo test -p tesela-core -p tesela-sync`.
-
-### 2. Preserve anchors and report duplicate ids in import planning
-
-**Work:** Adapt the importer around the verified `id::` stripping path so a
-valid block property yields the existing bid comment on its owner. Add the
-whole-graph deterministic duplicate scan and plan warnings. Mirror the current
-import fixture setup and apply tests in `import_logseq.rs`; do not add a
-side-map.
-
-**Acceptance:** Importing a valid Logseq anchor produces the exact
-`<!-- bid:<hyphenated UUID> -->` syntax, the rendered block text contains no
-`id::` line, and a duplicate preserves the first UUID while the second gains a
-new UUID plus an actionable warning.
-
-**Verify:** `cargo test -p tesela-core import_logseq`.
-
-### 3. Expose bid lookup through the existing engine index
-
-**Work:** Add the narrow read-only resolution capability from Loro's existing
-`block_index` through the server route layer. It returns owner plus current
-block text and handles an evicted target by the engine's established
-load-on-demand path. Follow the existing bid parsing/validation conventions in
-`crates/tesela-server/src/routes/notes.rs:683-689`.
-
-**Acceptance:** A known bid resolves without a corpus scan; unknown, deleted,
-and malformed bids are distinguished; no new persistent map exists.
-
-**Verify:** `cargo test -p tesela-sync -p tesela-server`; `cargo clippy -p tesela-sync -p tesela-server -- -D warnings`.
-
-### 4. Render and follow block references in the web editor
-
-**Work:** Add the decoration/cache/click path, using the verified wiki-link
-pass and `BlockEditor` Normal-mode click interception as patterns. Keep source
-text editable and code fences/table cells literal.
-
-**Acceptance:** A resolved `((bid))` displays target text and navigates to its
-note and bid; an unresolved or malformed token is visibly non-resolving;
-Insert-mode click behavior is unchanged.
-
-**Verify:** `pnpm --dir web check`; `pnpm --dir web test:unit`.
-
-### 5. Register the copy-block-reference command
-
-**Work:** Add the focused editor command, use the existing focused-block state,
-and regenerate the manifest with the repository script.
-
-**Acceptance:** The palette/registry manifest contains the command; a stamped
-focused block copies exactly `((uuid))`; an unstamped block cannot copy a
-line-based surrogate.
-
-**Verify:** `pnpm --dir web run generate:commands`; `pnpm --dir web test:unit`; `pnpm --dir web check`.
-
-### 6. Prove cross-device convergence
-
-**Work:** Add a real two-engine test using the existing Loro delta/import
-pattern in `crates/tesela-sync/src/engine/loro_engine/tests/ops.rs`: device A
-creates a target with a known bid and a block containing its `((bid))`
-reference, exports updates, and device B imports them. Resolve on B through
-the production index seam.
-
-**Acceptance:** B returns A's target note and text for the same bid after
-sync. This is a regression test for both durable pre-stamping and hydration of
-the global index.
-
-**Verify:** `cargo test -p tesela-sync -p tesela-server && pnpm --dir web run check && pnpm --dir web test`.
+1. Wait for `tesela-ewj.1`; inspect its final importer-to-engine apply path.
+2. Add plan-owned anchor parsing/diagnostics and pre-stamp output.
+3. Add engine resolution, then the real importer→hydrate→sync two-engine test.
+4. Add the cache/decoration path and extend the existing content-jump store.
+5. Register copy-ref, regenerate the manifest, and run `/g` integration
+   coverage.
 
 ## Out of scope
 
-- iOS rendering, tapping, or copy UI for block refs; this bead establishes the
-  engine/server contract web needs, and a later iOS parity bead can consume it.
-- Logseq `{{embed}}` rendering (`tesela-8zd.8`).
-- Block reference transclusion, editable previews, backlinks-to-blocks,
-  permission semantics, or cross-mosaic references.
-- Repairing pre-existing duplicate bids outside an explicitly imported Logseq
-  graph.
-- Any new persistent id mapping or a change to the Markdown bid comment
-  format.
+- iOS block-ref rendering/copy UI, embeds (`tesela-8zd.8`), block backlinks,
+  transclusion, permission rules, cross-mosaic references, and repair of
+  duplicate bids that predate a Logseq import.

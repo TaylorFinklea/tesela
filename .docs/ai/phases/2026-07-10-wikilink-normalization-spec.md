@@ -1,229 +1,230 @@
-# Wikilink normalization across Rust, web, and iOS
+# Wikilink normalization — Loro-index resolution across Rust, web, and iOS
 
-**Bead:** `tesela-8zd.5` · **Tier:** Lead · **Status:** implementation spec only
+**Bead:** `tesela-8zd.5` · **Tier:** Lead · **Status:** revised implementation spec
 
-## Scope
+## Review disposition
 
-Make every wikilink target resolve by one canonical, locale-independent key
-without changing its visible Markdown. This covers imported Logseq namespaces
-and multi-word pages, normal navigation, backlinks, collision reporting, and
-Rust/web/iOS conformance.
+This revision adopts every blocker and major finding in the 2026-07-10 Sol
+adversarial review. There are no contested findings.
 
-The current mismatch is concrete:
+- Resolution is a `tesela-sync` capability over the always-resident Loro index,
+  exported through FFI; the server route is only the web adapter.
+- Tie-breaking uses a durable creation-order field in each note's Loro root and
+  index entry, never filesystem birth time.
+- SQLite receives explicit canonical-key columns; `COLLATE NOCASE` is not used
+  as a Unicode normalizer.
+- The Loro index derives normalized links, all web wikilink entry points share
+  one resolver/open adapter, and import collisions are serialized blockers.
 
-- `sanitize_filename` in `crates/tesela-core/src/storage/markdown.rs:113`
-  converts filesystem-invalid punctuation to `-`, lowercases, and replaces
-  spaces.
-- The Logseq importer has an independent `safe_name` at
-  `crates/tesela-core/src/import_logseq.rs:240-246`; it first maps Logseq
-  `___` namespaces to `/`, then only maps `/`, `:`, and spaces.
-- Web's `gotoNote` in `web/src/lib/stores/active-pane-nav.svelte.ts:62` passes
-  its target through unchanged.
-- iOS `wikiAttributed` in
-  `app/Tesela-iOS/Sources/Components/BlockText.swift:303-319` lowercases and
-  replaces only spaces. `TeselaLink.pageSlug` at `:322-328` then takes the last
-  URL path component, silently turning `Parent/Child` into `child`.
+## Verified baseline
 
-`FsNoteStore::get_by_title` is a `WalkDir` scan
-(`crates/tesela-core/src/storage/filesystem.rs:182-204`) and is forbidden from
-the fallback path. The SQLite `notes.title` column is presently unindexed.
+The current tree has four divergent paths: core's `sanitize_filename`, the
+Logseq importer's `safe_name`, web's direct `gotoNote`, and iOS
+`BlockText.wikiAttributed`. The current Loro index derives `links` with raw
+`extract_wiki_links` targets in
+`crates/tesela-sync/src/engine/loro_engine/index.rs`; its FFI projection is
+`IndexEntryRecord` in `crates/tesela-sync-ffi/src/lib.rs`.
 
-## Binding design
+The server still maintains the rebuildable SQLite link cache:
+`SqliteIndex::update_links` stores `links.target` verbatim and
+`get_backlinks` matches it verbatim. The existing `notes.title` field has no
+canonical-key projection. `FsNoteStore::get_by_title` remains forbidden here:
+it walks files and is not a resolver fallback.
 
-### 1. One canonical target key
+The Graphite shell has two relevant raw navigation paths: the wiki click paths
+in `BlockEditor.svelte` call `gotoNote(target)`, and `GrPage.svelte`'s
+`openRef` opens a target directly with `openPageInFocused`. On iOS,
+`TeselaLink.pageSlug` takes only the final URL path component, losing the
+parent portion of `[[Parent/Child]]`.
 
-The canonical implementation belongs in `tesela-core`, next to the existing
-link/slug primitives. Its semantics—not a copied implementation—are the
-source of truth. TypeScript and Swift port the exact algorithm and are held to
-the shared fixture below.
+## Decision: one versioned normalization contract
 
-For a supplied page title, Logseq filename stem, or wikilink target:
+### Canonical key v1
 
-1. Trim leading and trailing Unicode whitespace, then normalize Unicode to
-   NFC.
-2. Interpret Logseq filename namespace spelling before separator handling:
-   literal `___` becomes `/`; `%2F` and `%3A` are decoded case-insensitively
-   to `/` and `:` respectively. Do not URL-decode any other escape; Markdown
-   wikilink text is not a URL.
-3. Apply locale-independent Unicode case folding. Device/user locale must not
-   affect a link key.
-4. Convert each maximal run of Unicode whitespace, `-`, `/`, `\\`, `:`, `*`,
-   `?`, `"`, `<`, `>`, `|`, or control characters to one ASCII `-`.
-   Other Unicode letters, numbers, and punctuation remain intact.
-5. Trim leading and trailing `-`. An empty result is invalid for lookup and is
-   recorded as an unresolved target; it is never coerced to a catch-all page.
+`tesela-core` owns the normative `wikilink-key-v1` contract. It accepts raw
+wikilink target text, title text, imported filename stems, and aliases. It
+returns either a non-empty canonical key or `invalid`; it never guesses a
+page. Markdown display text is never rewritten.
 
-This intentionally flattens `Parent___Child`, `Parent/Child`, and the
-importer's namespace convention to `parent-child`. It also makes `AI/ML`,
-`AI: ML`, and `AI ML` all normalize to `ai-ml`. Existing filenames are not
-renamed in this bead.
+The exact pipeline is:
 
-### 2. Resolution order and collision contract
+1. Trim Unicode whitespace and NFC-normalize.
+2. Decode only case-insensitive `%2F` and `%3A`; translate Logseq filename
+   spelling `___` to `/`. No other percent escape is decoded.
+3. Apply Unicode **Default Case Folding**, non-Turkic, from a pinned Unicode
+   CaseFolding data version. It is not locale-sensitive lowercasing.
+4. Replace each maximal run of Unicode whitespace, `-`, `/`, `\\`, `:`, `*`,
+   `?`, `"`, `<`, `>`, `|`, or control characters with one ASCII `-`.
+5. Trim leading and trailing `-`. The empty result is `invalid`.
 
-Resolve a target from all eligible candidates, then select exactly one in this
-order:
+The implementation must generate the Rust, TypeScript, and Swift case-fold
+lookup tables from one checked-in Unicode data revision. Platform
+`lowercased()`, `toLowerCase()`, SQLite `NOCASE`, and device locale are not an
+acceptable substitute. The shared fixture is both the conformance source and
+its generation input; ports call their production normalizer.
 
-1. **Exact slug:** canonical key equals the stored note slug/id.
-2. **Normalized title:** canonical key equals the canonicalized note title.
-3. **Alias:** canonical key equals the canonicalized alias.
+Required vectors include:
 
-Within a tier, select the earliest `created_at`; if timestamps tie, select the
-lexicographically smallest note id. Higher tiers always win over lower tiers:
-a title `Foo` wins over an earlier page whose alias is `Foo`. The resolver must
-still report every competing candidate, including candidates shadowed by a
-higher tier. Resolution is never silently ambiguous.
+| Raw input | Expected v1 key / rule |
+| --- | --- |
+| `Parent/Child`, `Parent___Child`, `Parent%2fChild`, `Parent%3AChild` | `parent-child` |
+| `Cafe\u{301}` | `café` after NFC |
+| `Straße`, `STRASSE` | `strasse` |
+| `ΟΣ`, `ος` | `οσ` (final sigma folds to sigma) |
+| `I`, `İ`, `ı` | `i`, `i\u{307}`, `ı`; no Turkish-locale special case |
+| `\u{2002}Parent\u{00A0}/\tChild` | `parent-child` |
+| `Parent///--- ::: Child` | `parent-child` |
+| `---` | invalid |
 
-The server owns resolution so web and iOS do not independently search stale
-client lists. Add an explicit read-only resolution response rather than
-changing the shape of the existing `GET /notes/{id}` response. Its contract
-includes the supplied target, canonical key, chosen note (or unresolved
-status), winning tier, and collision candidates with the selected candidate
-identified. Web and iOS must show a non-blocking visible collision notice when
-a link follows a tie-broken result; unresolved links remain visibly unresolved.
+### Durable Loro resolution data
 
-The alias tier is a locked compatibility contract for `tesela-8zd.6`. This
-bead does not import or author aliases; until that child supplies alias data,
-the tier is empty in live data. Its collision behavior is nevertheless covered
-by the resolver fixture now.
+The current index is a derived, always-resident Loro document with per-note
+`title`, `slug`, `tags`, and `links`; it is therefore the correct authority
+for relay-only iOS resolution. Bump its schema and rebuild it from per-note
+roots to add these fields to every index entry:
 
-### 3. Indexing and backlinks
+| Field | Meaning |
+| --- | --- |
+| `slug_key` | `wikilink-key-v1(slug)` |
+| `title_key` | `wikilink-key-v1(title)` |
+| `links_key` | newline-delimited normalized outbound targets; raw Markdown remains only in the note document |
+| `creation_order` | immutable durable tuple `(first_creation_millis, note_id_hex)` |
 
-Keep `[[display text]]` byte-for-byte in Markdown. At link-index time only,
-canonicalize the extracted target before the existing `LinkGraph::update_links`
-path writes it. The indexer already calls `extract_wiki_links` followed by
-`update_links` in `crates/tesela-core/src/indexer.rs:99-102` and on incremental
-updates at `:215-216`; mirror those paths rather than adding a second link
-indexer.
+`creation_order` is written once into the per-note Loro `root` map on its first
+creation and copied into the index entry. Subsequent `NoteUpsert`s may update
+title/slug/content but must not rewrite it. It is sourced from the first
+creation payload, not a filesystem timestamp. A legacy note with no root field
+receives the deterministic migration sentinel `(0, note_id_hex)` during index
+schema rebuild; this makes legacy collisions deterministic without pretending
+the filesystem can recover their original creation time. The tuple's note-id
+suffix is the total-order tie breaker.
 
-Backlink lookup uses the same canonical key. A normal server boot rebuild
-already re-extracts and updates links (`crates/tesela-server/src/lib.rs:938-946`),
-so existing mosaics gain normalized edges after restart; no separate reindex
-bead or destructive migration is required.
+`extract_index_metadata` must normalize wiki targets before it writes
+`links_key`; full rebuilds, relay imports, and iOS local index reads therefore
+agree. This closes the relay-only backlinks/navigation gap rather than merely
+repairing the server SQL cache.
 
-Add the required `notes.title COLLATE NOCASE` SQLite index in
-`crates/tesela-core/src/db/schema.rs` and query it for title candidates rather
-than walking files. If a canonical-title key must be materialized to represent
-the full separator-normalization contract, maintain and index that projection
-at the same SQLite write seam; it is a cache of the core normalizer, never a
-second algorithm. Do not route title lookup through `FsNoteStore::get_by_title`.
-The indexed queries must return all matches so the deterministic tie-break and
-collision report remain possible.
+Add a `tesela-sync` resolution record and operation that consume this Loro
+index, returning:
 
-### 4. Import planning and round trip
+- supplied target and canonical key;
+- `resolved` or `invalid`/`unavailable` result;
+- selected note id and slug when resolved;
+- winning tier; and
+- every candidate, including candidates shadowed by a higher tier.
 
-The importer uses the core normalizer for its generated slug, but never rewrites
-wikilink display text in converted note bodies. During import planning it must
-surface all slug-normalization collisions before apply: raw source names,
-canonical key, and every conflicting source. A slug collision blocks those
-plan items until the user renames or skips a source; apply must not select or
-silently overwrite one imported page with another.
+Candidate tiers are fixed: exact **stored slug key**, then normalized title,
+then alias. Alias candidates remain empty until `tesela-8zd.6` produces them,
+but the resolver record and fixture include the tier now. Within one tier,
+sort `(creation_order, note_id)` ascending. A collision is always returned;
+choosing the first candidate is deterministic but never silent.
 
-A write → parse → index → render round trip preserves `[[Parent/Child]]` in
-Markdown while navigation and backlinks use `parent-child`. This is a durable
-file-format invariant, not a display-only shortcut.
+Expose that operation through `tesela-sync-ffi` as a Swift-friendly resolution
+record. iOS obtains it from its local Loro engine, not from `tesela-server`, so
+navigation still works while the Mac is off. The server adds a read-only route
+that delegates to exactly this engine operation for web; it owns no separate
+candidate search or tie-break implementation.
 
-## Shared three-engine fixture
+### Rebuildable SQL projection and backlinks
 
-Create one JSON fixture under `crates/tesela-core/tests/fixtures/`, modeled on
-the existing Rust/web/iOS query-conformance consumers. Each consumer must call
-its real production normalization/resolution adapter, not duplicate fixture
-logic:
+SQLite remains a cache for server/web backlinks, not the resolution authority.
+Its migration adds explicit values populated by the core normalizer in the
+same note upsert transaction:
 
-- Rust: a `tesela-core` integration test beside the existing fixture consumers.
-- Web: a Node test under `web/tests/unit/` importing the production navigation
-  normalization/resolution adapter.
-- iOS: an XCTest under `app/Tesela-iOS/Tests/` calling the production link
-  adapter used by `BlockText`/`TeselaLink`.
+- `notes.slug_key`, `notes.title_key`, and `notes.creation_order` with indexes
+  on the two key fields; and
+- `links.target_key`, indexed for backlink lookup, while `links.target` keeps
+  the raw target for display/API compatibility.
 
-The fixture contract includes raw input, expected canonical key, candidate
-notes (slug/title/alias/created timestamp/id), selected result, all collision
-candidates, and whether source Markdown must remain unchanged. Required cases:
+`LinkGraph::update_links` computes `target_key` from the core normalizer; all
+existing server write paths already funnel through that method. Backlinks query
+by the target page's `slug_key`. A boot rebuild regenerates the cache from
+Markdown, but it must retain raw link display text. SQLite `NOCASE` is not part
+of the lookup algorithm.
 
-- `[[Parent/Child]]` navigates to and backlinks from `parent-child.md`.
-- `Parent___Child`, `%2F`, and `%3A` use the same namespace flattening.
-- `AI/ML`, `AI: ML`, and `AI ML` collide at `ai-ml` and are surfaced.
-- A case-variant target resolves identically without locale dependence.
-- Exact slug beats title; title beats alias; title-vs-title and alias-vs-alias
-  choose earliest creation then note id; title-vs-alias reports the shadowed
-  alias.
-- Empty/invalid-normalization targets remain unresolved.
-- The persisted `[[Parent/Child]]` text is unchanged while its stored backlink
-  key is `parent-child`.
+## Client adapters
+
+### Web
+
+Add one production `resolveAndOpenWikilink(rawTarget)` adapter. It calls the
+server's engine-backed resolver, shows a non-blocking collision notice when
+candidates exist, and only then passes the chosen note id to the buffer/route
+navigation primitive. It is the only web path allowed to open a wikilink.
+
+Replace both existing wiki click paths in `BlockEditor.svelte` and the
+link/backlink `GrPage.openRef` path with that adapter. `gotoNote` remains the
+low-level direct navigation primitive for callers that already have a canonical
+note id; no raw wikilink target may bypass resolution through it. Normal
+clicks on unavailable/invalid links leave the editor in place and show an
+unobtrusive error.
+
+### iOS
+
+`wikiAttributed` retains the full raw target as an opaque link intent; it must
+not encode namespace separators as URL path components and must not select
+`URL.pathComponents.last`. The OpenURL handling path calls the FFI resolver,
+then opens the returned note id. Thus the `Parent/Child` parent segment cannot
+be discarded. Collision and unavailable states are visible but do not make the
+link silently open a different note.
+
+## Import-plan safety and round trip
+
+Extend the serde `ImportPlan` returned by `POST /imports/logseq/plan` with a
+serializable normalization-conflict collection. Each entry contains the raw
+source names, source-relative paths, proposed normalized key, and every
+conflicting item. Each conflict is `blocking: true` until the supplied
+`ApplyDecisions` explicitly renames or skips all but one candidate. Apply
+rejects an unresolved blocking conflict; it cannot pick the first item or
+silently overwrite it. The existing plan/preview/apply flow is the surface to
+extend, not a second import API.
+
+The importer consumes `wikilink-key-v1` for generated target slugs and retains
+`[[Parent/Child]]` byte-for-byte in converted note bodies. The durable
+round-trip assertion is: parse → Loro index/SQL cache → navigation/backlink
+preserves that source Markdown while resolving and backlinking via
+`parent-child`.
+
+## Tests and acceptance
+
+One shared fixture must drive Rust core/sync, the real web adapter, and the
+FFI/iOS adapter. It covers every normalization vector above plus:
+
+- `[[Parent/Child]]` resolves and backlinks to `parent-child.md` after an
+  index rebuild on Rust, web, and iOS;
+- exact slug beats title; title beats alias; every losing candidate is exposed;
+- title/title and alias/alias ties use durable `creation_order`, then note id;
+- a case variant and all separator variants resolve identically;
+- an alias/title collision is represented even before alias authoring ships;
+- Loro relay import produces the same `links_key` as local creation; and
+- old index snapshots missing the new fields rebuild deterministically.
+
+Add server integration coverage for raw namespace Markdown → normalized SQL
+backlinks; add import-plan API coverage proving unresolved normalized-name
+collisions cannot apply; add a Graphite test proving every wiki/refcard entry
+uses the shared adapter; and add iOS coverage for the retained namespace.
+
+**Verify:**
+
+```bash
+cargo test -p tesela-core -p tesela-sync -p tesela-server
+pnpm --dir web check
+pnpm --dir web test:unit
+xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'
+```
 
 ## Sequencing
 
-### 1. Lock the canonical contract and ports
-
-**Work:** Add the fixture and the core normalizer; replace the four divergent
-normalization paths with ports of that contract. Inspect the verified current
-sites above and the existing query/inline-span fixture consumers before editing.
-Do not write a fresh parser per client.
-
-**Acceptance:** The required fixture matrix passes through the real Rust, web,
-and iOS adapters; `TeselaLink.pageSlug` retains all namespace components rather
-than `path.last`.
-
-**Verify:** `cargo test -p tesela-core`; `pnpm --dir web test:unit`; `xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`.
-
-### 2. Make indexed resolution authoritative
-
-**Work:** Add the SQLite title index/migration and server-owned resolver,
-including candidate collection, priority, deterministic tie-break, and the
-collision response. Mirror the existing schema migration and note-route idioms;
-do not change `GET /notes/{id}`'s response shape. Normalized-title lookup must
-be a database query, never a filesystem walk.
-
-**Acceptance:** Resolution returns the tiered winner and all collision context;
-`FsNoteStore::get_by_title` is not called by the path; a title lookup uses the
-new index; a normalized `Parent/Child` target resolves to `parent-child`.
-
-**Verify:** `cargo test -p tesela-core -p tesela-server`; `cargo clippy -p tesela-core -p tesela-server -- -D warnings`.
-
-### 3. Normalize link edges and import preflight
-
-**Work:** Canonicalize only extracted/indexed targets on both full rebuild and
-incremental update paths. Update the Logseq import planner to use the shared
-normalizer and produce actionable collision warnings before apply, preserving
-body display text.
-
-**Acceptance:** A fresh boot rebuild turns existing raw namespace links into
-backlink edges; import planning exposes every normalized filename collision
-and blocks its unsafe apply; converted Markdown still contains the original
-wikilink spelling.
-
-**Verify:** `cargo test -p tesela-core -p tesela-server`.
-
-### 4. Adopt the resolver in web and iOS navigation
-
-**Work:** Route web `gotoNote` and iOS wikilink taps through the server
-resolution contract. Preserve existing successful navigation behavior, make
-unresolved state visible, and surface collision notices without blocking the
-selected page. Mirror the existing web navigation and iOS `OpenURLAction`
-patterns; do not introduce a second client-side candidate search.
-
-**Acceptance:** `[[Parent/Child]]` opens the full parent-child page on web and
-iOS; a collision is observable to the user; an unresolved link does not
-silently navigate to a wrong page.
-
-**Verify:** `pnpm --dir web check`; `pnpm --dir web test:unit`; `xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`.
-
-### 5. Run the three-engine and restart regression gates
-
-**Work:** Run the shared fixture from all consumers and add a server integration
-case that starts from stored raw namespace links, rebuilds the index, and reads
-backlinks through the normal route.
-
-**Acceptance:** All required fixture cases pass on all three engines and the
-server regression proves raw display text plus normalized navigation/backlinks.
-
-**Verify:** `cargo test -p tesela-sync -p tesela-server && pnpm --dir web run check && pnpm --dir web test && xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`.
+1. Define v1 normalizer, Unicode-generated ports, fixture, and SQL migration.
+2. Add durable root/index fields, normalized link extraction, engine resolver,
+   and FFI records; prove two engines resolve the same collision after sync.
+3. Make server resolution/backlinks an adapter/cache projection of the engine.
+4. Make import plans block normalization collisions and preserve raw links.
+5. Route every web/iOS wikilink path through the resolver and run the complete
+   fixture plus platform integration gates.
 
 ## Out of scope
 
-- Implementing alias import/authoring/search UI (`tesela-8zd.6` owns that
-  data-production work).
-- Renaming existing Markdown files or rewriting visible wikilink text.
-- Fuzzy matching, search ranking, redirect histories, or automatic
-  collision-resolution UI.
-- Cross-mosaic links and external URL normalization.
-- A separate manual reindex command or data migration for existing links.
+- Alias authoring/import UI (`tesela-8zd.6`), fuzzy search, redirects, file
+  renames, and cross-mosaic/external URL links.
+- Treating a collision notice as user-driven collision resolution; import
+  collisions must be resolved before apply.
