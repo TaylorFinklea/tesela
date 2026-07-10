@@ -43,6 +43,20 @@ export function resolveImageUrl(src: string, base = apiBase()): string {
   return `${base.replace(/\/+$/, "")}/attachments/${normalizedParts.join("/")}`;
 }
 
+/** True for portable relative references to a PDF in the attachments route. */
+export function isPdfAttachmentRef(src: string): boolean {
+  const trimmed = src.trim();
+  if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) {
+    return false;
+  }
+
+  const path = trimmed.split(/[?#]/, 1)[0] ?? "";
+  const parts = path.replaceAll("\\", "/").split("/");
+  const attachmentIndex = parts.findIndex((part) => part.toLowerCase() === "attachments");
+  const filename = parts[parts.length - 1] ?? "";
+  return attachmentIndex >= 0 && parts.length > attachmentIndex + 1 && filename.toLowerCase().endsWith(".pdf");
+}
+
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
   eq() { return true; }
@@ -72,6 +86,40 @@ class ImageWidget extends WidgetType {
   }
   eq(other: ImageWidget) {
     return other.src === this.src && other.alt === this.alt;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** Inline PDF link rendered as a route-backed chip (markdown render, unfocused). */
+class PdfWidget extends WidgetType {
+  readonly src: string;
+  readonly label: string;
+  constructor(src: string, label: string) {
+    super();
+    this.src = src;
+    this.label = label;
+  }
+  toDOM() {
+    const link = document.createElement("a");
+    const url = resolveImageUrl(this.src);
+    const label = this.label.trim() || "PDF";
+    link.className = "cm-tesela-md-pdf";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `📄 ${label}`;
+    link.setAttribute("aria-label", `Open PDF ${label}`);
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.open(url, "_blank", "noopener,noreferrer");
+    });
+    return link;
+  }
+  eq(other: PdfWidget) {
+    return other.src === this.src && other.label === this.label;
   }
   ignoreEvent() {
     return true;
@@ -950,6 +998,21 @@ function buildDecorations(view: EditorView): Built {
       decos.push({ from, to, decoration: Decoration.replace({ widget: new ImageWidget(url, m[1]) }) });
     }
 
+    // Relative PDF links become route-backed chips. The original markdown
+    // remains in the document and reappears when the block is focused.
+    const pdfRanges: Array<[number, number]> = [];
+    MD_LINK_RE.lastIndex = 0;
+    while ((m = MD_LINK_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (insideCode(from) || !isPdfAttachmentRef(m[2])) {
+        MD_LINK_RE.lastIndex = from + 1;
+        continue;
+      }
+      pdfRanges.push([from, to]);
+      decos.push({ from, to, decoration: Decoration.replace({ widget: new PdfWidget(m[2].trim(), m[1]) }) });
+    }
+
     // Inline `code` spans next — their content is literal, so other inline
     // markup inside them is left untouched.
     const codeSpanRanges: Array<[number, number]> = [];
@@ -970,7 +1033,8 @@ function buildDecorations(view: EditorView): Built {
       insideCode(i) ||
       insideTable(i) ||
       codeSpanRanges.some(([a, b]) => i >= a && i < b) ||
-      imageRanges.some(([a, b]) => i >= a && i < b);
+      imageRanges.some(([a, b]) => i >= a && i < b) ||
+      pdfRanges.some(([a, b]) => i >= a && i < b);
 
     // Bold (`**` / `__`). Record ranges so italic can't re-match the inner `*`.
     const boldRanges: Array<[number, number]> = [];
@@ -1453,6 +1517,19 @@ export const teselaDecorationTheme = EditorView.theme({
     textUnderlineOffset: "3px",
     textDecorationThickness: "1px",
     cursor: "pointer",
+  },
+  ".cm-tesela-md-pdf": {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "4px",
+    color: "var(--primary)",
+    background: "var(--surface-2)",
+    border: "1px solid color-mix(in srgb, var(--primary) 24%, transparent)",
+    borderRadius: "5px",
+    padding: "1px 6px",
+    textDecoration: "none",
+    cursor: "pointer",
+    verticalAlign: "middle",
   },
   ".cm-tesela-md-quote": {
     borderLeft: "3px solid color-mix(in srgb, var(--foreground) 18%, transparent)",

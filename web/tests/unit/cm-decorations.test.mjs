@@ -13,6 +13,7 @@ import {
   promoteOrDemoteTag,
   findCodeFenceRanges,
   resolveImageUrl,
+  isPdfAttachmentRef,
 } from "../../src/lib/cm-decorations.ts";
 
 const EMPTY = { hide: new Set(), hideEmpty: new Set() };
@@ -139,6 +140,24 @@ test("resolveImageUrl preserves external URLs and the markdown source", () => {
   const source = "![icon](../attachments/icon.png)";
   assert.equal(resolveImageUrl("https://example.com/icon.png", "/api"), "https://example.com/icon.png");
   assert.equal(source, "![icon](../attachments/icon.png)");
+});
+
+test("isPdfAttachmentRef detects relative PDF attachment links only", () => {
+  assert.equal(isPdfAttachmentRef("../attachments/report.pdf"), true);
+  assert.equal(isPdfAttachmentRef("attachments/report.PDF"), true);
+  assert.equal(isPdfAttachmentRef("../attachments/report.png"), false);
+  assert.equal(isPdfAttachmentRef("https://example.com/report.pdf"), false);
+});
+
+test("resolveImageUrl resolves a portable PDF attachment source at render time", () => {
+  assert.equal(
+    resolveImageUrl("../attachments/report.pdf", "/api"),
+    "/api/attachments/report.pdf",
+  );
+  assert.equal(
+    resolveImageUrl("../attachments/report.pdf#page=2", "http://127.0.0.1:7474"),
+    "http://127.0.0.1:7474/attachments/report.pdf#page=2",
+  );
 });
 
 // ── findAtomicCursorRanges — code fences suppress markup ─────────────────
