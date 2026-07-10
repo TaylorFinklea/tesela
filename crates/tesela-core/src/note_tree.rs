@@ -576,7 +576,7 @@ fn strip_valid_bid_comments(content: &str) -> String {
 /// headings/prose (deleted), blank-line-separated prose after a bullet
 /// (folded into the block), non-canonical indentation or blank lines
 /// (normalized away), a missing frontmatter separator line (inserted).
-fn stamp_is_content_preserving(original: &str, stamped: &str) -> bool {
+pub fn stamp_is_content_preserving(original: &str, stamped: &str) -> bool {
     strip_valid_bid_comments(original) == strip_valid_bid_comments(stamped)
 }
 
