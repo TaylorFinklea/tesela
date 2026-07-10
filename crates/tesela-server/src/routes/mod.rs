@@ -35,6 +35,7 @@ pub fn build(state: AppState) -> Router {
     let app = Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
+        .route("/attachments", post(attachments::post_attachment))
         .route("/attachments/{*path}", get(attachments::get_attachment))
         .route("/notes", get(notes::list_notes).post(notes::create_note))
         .route("/notes/daily", get(notes::get_daily_note))
