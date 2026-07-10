@@ -73,7 +73,10 @@ pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
     }
 
     let healed = engine.heal_disjoint_twins().await;
-    println!("\nrepair-garbled-blocks: collapsed {} twin block(s):", healed.len());
+    println!(
+        "\nrepair-garbled-blocks: collapsed {} twin block(s):",
+        healed.len()
+    );
     for (note_id, bid) in &healed {
         println!("  healed note {} block {}", hex16(note_id), bid);
     }
