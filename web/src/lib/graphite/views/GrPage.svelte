@@ -31,6 +31,7 @@
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
+  import { pendingContentJump } from "$lib/stores/content-jump.svelte";
   import { toast } from "$lib/stores/toast.svelte";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
@@ -54,6 +55,7 @@
     enabled: !!pageId,
   }));
   const note = $derived(noteQuery.data as Note | undefined);
+  const contentJump = $derived(pendingContentJump(pageId));
 
   // ── backlinks for the linked-refs side pane ───────────────────────────
   const backlinksQuery = createQuery(() => ({
@@ -229,6 +231,7 @@
             {paneId}
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
+            contentJump={contentJump}
           />
         {/if}
       {/key}

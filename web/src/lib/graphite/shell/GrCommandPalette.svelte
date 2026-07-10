@@ -20,6 +20,7 @@
   import { createQuery } from '@tanstack/svelte-query';
   import { api } from '$lib/api-client';
   import type { Note } from '$lib/types/Note';
+  import type { SearchHit } from '$lib/types/SearchHit';
   import GrIcon from '$lib/graphite/GrIcon.svelte';
   import {
     isStationOpen,
@@ -38,6 +39,15 @@
   } from '$lib/command-registry.svelte';
   import * as keybindings from '$lib/stores/keybindings.svelte';
   import { scoreFuzzy, highlightRuns } from '$lib/fuzzy';
+  import {
+    CONTENT_SEARCH_DEBOUNCE_MS,
+    CONTENT_SEARCH_LIMIT,
+    debounce,
+    mapContentHits,
+    snippetRuns,
+    type ContentHitRow,
+  } from '$lib/content-search';
+  import { requestContentJump } from '$lib/stores/content-jump.svelte';
 
   interface Props {
     ctx: CommandContext;
@@ -52,7 +62,8 @@
 
   type CmdRow = { kind: 'cmd'; key: string; cmd: Command; score: number };
   type NoteRow = { kind: 'note'; key: string; note: Note; score: number };
-  type PaletteRow = CmdRow | NoteRow;
+  type ContentRow = ContentHitRow & { score: number };
+  type PaletteRow = CmdRow | NoteRow | ContentRow;
 
   /** Stable DOM ids for screen readers (aria-activedescendant, listbox child
    *  references). The row key (`c:<cmdId>` / `n:<noteId>`) is already unique
@@ -87,6 +98,35 @@
   const notesTotal = $derived(notesQuery.data?.total ?? allNotes.length);
   const notesTruncated = $derived(notesTotal > allNotes.length);
 
+  let contentHits = $state<SearchHit[]>([]);
+  let contentSearchGeneration = 0;
+  const scheduleContentSearch = debounce((q: string) => {
+    const generation = ++contentSearchGeneration;
+    void api.search(q, CONTENT_SEARCH_LIMIT)
+      .then((hits) => {
+        if (generation !== contentSearchGeneration) return;
+        contentHits = hits;
+      })
+      .catch((error) => {
+        if (generation !== contentSearchGeneration) return;
+        contentHits = [];
+        console.error('graphite: content search failed', error);
+      });
+  }, CONTENT_SEARCH_DEBOUNCE_MS);
+
+  $effect(() => {
+    if (!open) {
+      contentSearchGeneration++;
+      scheduleContentSearch.cancel();
+      contentHits = [];
+      return;
+    }
+    const q = query.trim();
+    contentSearchGeneration++;
+    contentHits = [];
+    if (q) scheduleContentSearch(q);
+  });
+
   // Flat, score-ranked row list — mirrors Station.filteredRows.
   const filteredRows = $derived.by<PaletteRow[]>(() => {
     const q = query.trim();
@@ -110,7 +150,11 @@
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_NOTES_IN_PALETTE);
-    return [...cmdRows, ...noteRows].sort((a, b) => b.score - a.score);
+    const contentRows: ContentRow[] = mapContentHits(contentHits, q).map((row) => ({
+      ...row,
+      score: 0,
+    }));
+    return [...cmdRows, ...noteRows, ...contentRows].sort((a, b) => b.score - a.score);
   });
 
   // Group the flat list for the `.gr-cmdk-grp` sections, preserving rank
@@ -119,8 +163,13 @@
   type Group = { label: string; rows: { row: PaletteRow; idx: number }[] };
   const groups = $derived.by<Group[]>(() => {
     const jumpRaw: PaletteRow[] = [];
+    const contentRaw: PaletteRow[] = [];
     const actionsRaw: PaletteRow[] = [];
     for (const row of filteredRows) {
+      if (row.kind === 'content') {
+        contentRaw.push(row);
+        continue;
+      }
       const isJump =
         row.kind === 'note' ||
         (row.kind === 'cmd' && (row.cmd.category === 'navigate' || row.cmd.category === 'tile'));
@@ -132,9 +181,11 @@
     // is the index space `selectedIdx` lives in.
     let di = 0;
     const jump = jumpRaw.map((row) => ({ row, idx: di++ }));
+    const content = contentRaw.map((row) => ({ row, idx: di++ }));
     const actions = actionsRaw.map((row) => ({ row, idx: di++ }));
     const out: Group[] = [];
     if (jump.length) out.push({ label: 'Jump to', rows: jump });
+    if (content.length) out.push({ label: 'Content hits', rows: content });
     if (actions.length) out.push({ label: 'Actions', rows: actions });
     return out;
   });
@@ -146,7 +197,9 @@
   const activeRowId = $derived(activeRow ? rowId(activeRow) : undefined);
 
   function rowLabel(row: PaletteRow): string {
-    return row.kind === 'cmd' ? row.cmd.label : (row.note.title || row.note.id);
+    if (row.kind === 'cmd') return row.cmd.label;
+    if (row.kind === 'note') return row.note.title || row.note.id;
+    return row.title || row.noteId;
   }
   function rowGlyph(row: PaletteRow): string {
     return row.kind === 'cmd' ? row.cmd.glyph : '→';
@@ -206,9 +259,17 @@
     openPageInFocused(asPageId(note.id));
   }
 
+  function openContentHitRow(row: ContentRow) {
+    closeStation();
+    restoreFocus();
+    requestContentJump({ noteId: row.noteId, query: row.query, snippet: row.snippet });
+    openPageInFocused(asPageId(row.noteId));
+  }
+
   async function runRow(row: PaletteRow) {
     if (row.kind === 'cmd') await runCommand(row.cmd);
-    else openNoteRow(row.note);
+    else if (row.kind === 'note') openNoteRow(row.note);
+    else openContentHitRow(row);
   }
 
   async function runSelected() {
@@ -327,10 +388,19 @@
               onclick={() => void runRow(row)}
             >
               <span class="gl" aria-hidden="true">{rowGlyph(row)}</span>
-              <span class="lb">
-                {#each highlightRuns(rowLabel(row), query.trim() ? scoreFuzzy(rowLabel(row), query.trim()).positions : []) as run}
-                  {#if run.match}<b>{run.ch}</b>{:else}{run.ch}{/if}
-                {/each}
+              <span class="lb" class:content={row.kind === 'content'}>
+                {#if row.kind === 'content'}
+                  <span class="content-title">{row.title}</span>
+                  <span class="content-snippet">
+                    {#each snippetRuns(row.snippet) as run}
+                      {#if run.match}<b>{run.text}</b>{:else}{run.text}{/if}
+                    {/each}
+                  </span>
+                {:else}
+                  {#each highlightRuns(rowLabel(row), query.trim() ? scoreFuzzy(rowLabel(row), query.trim()).positions : []) as run}
+                    {#if run.match}<b>{run.ch}</b>{:else}{run.ch}{/if}
+                  {/each}
+                {/if}
               </span>
               <span class="rk" aria-hidden="true">
                 {#if idx < 9}
@@ -438,6 +508,22 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .gr-cmdk-row .lb.content {
+    align-items: flex-start;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .gr-cmdk-row .content-title,
+  .gr-cmdk-row .content-snippet {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .gr-cmdk-row .content-snippet {
+    color: var(--subtle);
+    font-size: 11px;
   }
   .gr-cmdk-row .lb b {
     color: var(--fg);
