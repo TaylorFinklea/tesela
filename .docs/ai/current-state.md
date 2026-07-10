@@ -1,17 +1,19 @@
 # Current State
-Branch: main (NOT pushed — Taylor reviews+pushes; ~14 commits ahead incl. build-76 bump)
+Branch: main (NOT pushed — Taylor reviews+pushes; well ahead of origin: cycle-2 + the 2026-07-10 fleet cycle)
 
-## Plan — arch-review cycle 2 (2026-07-09, Fable 5) — COMPLETE; all lanes landed
-- [x] 77-agent review → Approach 3 locked (full parity → cutover day 1) → panel-hardened (Sonnet5+GLM+M3; 5 design blockers pre-filing) → ~45 beads filed, deps wired (nnm.3 = trial gate, blocked-by 21)
-- [x] Lanes ALL done + scored 5/5: nnm.1 audit (⚠ tesela-myh P1 — TESELA_LORO_RESEED deletes headings/prose graph-wide; gates trial + ewj.1; same class as wt5) · v5t.3 dictation P3 (merged 65dfa4ba, 500/500, TestFlight BUILD 76 uploaded) · b8d roadmap refresh (bedbca14)
-- [x] Epics sclr+cmdd+engc CLOSED · hdeck `20260709-arch-review-cycle2` · scorecard+bench: 7 dispatch entries
-- [?] v5t.3 awaiting human verify: Taylor device-tests build 76 live dictation (640 vs 1120ms default rides the memory feel); bead stays claimed
-- [ ] Next iteration Lead work: draft specs 8zd.5 (wikilink norm) · 8zd.7 (block refs bid-prestamp) · 8zd.3 (attachment sync) · u1t.3 (compaction) · triage tesela-myh (durable fix likely rides wt5's strip-and-lift design)
-- [ ] From 01:00 CDT 2026-07-10: GPT 5.6 live (sol/terra/luna in scorecard) — sol adversarial-reviews the Lead specs; terra candidate drafter under Fable review
+## Plan — GPT-5.6 fleet cycle (2026-07-10, Fable-led) — DONE; awaiting Taylor's product test
+- [x] 6 parity features shipped+merged (Lead-reviewed, web 805 green): FTS-in-⌘K (8zd.10), attachments route (8zd.1), paste-upload (8zd.2), PDF (8zd.4), rail (8zd.13), sync-dot (ewj.8), block-move (8zd.15)
+- [x] Security: attachment CSP-sandbox+nosniff (automated-review catch, live-verified). tesela-myh interim reseed gate SHIPPED (Sol, TDD) — still open tracking the durable wt5-class fix + gating nnm.3
+- [x] Lead specs 8zd.5/.7/.3: Terra draft → Sol REJECT (28 findings) → Terra revise (0 contested) → on main, implementation-ready
+- [x] Desktop rebuilt+relaunched on the fresh bundle (running). Server-side of all 6 features mechanically verified live (attachments/upload/traversal/FTS/relay-status). Scorecard+bench: 11 dispatches logged; digest regenerated
+- [?] AWAITING TAYLOR: product test `tesela/20260710-fleet-product-test` (6 UI checks) + build-76 dictation device test
+- [ ] Next wave (on Taylor's go): implement 8zd.5/.7/.3 from the approved specs — ALL ewj.1-gated (import-engine adoption lands first)
 
 ## Blockers
+- ewj.1 (import sole-writer) gates the whole parity wave + block-refs; still open, Lead-review-required
+- tesela-64g: sigterm_triggers_validated_backup now fails CONSISTENTLY — poisons `cargo test -p tesela-server`; workspace fmt drift blocks `cargo fmt --all --check` (bead filed)
 - dist/ 28M untracked artifact (Jul 8) — gitignore-or-delete pending Taylor
 
 ## Open Questions
-- Taylor: build-76 dictation device test · device topology check (relay URL == CF on iPhone+iPad) · confirm no phone-Logseq/DB-trial notes since Jun 16 · dist/ disposition
-- Older decks: dictation P2 product test · build-75 qv-web-jql follow-up · build-74
+- Taylor: product-test verdict (which of 6 pass) · push main · greenlight next parity wave
+- Taylor: build-76 live dictation test (640 vs 1120ms default) · device relay-topology check · phone-Logseq-since-Jun-16 · dist/ disposition
