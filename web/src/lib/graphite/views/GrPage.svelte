@@ -31,6 +31,8 @@
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
+  import { pendingContentJump } from "$lib/stores/content-jump.svelte";
+  import { isFavorite, toggleFavorite } from "$lib/stores/favorites.svelte";
   import { toast } from "$lib/stores/toast.svelte";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
@@ -54,6 +56,7 @@
     enabled: !!pageId,
   }));
   const note = $derived(noteQuery.data as Note | undefined);
+  const contentJump = $derived(pendingContentJump(pageId));
 
   // ── backlinks for the linked-refs side pane ───────────────────────────
   const backlinksQuery = createQuery(() => ({
@@ -80,6 +83,11 @@
 
   const noteType = $derived((note?.metadata.note_type ?? "note").toLowerCase());
   const tags = $derived(note?.metadata.tags ?? []);
+  const pageFavorite = $derived(isFavorite(pageId));
+
+  function togglePageFavorite() {
+    if (pageId) toggleFavorite(pageId);
+  }
 
   // ── note_type dispatch (mirror of NoteRenderer, Gate B) ────────────────
   const isDocumentMode = $derived(note?.metadata.custom?.mode === "document");
@@ -181,6 +189,18 @@
   <div class="gr-pane-head">
     <span class="ttl">{note?.title || pageId || "Untitled page"}</span>
     <GrTypeTag type={noteType === "tag" ? "person" : "project"}>{noteType}</GrTypeTag>
+    <button
+      type="button"
+      class="gr-favorite"
+      class:active={pageFavorite}
+      aria-pressed={pageFavorite}
+      aria-label={pageFavorite ? "Remove page from favorites" : "Add page to favorites"}
+      title={pageFavorite ? "Remove from favorites" : "Add to favorites"}
+      onclick={togglePageFavorite}
+    >
+      <GrIcon name="star" size={14} />
+      <span>{pageFavorite ? "Favorited" : "Favorite"}</span>
+    </button>
     <span class="sp"></span>
     {#if note}
       <span class="meta">{tags.length ? tags.map((t) => `#${t}`).join(" ") : ""}</span>
@@ -229,6 +249,7 @@
             {paneId}
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
+            contentJump={contentJump}
           />
         {/if}
       {/key}
@@ -325,6 +346,26 @@
     font-size: 10.5px;
     color: var(--faint);
     white-space: nowrap;
+  }
+  .gr-favorite {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    appearance: none;
+    border: 1px solid var(--line-2);
+    border-radius: 6px;
+    padding: 4px 7px;
+    background: transparent;
+    color: var(--subtle);
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .gr-favorite:hover,
+  .gr-favorite.active {
+    color: var(--coral);
+    border-color: var(--coral-line);
+    background: var(--coral-dim);
   }
   .gr-outline {
     flex: 1;

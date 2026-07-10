@@ -1,4 +1,5 @@
 mod agenda;
+mod attachments;
 mod calendar;
 mod commands;
 mod data_ops;
@@ -34,6 +35,7 @@ pub fn build(state: AppState) -> Router {
     let app = Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
+        .route("/attachments/{*path}", get(attachments::get_attachment))
         .route("/notes", get(notes::list_notes).post(notes::create_note))
         .route("/notes/daily", get(notes::get_daily_note))
         .route(

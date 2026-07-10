@@ -87,6 +87,90 @@ async fn boot_health_shutdown(mosaic: &Path) -> u16 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type() {
+    let dir = TempDir::new().expect("temp mosaic");
+    make_fixture_mosaic(dir.path()).expect("fixture mosaic");
+    fs::write(
+        dir.path().join("attachments/icon.png"),
+        [0x89, 0x50, 0x4e, 0x47],
+    )
+    .expect("attachment bytes");
+    fs::write(dir.path().join("outside.txt"), b"outside mosaic").expect("outside bytes");
+
+    std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
+    std::env::set_var("TESELA_DISABLE_MDNS", "1");
+    std::env::set_var("TESELA_DISABLE_PEER_SYNC", "1");
+    std::env::set_var("TESELA_GROUP_KEY_FILE_STORE", "1");
+
+    let config = ServeConfig::resolve(Some(dir.path().to_path_buf())).expect("resolve mosaic");
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        serve(
+            config,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            move |addr| {
+                let _ = bound_tx.send(addr);
+            },
+        )
+        .await
+    });
+    let addr = tokio::time::timeout(Duration::from_secs(20), bound_rx)
+        .await
+        .expect("serve bound within 20s")
+        .expect("on_bound fired with the address");
+
+    let client = reqwest::Client::new();
+    let served = client
+        .get(format!("http://{addr}/attachments/icon.png"))
+        .send()
+        .await
+        .expect("attachment request");
+    let served_status = served.status();
+    let served_content_type = served
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_csp = served
+        .headers()
+        .get(reqwest::header::CONTENT_SECURITY_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_nosniff = served
+        .headers()
+        .get(reqwest::header::X_CONTENT_TYPE_OPTIONS)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_bytes = served.bytes().await.expect("attachment body");
+
+    let traversal = client
+        .get(format!("http://{addr}/attachments/%2E%2E/outside.txt"))
+        .send()
+        .await
+        .expect("traversal request");
+    let traversal_status = traversal.status();
+
+    shutdown_tx.send(()).expect("shutdown receiver still alive");
+    tokio::time::timeout(Duration::from_secs(20), handle)
+        .await
+        .expect("serve returns within 20s")
+        .expect("serve task did not panic")
+        .expect("serve returned Ok");
+
+    assert_eq!(served_status, reqwest::StatusCode::OK);
+    assert_eq!(served_content_type.as_deref(), Some("image/png"));
+    // User-imported bytes on the app origin must never execute (SVG-XSS class):
+    // the response carries a scriptless-sandbox CSP + nosniff.
+    assert_eq!(served_csp.as_deref(), Some("default-src 'none'; sandbox"));
+    assert_eq!(served_nosniff.as_deref(), Some("nosniff"));
+    assert_eq!(served_bytes.as_ref(), [0x89, 0x50, 0x4e, 0x47]);
+    assert!(!traversal_status.is_success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn serve_boots_in_process_serves_health_and_shuts_down_releasing_the_flock() {
     let dir = TempDir::new().expect("temp mosaic");
     make_fixture_mosaic(dir.path()).expect("fixture mosaic");

@@ -7,6 +7,7 @@
   import type { AmbientRendererProps } from "$lib/buffer/protocol";
   import type { AgendaRow as AgendaRowT } from "$lib/types/AgendaRow";
   import AgendaDay from "./AgendaDay.svelte";
+  import { agendaQueryKey, agendaRange } from "$lib/graphite/rail-utils";
 
   let { onNavigate }: AmbientRendererProps = $props();
   void onNavigate;
@@ -24,23 +25,14 @@
   // included — the server gates `date >= from`, so without lookback the
   // overdue bucket is unreachable. 90 days catches recently-missed work
   // without flooding the view with ancient abandoned tasks.
-  const LOOKBACK_DAYS = 90;
-  const lowerIso = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() - LOOKBACK_DAYS);
-    return isoDate(d);
-  })();
+  const lowerIso = agendaRange(new Date(), 0).from;
   let upperOffset = $state(60); // days past today
   let includeDone = $state(false);
 
-  const upperIso = $derived.by(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + upperOffset);
-    return isoDate(d);
-  });
+  const upperIso = $derived.by(() => agendaRange(new Date(), upperOffset).to);
 
   const q = createQuery(() => ({
-    queryKey: ["agenda", { from: lowerIso, to: upperIso, includeDone }] as const,
+    queryKey: agendaQueryKey(lowerIso, upperIso, includeDone),
     queryFn: () => api.getAgenda(lowerIso, upperIso, includeDone),
   }));
 

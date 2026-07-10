@@ -31,6 +31,7 @@
   import { onMount, onDestroy } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
+  import { findContentBlockId } from "$lib/content-search";
   import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
   import type { DetectConfig, TagDetectSpec } from "$lib/task-tokens";
   import { tagColor } from "$lib/tag-color";
@@ -73,6 +74,7 @@
     registerPaneOutliner,
     unregisterPaneOutliner,
   } from "$lib/stores/pane-tree.svelte";
+  import { clearContentJump, type ContentJump } from "$lib/stores/content-jump.svelte";
 
   let {
     noteId,
@@ -86,6 +88,7 @@
     onDrillIn,
     isPinnedTab = false,
     paneId,
+    contentJump = null,
   }: {
     noteId: string;
     body: string;
@@ -114,6 +117,7 @@
      *  registry so later phases can route events to "the outliner in
      *  pane X". Unset for the legacy chrome (column-view, journal, etc). */
     paneId?: string;
+    contentJump?: ContentJump | null;
   } = $props();
 
   // Fetch notes list for autocomplete + tag-property visibility resolution.
@@ -1978,6 +1982,28 @@
   });
 
   let rootEl = $state<HTMLDivElement | undefined>();
+  let appliedContentJumpId = 0;
+  $effect(() => {
+    const jump = contentJump;
+    if (!jump || jump.id === appliedContentJumpId || !rootEl) return;
+    const blockId = findContentBlockId(visibleBlocks, jump.query, jump.snippet);
+    const index = blockId ? visibleBlocks.findIndex((block) => block.id === blockId) : -1;
+    if (index < 0) return;
+
+    appliedContentJumpId = jump.id;
+    focusedIndex = index;
+    autoFocused = true;
+    clearContentJump(jump.id);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const cm = rootEl?.querySelector<HTMLElement>(
+          `[data-block-vi="${index}"] .cm-editor .cm-content`,
+        );
+        cm?.scrollIntoView({ block: "center", behavior: "auto" });
+        cm?.focus();
+      });
+    });
+  });
   let ctxMenu = $state<{ x: number; y: number; blockId: string; blockText: string; blockNoteId: string } | null>(null);
 
   /** True when DOM focus is anywhere inside this outliner's subtree.

@@ -16,6 +16,32 @@ import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, StateEf
 import { tokenizeCode } from "./code-highlight.ts";
 import { detectTokens, resolveDetectSpec, type DetectConfig } from "./task-tokens.ts";
 import { getBlockTags } from "./block-tags.ts";
+import { apiBase } from "./runtime-base.ts";
+
+/** Resolve a markdown image source when the unfocused editor renders it.
+ *  Relative sources are kept relative in the document and served from the
+ *  mosaic's attachments route; absolute URLs are left untouched. */
+export function resolveImageUrl(src: string, base = apiBase()): string {
+  const trimmed = src.trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) {
+    return trimmed;
+  }
+
+  const parts = trimmed.replaceAll("\\", "/").split("/");
+  const attachmentIndex = parts.findIndex((part) => part.toLowerCase() === "attachments");
+  const relativeParts = attachmentIndex >= 0 ? parts.slice(attachmentIndex + 1) : parts;
+  const normalizedParts: string[] = [];
+  for (const part of relativeParts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      normalizedParts.pop();
+    } else {
+      normalizedParts.push(part);
+    }
+  }
+
+  return `${base.replace(/\/+$/, "")}/attachments/${normalizedParts.join("/")}`;
+}
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -38,7 +64,7 @@ class ImageWidget extends WidgetType {
   }
   toDOM() {
     const img = document.createElement("img");
-    img.src = this.src;
+    img.src = resolveImageUrl(this.src);
     img.alt = this.alt;
     img.className = "cm-tesela-md-image";
     img.loading = "lazy";
@@ -905,10 +931,11 @@ function buildDecorations(view: EditorView): Built {
       if (to > from) decos.push({ from, to, decoration: mdMarkerHide });
     };
 
-    // Images `![alt](url)` — replace with an inline <img> (http(s) only in v1;
-    // relative/attachment paths stay raw until there's an attachments HTTP
-    // route). Matched FIRST + recorded so the `[alt](url)` tail isn't also read
-    // as a plain link, and so inline markup inside doesn't fire.
+    // Images `![alt](url)` — replace with an inline <img>. The widget keeps
+    // the raw markdown source and resolves it only while rendering, so a
+    // relative attachment path remains portable in saved content. Matched
+    // FIRST + recorded so the `[alt](url)` tail isn't also read as a plain
+    // link, and so inline markup inside doesn't fire.
     const imageRanges: Array<[number, number]> = [];
     MD_IMAGE_RE.lastIndex = 0;
     while ((m = MD_IMAGE_RE.exec(doc)) !== null) {
@@ -919,7 +946,6 @@ function buildDecorations(view: EditorView): Built {
         continue;
       }
       const url = m[2].trim();
-      if (!/^https?:\/\//i.test(url)) continue; // only external for now
       imageRanges.push([from, to]);
       decos.push({ from, to, decoration: Decoration.replace({ widget: new ImageWidget(url, m[1]) }) });
     }
