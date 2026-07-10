@@ -95,6 +95,11 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
         [0x89, 0x50, 0x4e, 0x47],
     )
     .expect("attachment bytes");
+    fs::write(
+        dir.path().join("attachments/report.pdf"),
+        b"%PDF-1.7\nfixture",
+    )
+    .expect("PDF attachment bytes");
     fs::write(dir.path().join("outside.txt"), b"outside mosaic").expect("outside bytes");
 
     std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
@@ -177,6 +182,29 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
         .map(str::to_owned);
     let served_bytes = served.bytes().await.expect("attachment body");
 
+    let served_pdf = client
+        .get(format!("http://{addr}/attachments/report.pdf"))
+        .send()
+        .await
+        .expect("PDF attachment request");
+    let served_pdf_status = served_pdf.status();
+    let served_pdf_content_type = served_pdf
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_pdf_csp = served_pdf
+        .headers()
+        .get(reqwest::header::CONTENT_SECURITY_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_pdf_nosniff = served_pdf
+        .headers()
+        .get(reqwest::header::X_CONTENT_TYPE_OPTIONS)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_pdf_bytes = served_pdf.bytes().await.expect("PDF attachment body");
+
     let traversal = client
         .get(format!("http://{addr}/attachments/%2E%2E/outside.txt"))
         .send()
@@ -206,6 +234,14 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
     assert_eq!(served_csp.as_deref(), Some("default-src 'none'; sandbox"));
     assert_eq!(served_nosniff.as_deref(), Some("nosniff"));
     assert_eq!(served_bytes.as_ref(), [0x89, 0x50, 0x4e, 0x47]);
+    assert_eq!(served_pdf_status, reqwest::StatusCode::OK);
+    assert_eq!(served_pdf_content_type.as_deref(), Some("application/pdf"));
+    assert_eq!(
+        served_pdf_csp.as_deref(),
+        Some("default-src 'none'; sandbox")
+    );
+    assert_eq!(served_pdf_nosniff.as_deref(), Some("nosniff"));
+    assert_eq!(served_pdf_bytes.as_ref(), b"%PDF-1.7\nfixture");
     assert!(!traversal_status.is_success());
 }
 
