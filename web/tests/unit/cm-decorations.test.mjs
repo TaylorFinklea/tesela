@@ -12,6 +12,7 @@ import {
   findTrailingClusterStart,
   promoteOrDemoteTag,
   findCodeFenceRanges,
+  resolveImageUrl,
 } from "../../src/lib/cm-decorations.ts";
 
 const EMPTY = { hide: new Set(), hideEmpty: new Set() };
@@ -122,6 +123,22 @@ test("findCodeFenceRanges: two separate fences in one block", () => {
     { from: 0, to: 9, closed: true },
     { from: 10, to: 19, closed: true },
   ]);
+});
+
+// ── image URL resolution ─────────────────────────────────────────────────
+
+test("resolveImageUrl maps imported relative attachment paths to the API", () => {
+  assert.equal(resolveImageUrl("../attachments/icon.png", "/api"), "/api/attachments/icon.png");
+  assert.equal(
+    resolveImageUrl("attachments/icon.png", "http://127.0.0.1:7474"),
+    "http://127.0.0.1:7474/attachments/icon.png",
+  );
+});
+
+test("resolveImageUrl preserves external URLs and the markdown source", () => {
+  const source = "![icon](../attachments/icon.png)";
+  assert.equal(resolveImageUrl("https://example.com/icon.png", "/api"), "https://example.com/icon.png");
+  assert.equal(source, "![icon](../attachments/icon.png)");
 });
 
 // ── findAtomicCursorRanges — code fences suppress markup ─────────────────
