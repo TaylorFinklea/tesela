@@ -25,7 +25,21 @@ pub async fn get_attachment(
         }
     })?;
 
-    Ok(([(header::CONTENT_TYPE, content_type(&file))], bytes))
+    // Attachments are user-imported bytes served on the app origin: without
+    // a response CSP, navigating to a malicious SVG would execute script
+    // with same-origin API access. `sandbox`/`default-src 'none'` neutralizes
+    // that while <img> embedding (which never runs SVG script) keeps working.
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type(&file).to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox".to_string(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        bytes,
+    ))
 }
 
 fn resolve_attachment_path(mosaic_root: &Path, relative_path: &str) -> AppResult<PathBuf> {

@@ -134,6 +134,16 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let served_csp = served
+        .headers()
+        .get(reqwest::header::CONTENT_SECURITY_POLICY)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let served_nosniff = served
+        .headers()
+        .get(reqwest::header::X_CONTENT_TYPE_OPTIONS)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let served_bytes = served.bytes().await.expect("attachment body");
 
     let traversal = client
@@ -152,6 +162,10 @@ async fn attachments_route_rejects_traversal_and_serves_bytes_with_content_type(
 
     assert_eq!(served_status, reqwest::StatusCode::OK);
     assert_eq!(served_content_type.as_deref(), Some("image/png"));
+    // User-imported bytes on the app origin must never execute (SVG-XSS class):
+    // the response carries a scriptless-sandbox CSP + nosniff.
+    assert_eq!(served_csp.as_deref(), Some("default-src 'none'; sandbox"));
+    assert_eq!(served_nosniff.as_deref(), Some("nosniff"));
     assert_eq!(served_bytes.as_ref(), [0x89, 0x50, 0x4e, 0x47]);
     assert!(!traversal_status.is_success());
 }
