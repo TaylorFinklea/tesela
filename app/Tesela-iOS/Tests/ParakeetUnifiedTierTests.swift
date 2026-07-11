@@ -33,6 +33,28 @@ final class ParakeetUnifiedTierTests: XCTestCase {
         XCTAssertEqual(ParakeetUnifiedTier.tier2080ms.contextSuffix, "70_13_13")
     }
 
+    func testEncoderCachePathIncludesFluidAudioRepositoryDirectory() {
+        let base = URL(fileURLWithPath: "/tmp/TranscriptionModels/parakeet-unified", isDirectory: true)
+
+        let encoder = TranscriptionStore.parakeetUnifiedEncoderURL(
+            baseDirectory: base,
+            tier: .tier640ms
+        )
+
+        XCTAssertEqual(
+            encoder.path,
+            "/tmp/TranscriptionModels/parakeet-unified/parakeet-unified-en-0.6b/"
+                + "parakeet_unified_encoder_streaming_70_7_1_int8.mlmodelc"
+        )
+    }
+
+    func testDownloadProgressExpandsFluidAudioDownloadPhaseToFullRange() {
+        XCTAssertEqual(TranscriptionStore.parakeetUnifiedDownloadFraction(0), 0)
+        XCTAssertEqual(TranscriptionStore.parakeetUnifiedDownloadFraction(0.25), 0.5)
+        XCTAssertEqual(TranscriptionStore.parakeetUnifiedDownloadFraction(0.5), 1)
+        XCTAssertEqual(TranscriptionStore.parakeetUnifiedDownloadFraction(1), 1)
+    }
+
     // MARK: - Raw value round-trip (voice.streamingTier persistence shape)
 
     func testRawValueRoundTrip() {

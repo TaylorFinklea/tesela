@@ -119,33 +119,54 @@ final class TranscriptionStore: NSObject, ObservableObject {
         }
     }
 
-    /// Parakeet Unified downloads go through
-    /// `StreamingUnifiedAsrManager.loadModels(to:)`, which fetches +
-    /// caches the CoreML set for the currently-configured latency tier
-    /// (`ParakeetUnifiedTier.active`). Like the Parakeet branch above, it
-    /// reports no progress, so the row shows an indeterminate state.
+    /// Download the currently-configured Parakeet Unified tier without
+    /// loading its ~600 MB CoreML encoder into memory from Settings.
     private func startParakeetUnifiedDownload(_ model: TranscriptionModel) {
-        states[model.id] = .downloading(progress: 0, bytesWritten: 0, totalBytes: 0)
+        states[model.id] = .downloading(
+            progress: 0,
+            bytesWritten: 0,
+            totalBytes: model.sizeBytes
+        )
         let id = model.id
         let size = model.sizeBytes
         let tier = ParakeetUnifiedTier.active
         let cacheURL = Self.parakeetUnifiedCacheURL()
+        let encoderFile = ModelNames.ParakeetUnified.streamingEncoderFile(
+            precision: .int8,
+            contextSuffix: tier.contextSuffix
+        )
         parakeetTasks[id] = Task { [weak self] in
+            guard let store = self else { return }
             do {
-                let frames = tier.contextFrames
-                let config = UnifiedConfig(leftFrames: frames.left, chunkFrames: frames.chunk, rightFrames: frames.right)
-                let manager = StreamingUnifiedAsrManager(config: config, encoderPrecision: .int8)
-                try await manager.loadModels(to: cacheURL)
-                guard let self, !Task.isCancelled else { return }
-                self.states[id] = .downloaded(sizeOnDisk: size)
-                if self.activeModelId.isEmpty { self.activeModelId = id }
-                self.parakeetTasks.removeValue(forKey: id)
-                self.persistStateAsync()
+                try await ModelHub.download(
+                    .parakeetUnified,
+                    to: cacheURL,
+                    additionalModelNames: [encoderFile]
+                ) { progress in
+                    let fraction = Self.parakeetUnifiedDownloadFraction(
+                        progress.fractionCompleted
+                    )
+                    Task { @MainActor [weak store] in
+                        guard let store,
+                              case .downloading = store.state(for: id)
+                        else { return }
+                        store.states[id] = .downloading(
+                            progress: fraction,
+                            bytesWritten: Int64(Double(size) * fraction),
+                            totalBytes: size
+                        )
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                store.states[id] = .downloaded(sizeOnDisk: size)
+                if store.activeModelId.isEmpty { store.activeModelId = id }
+                store.parakeetTasks.removeValue(forKey: id)
+                store.persistStateAsync()
             } catch {
-                guard let self, !Task.isCancelled else { return }
-                self.states[id] = .failed(error.localizedDescription)
-                self.parakeetTasks.removeValue(forKey: id)
-                self.persistStateAsync()
+                guard !Task.isCancelled else { return }
+                store.states[id] = .failed(error.localizedDescription)
+                store.parakeetTasks.removeValue(forKey: id)
+                store.persistStateAsync()
             }
         }
     }
@@ -220,12 +241,8 @@ final class TranscriptionStore: NSObject, ObservableObject {
         return dir
     }
 
-    /// Cache directory for the Parakeet Unified model family — shared
-    /// across ALL latency tiers (only the encoder file differs per tier;
-    /// decoder/joint/vocab are identical, so one directory holds however
-    /// many tiers have been downloaded). Passed to
-    /// `StreamingUnifiedAsrManager.loadModels(to:)` so the app owns the
-    /// files (and `deleteModel` can remove them).
+    /// Base cache directory passed to FluidAudio. FluidAudio appends its
+    /// `Repo.parakeetUnified.folderName` below this directory.
     nonisolated static func parakeetUnifiedCacheURL() -> URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -235,6 +252,28 @@ final class TranscriptionStore: NSObject, ObservableObject {
             .appendingPathComponent("parakeet-unified", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Location of a downloaded tier's encoder after FluidAudio appends its
+    /// repository directory to the caller-supplied cache base.
+    nonisolated static func parakeetUnifiedEncoderURL(
+        baseDirectory: URL,
+        tier: ParakeetUnifiedTier
+    ) -> URL {
+        let encoderFile = ModelNames.ParakeetUnified.streamingEncoderFile(
+            precision: .int8,
+            contextSuffix: tier.contextSuffix
+        )
+        return baseDirectory
+            .appendingPathComponent(Repo.parakeetUnified.folderName, isDirectory: true)
+            .appendingPathComponent(encoderFile, isDirectory: true)
+    }
+
+    /// `ModelHub.download` reports the download half of FluidAudio's combined
+    /// download-and-compile progress range. This screen does not compile/load,
+    /// so expand that 0...0.5 phase to the full 0...1 range.
+    nonisolated static func parakeetUnifiedDownloadFraction(_ fraction: Double) -> Double {
+        min(max(fraction * 2, 0), 1)
     }
 
     // MARK: - Persistence
@@ -279,9 +318,10 @@ final class TranscriptionStore: NSObject, ObservableObject {
                 // directly so this can't drift from what `loadModels`
                 // actually writes.
                 let tier = ParakeetUnifiedTier.active
-                let encoderFile = ModelNames.ParakeetUnified.streamingEncoderFile(
-                    precision: .int8, contextSuffix: tier.contextSuffix)
-                let encoderPath = Self.parakeetUnifiedCacheURL().appendingPathComponent(encoderFile)
+                let encoderPath = Self.parakeetUnifiedEncoderURL(
+                    baseDirectory: Self.parakeetUnifiedCacheURL(),
+                    tier: tier
+                )
                 rebuilt[model.id] = FileManager.default.fileExists(atPath: encoderPath.path)
                     ? .downloaded(sizeOnDisk: model.sizeBytes)
                     : .available

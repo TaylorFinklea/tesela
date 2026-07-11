@@ -125,6 +125,13 @@ struct TranscriptionModelsView: View {
                 }
             }
             actionRow(for: model)
+            if case .failed(let message) = store.state(for: model.id) {
+                Text(message)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(theme.typeTask)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -144,12 +151,6 @@ struct TranscriptionModelsView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .tint(theme.accentPrimary)
-                if case .failed(let msg) = state {
-                    Text(msg)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(theme.typeTask)
-                        .lineLimit(1)
-                }
             case .downloading(let progress, let written, let total):
                 if total > 0 {
                     ProgressView(value: progress)
