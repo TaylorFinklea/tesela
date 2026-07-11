@@ -12,8 +12,7 @@ Branch: main (NOT pushed — Taylor reviews+pushes; well ahead of origin: cycle-
 ## Blockers
 - ewj.1 (import sole-writer) gates the whole parity wave + block-refs; still open, Lead-review-required
 - tesela-64g: sigterm_triggers_validated_backup now fails CONSISTENTLY — poisons `cargo test -p tesela-server`; workspace fmt drift blocks `cargo fmt --all --check` (bead filed)
-- dist/ 28M untracked artifact (Jul 8) — gitignore-or-delete pending Taylor
 
 ## Open Questions
 - Taylor: product-test verdict (which of 6 pass) · push main · greenlight next parity wave
-- Taylor: next-build live dictation retest (download + 640 vs 1120ms default) · device relay-topology check · phone-Logseq-since-Jun-16 · dist/ disposition
+- Taylor: next-build live dictation retest (download + 640 vs 1120ms default) · device relay-topology check · phone-Logseq-since-Jun-16
