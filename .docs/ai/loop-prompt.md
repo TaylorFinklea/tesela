@@ -1,85 +1,45 @@
-# Tesela Senior/Junior Backlog Loop Prompt
+# Tesela phase-loop prompt
 
-You are running one headless `ralph` iteration in `/Users/tfinklea/git/tesela`.
+You are one fresh-context iteration of the plan in
+`.docs/ai/current-state.md`. Execute exactly one phase; never scan the old
+roadmap backlog for a different item.
 
-Self-identify your tier before work.
-- If you are `kimi-k2.7-code`, `gpt-5.5`, `gpt-5`, Codex, or another equivalent frontier coding model, treat yourself as **Senior (T2)**.
-- If you are `minimax-m3`, `minimax`, or a similar fast mechanical model, treat yourself as **Junior (T3)**.
+## Startup
 
-If you are below an item's `tier_floor`, stop and report instead of starting it.
+1. Run `bd prime`.
+2. Read `AGENTS.md`, `.docs/ai/current-state.md`, and only the roadmap `Now`
+   section needed to understand the active product arc.
+3. Read the phase spec referenced by the first unchecked `## Plan` item.
+4. Run `git log --oneline -5` and `git status --short --branch`. Stop if the
+   tree contains an unrelated or unclear change.
+5. Self-check the item's `tier_floor`. Current MiniMax M3 and GLM-5.2 roster
+   lanes are Senior; a model below the floor stops without editing.
 
-## Non-negotiable startup
+## Selection and work
 
-1. Read `AGENTS.md`.
-2. Read `.docs/ai/current-state.md`, `.docs/ai/roadmap.md`, and `.docs/ai/phases/command-registry-spec.md`.
-3. Run `git log --oneline -5` and `git status --short --branch`.
-4. If the working tree is dirty before you start, inspect the diff. If it is unrelated or unclear, stop and report.
+- Pick exactly the first unchecked item in `.docs/ai/current-state.md`'s
+  `## Plan`. Do not use `bd ready`, roadmap Backlog, or a historical batch to
+  substitute another task.
+- Read every referenced file before editing. Follow the phase spec and existing
+  code patterns; do not invent adjacent scope.
+- Use TDD: add the focused failing test, confirm the expected failure,
+  implement the smallest production change, then run the item's exact
+  `Verify:` command.
+- Never read or write the live mosaic. Runtime fixtures use temp/sandbox data;
+  `~/logseq` is read-only and may only be copied when the phase explicitly says
+  so.
+- You are in the shared tree. Do not run `git stash`, `git checkout`,
+  `git reset`, or mutate git state for diagnostic comparisons. Do not push.
 
-## Item selection
+## Close the iteration
 
-Pick exactly ONE unchecked backlog item from `.docs/ai/roadmap.md`.
-
-Priority order:
-1. Items in `### 2026-06-13 Ralph batch — command registry foundation (keyboard-first spine)`.
-2. Senior-safe unchecked items in `### Opencode-ready reliability polish (2026-06-12)` (if any remain).
-3. Senior-safe unchecked items in `### Codex/pi mono coordinator batch (2026-06-12)` (if any remain).
-4. Any later `## Backlog` item only if it has the full fields below and is clearly inside the safe zones.
-
-Tier routing:
-- **Senior models** may pick items with `tier_floor: senior` or `tier_floor: junior`.
-- **Junior models** may pick items with `tier_floor: junior` only. Do NOT wait for senior items to complete; junior and senior items may run in parallel.
-- If no item at your tier remains, stop and report "batch complete at tier X".
-
-Allowed:
-- `complexity` is `S`, `M`, or `L` (senior models only for `L`)
-- the item has explicit `Scope`, `Files`, `Acceptance`, and `Verify` fields
-- the item is not marked `ESCALATE`
-- the files are outside the off-limits list below
-
-Forbidden:
-- `tier_floor: lead`
-- `complexity: XL`
-- any `ESCALATE (Opus/Fable)` item
-- sync hot path, RelayTicker behavior, pairing, FFI/UniFFI, generated bindings, signing, TestFlight, `project.yml`, real mosaic data, or large refactors
-- old mechanical backlog bullets that do not carry `Scope` / `Files` / `Acceptance` / `Verify` / `tier_floor` / `complexity`
-
-For the 2026-06-13 batch, prefer the item whose `ralph_model` matches your model when multiple items are available at your tier. If none match, take the next available item at your tier.
-
-## Work rules
-
-- Implement only the selected item.
-- Read referenced files before editing.
-- Touch only files listed by the selected item unless the item explicitly requires a new test file.
-- Do not push.
-- Do not run against the live mosaic. Use temp/sandbox data under `/tmp` if runtime verification needs a server.
-- Keep the change small and reviewable for Opus/Fable inheritance.
-- If an item is marked `manual` in its Verify, run the automated parts and report the manual checklist as "awaiting human verify".
-
-## Verification
-
-Run the selected item's `Verify` command(s) exactly. If a command is stale or impossible, stop and record the reason in the report; do not substitute broad verification without explaining it.
-
-## Handoff updates
-
-After implementation and verification:
-
-1. Mark the selected roadmap checkbox `[x]` only if its Verify passed.
-2. Append/update `.docs/ai/phases/2026-06-13-ralph-batch-report.md` with:
-   - item name
-   - what landed
-   - commit sha placeholder before commit, then actual sha after commit if possible
-   - exact Verify result
-   - any shakiness, TODO, or follow-up Opus/Fable should check
-3. Keep `.docs/ai/current-state.md` short. Update the single RALPH BACKLOG LOOP plan item checkbox.
-4. Commit one atomic change covering implementation plus handoff docs. Commit message format:
-   - `fix(clippy): ...`
-   - `feat(web): ...`
-   - `refactor(web): ...`
-   - or equivalent scoped conventional message
-5. Stop. The next `ralph` iteration will pick the next backlog item.
-
-If the item fails:
-- Leave its roadmap checkbox `[ ]`.
-- Add `<!-- failed 2026-06-13: <brief reason> -->` directly under the item.
-- Update the report honestly.
-- Commit only if you changed docs to record the failure; otherwise stop without committing.
+1. If Verify passes, mark only that Plan checkbox `[x]`. If a named human check
+   remains, mark it `[?] awaiting human verify`. On failure, leave `[ ]` and
+   record the concise blocker without guessing.
+2. Keep `.docs/ai/current-state.md` at 20 lines or fewer. Record durable design
+   rationale only in `.docs/ai/decisions.md`. File newly discovered actionable
+   work in beads with metadata and a `discovered-from` dependency; do not add a
+   prose backlog duplicate.
+3. Make one atomic commit covering implementation, tests, and handoff-state
+   updates. Do not push.
+4. Stop. Do not start the next phase and do not run `chezmoi apply`.
