@@ -30,7 +30,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
-  import { parseBlocks } from "$lib/block-parser";
+  import { parseBlocks, renderBlockBody } from "$lib/block-parser";
   import { findContentBlockId } from "$lib/content-search";
   import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
   import type { DetectConfig, TagDetectSpec } from "$lib/task-tokens";
@@ -909,24 +909,7 @@
   });
 
   function buildFullContent(updated: ParsedBlock[]): { full: string; bodyOnly: string } {
-    const bodyLines = updated
-      .map((b) => {
-        const indent = "  ".repeat(b.indent_level);
-        const lines = b.raw_text.split("\n");
-        // Strip any stray bid marker that crept into raw_text (rare but
-        // possible if the editor accepted a paste containing one) before
-        // we re-emit the bid below — without this we could end up with
-        // two bid markers on the same line.
-        const firstText = (lines[0] ?? "").replace(/\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, "");
-        // Re-emit the bid marker if the block has one. Brand-new local
-        // blocks (no bid yet) get stamped by the server's
-        // `stamp_block_ids` pass on receipt.
-        const bidSuffix = b.bid ? ` <!-- bid:${b.bid} -->` : "";
-        const first = `${indent}- ${firstText}${bidSuffix}`;
-        const rest = lines.slice(1).map((l: string) => `${indent}  ${l}`);
-        return [first, ...rest].join("\n");
-      })
-      .join("\n");
+    const bodyLines = renderBlockBody(updated);
     return { full: `${frontmatter}${bodyLines}\n`, bodyOnly: `${bodyLines}\n` };
   }
 

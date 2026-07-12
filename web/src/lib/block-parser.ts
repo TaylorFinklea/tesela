@@ -6,8 +6,13 @@ import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
-const BID_COMMENT_RE = /[ \t]*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->[ \t]*/g;
+const BID_COMMENT_RE = /<!--\s*bid:([0-9a-fA-F-]{32,36})\s*-->/g;
 const PROPERTY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)::(?:[ \t]+(.*)|[ \t]*)$/;
+
+type FenceMarker = {
+  char: "`" | "~";
+  width: number;
+};
 
 type CodeFenceSpan = {
   from: number;
@@ -16,13 +21,78 @@ type CodeFenceSpan = {
   value: string;
 };
 
+function fenceMarker(line: string): FenceMarker | null {
+  let leading = 0;
+  while (leading < line.length && line[leading] === " ") leading += 1;
+  if (leading > 3 || leading >= line.length) return null;
+  const char = line[leading];
+  if (char !== "`" && char !== "~") return null;
+  let width = 0;
+  while (line[leading + width] === char) width += 1;
+  return width >= 3 ? { char, width } : null;
+}
+
+function closesFence(line: string, marker: FenceMarker): boolean {
+  let leading = 0;
+  while (leading < line.length && line[leading] === " ") leading += 1;
+  if (leading > 3 || leading >= line.length || line[leading] !== marker.char) return false;
+  let width = 0;
+  while (line[leading + width] === marker.char) width += 1;
+  return width >= marker.width && line.slice(leading + width).trim() === "";
+}
+
+function continuationText(line: string, blockIndent: number, trimTrailing: boolean): string {
+  const expected = (blockIndent + 1) * 2;
+  const prefix = line.slice(0, expected);
+  const content = prefix.length === expected && /^ *$/.test(prefix)
+    ? line.slice(expected)
+    : line.trimStart();
+  return trimTrailing ? content.trimEnd() : content;
+}
+
 export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
   const lines = body.split("\n");
-  const raw: { lineNum: number; indent: number; text: string }[] = [];
-  let current: { lineNum: number; indent: number; text: string } | null = null;
+  // Match Rust's `str::lines()`: a file-ending newline is a terminator, not
+  // an extra blank payload line. A second newline remains significant.
+  if (body.endsWith("\n")) lines.pop();
+
+  type RawBlock = {
+    lineNum: number;
+    indent: number;
+    text: string;
+    fence: FenceMarker | null;
+  };
+  const raw: RawBlock[] = [];
+  let current: RawBlock | null = null;
+  let globalFence: FenceMarker | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
+    // Once a block owns a fence, its payload outranks blank/bullet/property
+    // detection. Remove exactly the list-continuation prefix and preserve
+    // every remaining byte, including blank lines and trailing spaces.
+    if (current?.fence) {
+      const content = continuationText(line, current.indent, false);
+      current.text += "\n" + content;
+      if (closesFence(content, current.fence)) current.fence = null;
+      continue;
+    }
+
+    // Raw top-level fences before the first canonical bullet are not editor
+    // blocks, but bullet-shaped payload inside them must stay inert.
+    if (current === null) {
+      if (globalFence !== null) {
+        if (closesFence(line, globalFence)) globalFence = null;
+        continue;
+      }
+      const opener = fenceMarker(line);
+      if (opener !== null) {
+        globalFence = opener;
+        continue;
+      }
+    }
+
     const trimStart = line.trimStart();
     if (trimStart === "") continue;
     const spaces = line.length - trimStart.length;
@@ -37,9 +107,12 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
       const text = trimStart.startsWith("- ")
         ? trimStart.slice(2).trimEnd()
         : "";
-      current = { lineNum: i, indent, text };
+      const visible = stripStructuralBid(text).text;
+      current = { lineNum: i, indent, text, fence: fenceMarker(visible) };
     } else if (current) {
-      current.text += "\n" + trimStart.trimEnd();
+      const continuation = continuationText(line, current.indent, true);
+      current.text += "\n" + continuation;
+      current.fence = fenceMarker(continuation);
     }
   }
   if (current) raw.push(current);
@@ -65,8 +138,43 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
   return blocks;
 }
 
+/** Serialize editor blocks back to canonical Tesela Markdown body text. */
+export function renderBlockBody(blocks: ParsedBlock[]): string {
+  return blocks
+    .map((block) => {
+      const indent = "  ".repeat(block.indent_level);
+      const rawText = block.bid
+        ? stripStructuralBid(block.raw_text.split("\n")[0] ?? "", block.bid).text
+          + (block.raw_text.includes("\n") ? block.raw_text.slice(block.raw_text.indexOf("\n")) : "")
+        : block.raw_text;
+      const lines = rawText.split("\n");
+      const bidComment = block.bid ? `<!-- bid:${block.bid} -->` : "";
+
+      if (fenceMarker(lines[0] ?? "") !== null) {
+        const first = bidComment ? `${indent}- ${bidComment}` : `${indent}-`;
+        const rest = lines.map((line) => `${indent}  ${line}`);
+        return [first, ...rest].join("\n");
+      }
+
+      const firstText = lines[0] ?? "";
+      const firstContent = [firstText, bidComment].filter((part) => part.length > 0).join(" ");
+      const first = firstContent ? `${indent}- ${firstContent}` : `${indent}-`;
+      const rest = lines.slice(1).map((line) => `${indent}  ${line}`);
+      return [first, ...rest].join("\n");
+    })
+    .join("\n");
+}
+
 function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string, inherited_tags: string[]): ParsedBlock {
-  const cleanRawText = stripBidComments(rawText);
+  const sourceLines = rawText.split("\n");
+  const structural = stripStructuralBid(sourceLines[0] ?? "");
+  const cleanLines = [structural.text, ...sourceLines.slice(1)];
+  // Canonical lifted fences use a bid-only bullet followed by the opener as
+  // a continuation. The empty bullet is scaffolding, not editor content.
+  if (cleanLines[0]?.trim() === "" && cleanLines.length > 1 && fenceMarker(cleanLines[1] ?? "")) {
+    cleanLines.shift();
+  }
+  const cleanRawText = cleanLines.join("\n");
   const markupText = textOutsideCodeFences(cleanRawText);
   const properties = extractProperties(markupText);
 
@@ -87,14 +195,12 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     if (!seen.has(k)) { seen.add(k); tags.push(t); }
   }
 
-  const firstLineWithBid = rawText.split("\n")[0] ?? rawText;
-  // Pull the bid out of the `<!-- bid:UUID -->` marker if present, so
+  // Pull the bid out of the owning line's `<!-- bid:UUID -->` marker, so
   // we can re-emit it on save. Without this the save would strip the
   // bid (it only round-trips raw_text-with-stripped-bid), the server
   // would re-stamp a fresh UUID for the bid-less line, and
   // apply_block_upsert would append a duplicate file row.
-  const bidMatch = firstLineWithBid.match(/<!--\s*bid:([0-9a-fA-F-]{32,36})\s*-->/);
-  const bid = bidMatch?.[1] ?? null;
+  const bid = structural.bid;
   const firstLine = cleanRawText.split("\n")[0] ?? cleanRawText;
   const text = firstLine
     .replace(TAG_RE, "")
@@ -123,16 +229,31 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
   };
 }
 
-function stripBidComments(text: string): string {
-  return text
-    .split("\n")
-    .map((line) =>
-      line
-        .replace(BID_COMMENT_RE, " ")
-        .replace(/[ \t]{2,}/g, " ")
-        .trim(),
-    )
-    .join("\n");
+/** Remove the rightmost structural bid from one logical owning line.
+ * Earlier valid-looking comments may be literal lifted text. */
+export function stripStructuralBid(
+  line: string,
+  expectedBid?: string,
+): { text: string; bid: string | null } {
+  const input = line.trimEnd();
+  let owned: { start: number; end: number; bid: string } | null = null;
+  BID_COMMENT_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = BID_COMMENT_RE.exec(input)) !== null) {
+    const bid = match[1];
+    if (expectedBid === undefined || bid.toLowerCase() === expectedBid.toLowerCase()) {
+      owned = { start: match.index, end: match.index + match[0].length, bid };
+    }
+  }
+  if (owned === null) return { text: input, bid: null };
+
+  const preceding = owned.start > 0 && /[ \t]/.test(input[owned.start - 1] ?? "")
+    ? owned.start - 1
+    : owned.start;
+  return {
+    text: (input.slice(0, preceding) + input.slice(owned.end)).trimEnd(),
+    bid: owned.bid,
+  };
 }
 
 /** Split `#tag` tokens into (inline, trailing). Mirrors the Rust impl in
@@ -213,21 +334,23 @@ function findCodeFenceSpans(text: string): CodeFenceSpan[] {
   const spans: CodeFenceSpan[] = [];
   const lines = text.split("\n");
   let offset = 0;
-  let open: { from: number; contentStart: number; lang: string } | null = null;
+  let open: { from: number; contentStart: number; lang: string; marker: FenceMarker } | null = null;
 
   for (const line of lines) {
     const lineStart = offset;
     const lineEnd = lineStart + line.length;
     if (open === null) {
-      const trimmedStart = line.trimStart();
-      if (trimmedStart.startsWith("```")) {
+      const marker = fenceMarker(line);
+      if (marker !== null) {
+        const leading = line.length - line.trimStart().length;
         open = {
           from: lineStart,
           contentStart: lineEnd < text.length ? lineEnd + 1 : lineEnd,
-          lang: trimmedStart.replace(/^`+/, "").trim(),
+          lang: line.slice(leading + marker.width).trim(),
+          marker,
         };
       }
-    } else if (line.trim() === "```") {
+    } else if (closesFence(line, open.marker)) {
       const contentEnd = Math.max(open.contentStart, lineStart - 1);
       spans.push({
         from: open.from,
@@ -259,6 +382,7 @@ function textOutsideCodeFences(text: string): string {
   let cursor = 0;
   for (const span of spans) {
     out += text.slice(cursor, span.from);
+    out += text.slice(span.from, span.to).replace(/[^\r\n]/g, "|");
     cursor = span.to;
   }
   out += text.slice(cursor);

@@ -908,6 +908,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// engine's `text_seq` (offset alignment). Tags keep their `#` prefix.
     static func splitTrailingTags(_ raw: String) -> (body: String, tags: [String]) {
         var lines = raw.components(separatedBy: "\n")
+        // A final line that belongs to a closed or unclosed fence is literal
+        // payload, even when it looks exactly like a trailing #tag cluster.
+        if fencedLineFlags(raw).last == true { return (raw, []) }
         guard let last = lines.last else { return (raw, []) }
         var tokens = last.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
         var tags: [String] = []
@@ -941,13 +944,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// to `text_seq`, so no convergence risk (the engine fix is the durable
     /// source-side cure, gated on `migrate_in_text`).
     static func stripPropertyLines(_ text: String) -> String {
-        text.components(separatedBy: "\n")
-            .filter { line in
+        let lines = text.components(separatedBy: "\n")
+        let fenced = fencedLineFlags(text)
+        return zip(lines, fenced)
+            .filter { pair in
+                let (line, isFenced) = pair
+                if isFenced { return true }
                 let t = line.trimmingCharacters(in: .whitespaces)
                 guard let sep = t.range(of: "::") else { return true }
                 let key = String(t[..<sep.lowerBound]).trimmingCharacters(in: .whitespaces)
                 return key.isEmpty
             }
+            .map { $0.0 }
             .joined(separator: "\n")
     }
 
@@ -960,18 +968,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard let re = try? NSRegularExpression(pattern: pattern) else {
             return (raw.trimmingCharacters(in: .whitespacesAndNewlines), [])
         }
-        let ns = raw as NSString
-        let range = NSRange(location: 0, length: ns.length)
+        let lines = raw.components(separatedBy: "\n")
+        let fenced = fencedLineFlags(raw)
         var tags: [String] = []
-        re.enumerateMatches(in: raw, range: range) { match, _, _ in
-            guard let r = match?.range else { return }
-            tags.append(ns.substring(with: r))
+        let bodyLines = zip(lines, fenced).map { pair in
+            let (line, isFenced) = pair
+            guard !isFenced else { return line }
+            let ns = line as NSString
+            let range = NSRange(location: 0, length: ns.length)
+            re.enumerateMatches(in: line, range: range) { match, _, _ in
+                guard let match else { return }
+                tags.append(ns.substring(with: match.range))
+            }
+            return re.stringByReplacingMatches(
+                in: line,
+                range: range,
+                withTemplate: ""
+            ).replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
         }
-        // Remove all matches from the body in a single pass.
-        let body = re.stringByReplacingMatches(in: raw, range: range, withTemplate: "")
-        let trimmedBody = body
-            .replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = bodyLines.joined(separator: "\n")
+        // Preserve fence payload exactly, including terminal spaces in an
+        // unclosed fence. The legacy no-fence path keeps its normalization.
+        let trimmedBody = fenced.contains(true)
+            ? body
+            : body.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmedBody, tags)
     }
 
@@ -3294,7 +3314,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private func countBlockLines(_ body: String) -> Int {
-        body.split(separator: "\n").filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("- ") }.count
+        // Reuse the fence-aware structural parser so a literal `- payload`
+        // inside code does not inflate page block counts.
+        parseBlocks(from: body).count
     }
 
     private func previewLines(from body: String) -> [String] {
@@ -3304,6 +3326,73 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     // MARK: - Block parsing and writeback
+
+    private struct MarkdownFenceMarker {
+        let byte: UInt8
+        let width: Int
+    }
+
+    /// Markdown fence grammar shared with the Rust core: backticks or tildes,
+    /// width >= 3, after at most three logical leading spaces.
+    private static func markdownFenceMarker(_ line: String) -> MarkdownFenceMarker? {
+        let bytes = Array(line.utf8)
+        var leading = 0
+        while leading < bytes.count, bytes[leading] == 0x20 { leading += 1 }
+        guard leading <= 3, leading < bytes.count else { return nil }
+        let byte = bytes[leading]
+        guard byte == 0x60 || byte == 0x7E else { return nil }
+        var width = 0
+        while leading + width < bytes.count, bytes[leading + width] == byte { width += 1 }
+        return width >= 3 ? MarkdownFenceMarker(byte: byte, width: width) : nil
+    }
+
+    private static func closesMarkdownFence(_ line: String, marker: MarkdownFenceMarker) -> Bool {
+        let bytes = Array(line.utf8)
+        var leading = 0
+        while leading < bytes.count, bytes[leading] == 0x20 { leading += 1 }
+        guard leading <= 3, leading < bytes.count, bytes[leading] == marker.byte else {
+            return false
+        }
+        var width = 0
+        while leading + width < bytes.count, bytes[leading + width] == marker.byte { width += 1 }
+        guard width >= marker.width else { return false }
+        return bytes[(leading + width)...].allSatisfy { byte in
+            byte == 0x20 || byte == 0x09 || byte == 0x0D
+        }
+    }
+
+    private static func blockContinuation(
+        _ line: String,
+        blockIndent: Int,
+        trimTrailing: Bool
+    ) -> String {
+        let expected = (blockIndent + 1) * 2
+        let prefix = line.prefix(expected)
+        let content: String
+        if prefix.count == expected, prefix.allSatisfy({ $0 == " " }) {
+            content = String(line.dropFirst(expected))
+        } else {
+            content = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+        }
+        guard trimTrailing else { return content }
+        return String(content.reversed().drop(while: { $0.isWhitespace }).reversed())
+    }
+
+    private static func fencedLineFlags(_ text: String) -> [Bool] {
+        let lines = text.components(separatedBy: "\n")
+        var marker: MarkdownFenceMarker?
+        return lines.map { line in
+            if let current = marker {
+                if closesMarkdownFence(line, marker: current) { marker = nil }
+                return true
+            }
+            if let opener = markdownFenceMarker(line) {
+                marker = opener
+                return true
+            }
+            return false
+        }
+    }
 
     /// Parses the body of a daily into iOS Blocks. Recognizes two task
     /// formats:
@@ -3319,17 +3408,35 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `noteId` is stored on each `Block` so `recurBump` can build the
     /// server's `<noteId>:<line>` composite id without a separate lookup.
     private func parseBlocks(from body: String, noteId: String = "") -> [Block] {
-        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var lines = body.components(separatedBy: "\n")
+        // A file-ending newline terminates the last source line; it is not an
+        // additional blank payload line. Preserve a second newline.
+        if body.hasSuffix("\n") { lines.removeLast() }
         var blocks: [Block] = []
         var i = 0
+        var globalFence: MarkdownFenceMarker?
         // Normalized indent of the block parsed just before this one,
         // used to enforce the structural invariant below. -1 so the
         // first block clamps to 0.
         var previousIndent = -1
         while i < lines.count {
             let line = lines[i]
+
+            // A raw top-level fence is not an iOS Block, but every
+            // bullet/property-shaped line inside it stays inert.
+            if let marker = globalFence {
+                if Self.closesMarkdownFence(line, marker: marker) { globalFence = nil }
+                i += 1
+                continue
+            }
+            if let marker = Self.markdownFenceMarker(line) {
+                globalFence = marker
+                i += 1
+                continue
+            }
+
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("- ") else { i += 1; continue }
+            guard trimmed.hasPrefix("- ") || trimmed == "-" else { i += 1; continue }
 
             // Record the 0-based line index of this bullet for recur-bump.
             let blockLineNumber = i
@@ -3351,23 +3458,46 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // multi-line blocks render and round-trip intact.
             var properties: [BlockProperty] = []
             var continuationLines: [String] = []
+            var fence = Self.markdownFenceMarker(parsed.text)
             i += 1
             while i < lines.count {
                 let next = lines[i]
-                let nextIndent = leadingSpaces(next) / 2
-                let nextTrim = next.trimmingCharacters(in: .whitespaces)
-                if nextTrim.hasPrefix("- ") { break }
-                if nextIndent <= rawIndent && !nextTrim.isEmpty { break }
-                if nextTrim.isEmpty {
-                    // Blank sub-line — skip silently, matching the web
-                    // parser which drops empty lines outright.
+
+                // Fence ownership outranks every structural interpretation.
+                // Deindent only the canonical list prefix and preserve the
+                // remaining payload byte-for-byte.
+                if let marker = fence {
+                    let content = Self.blockContinuation(
+                        next,
+                        blockIndent: rawIndent,
+                        trimTrailing: false
+                    )
+                    continuationLines.append(content)
+                    if Self.closesMarkdownFence(content, marker: marker) { fence = nil }
                     i += 1
                     continue
                 }
-                if let prop = parseProperty(nextTrim) {
+
+                let nextIndent = leadingSpaces(next) / 2
+                let nextTrim = next.trimmingCharacters(in: .whitespaces)
+                if nextTrim.hasPrefix("- ") || nextTrim == "-" { break }
+                if nextIndent <= rawIndent && !nextTrim.isEmpty { break }
+                if nextTrim.isEmpty {
+                    // Blank prose continuations remain ignorable; blank fence
+                    // payload was handled above and is significant.
+                    i += 1
+                    continue
+                }
+                let continuation = Self.blockContinuation(
+                    next,
+                    blockIndent: rawIndent,
+                    trimTrailing: true
+                )
+                if let prop = parseProperty(continuation) {
                     properties.append(prop)
                 } else {
-                    continuationLines.append(nextTrim)
+                    continuationLines.append(continuation)
+                    fence = Self.markdownFenceMarker(continuation)
                 }
                 i += 1
             }
@@ -3398,17 +3528,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
             properties.removeAll { $0.key.lowercased() == "tags" }
             let tags = mergedSourceTags(parsed.tags, tagsFromProperty.map(sourceTag))
 
-            let rawText: String
-            if continuationLines.isEmpty {
-                rawText = parsed.text
-            } else {
-                rawText = ([parsed.text] + continuationLines).joined(separator: "\n")
+            var rawLines = [parsed.text] + continuationLines
+            // A canonical lifted fence begins on the first continuation of a
+            // bid-only bullet. The empty owning line is serialization
+            // scaffolding, not visible/editable content.
+            if parsed.text.isEmpty,
+               continuationLines.first.flatMap({ Self.markdownFenceMarker($0) }) != nil
+            {
+                rawLines.removeFirst()
             }
+            let rawText = rawLines.joined(separator: "\n")
+            let firstText = rawLines.first ?? parsed.text
 
             blocks.append(Block(
                 id: parsed.bid,
                 kind: kind,
-                text: parsed.text,
+                text: firstText,
                 rawText: rawText,
                 done: done,
                 indent: indent,
@@ -3452,24 +3587,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// sub-lines are collected.
     private func parseBlockLine(_ line: String, indent: Int) -> (bid: String, text: String, kind: BlockKind, done: Bool, tags: [String]) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        let withoutBullet = String(trimmed.dropFirst(2))
+        let withoutBullet = trimmed.hasPrefix("- ") ? String(trimmed.dropFirst(2)) : ""
 
-        // Pull the bid out of the trailing HTML comment if present.
+        // The rightmost valid-looking marker on the owning line is
+        // structural. Earlier markers may be literal lifted content.
         let bidPattern = #"<!--\s*bid:([^\s>]+)\s*-->"#
         let visible: String
         let bid: String
         if let re = try? NSRegularExpression(pattern: bidPattern),
-           let match = re.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
+           let match = re.matches(
+               in: withoutBullet,
+               range: NSRange(location: 0, length: (withoutBullet as NSString).length)
+           ).last
         {
-            let ns = line as NSString
+            let ns = withoutBullet as NSString
             bid = ns.substring(with: match.range(at: 1))
-            let stripped = re.stringByReplacingMatches(
-                in: withoutBullet,
-                options: [],
-                range: NSRange(location: 0, length: (withoutBullet as NSString).length),
-                withTemplate: ""
-            )
-            visible = stripped
+            var ownedRange = match.range
+            if ownedRange.location > 0 {
+                let preceding = ns.substring(with: NSRange(location: ownedRange.location - 1, length: 1))
+                if preceding == " " || preceding == "\t" {
+                    ownedRange.location -= 1
+                    ownedRange.length += 1
+                }
+            }
+            visible = ns.replacingCharacters(in: ownedRange, with: "")
         } else {
             bid = UUID().uuidString
             visible = withoutBullet
@@ -3704,7 +3845,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // comment on disk that the web client renders verbatim.
             // Letting the server stamp these on save keeps the on-disk
             // form canonical and avoids the duplicate-bid leak.
-            let bidSuffix = isCanonicalUUID(block.id) ? " <!-- bid:\(block.id) -->" : ""
+            let bidComment = isCanonicalUUID(block.id) ? "<!-- bid:\(block.id) -->" : ""
 
             // Always use a plain `- ` bullet. Task state is expressed
             // via the canonical property format the web client expects:
@@ -3727,14 +3868,23 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // ("Task / status / tags / status / tags"). parseBlocks routes every
             // key:: line into block.properties, so nothing is lost; already-
             // doubled blocks self-heal on the next render/writeback.
-            let proseLines = block.displayText
+            let proseLines = Self.stripPropertyLines(block.displayText)
                 .components(separatedBy: "\n")
-                .filter { parseProperty($0.trimmingCharacters(in: .whitespaces)) == nil }
             let firstLine = proseLines.first ?? ""
-            out.append("\(indent)- \(firstLine)\(bidSuffix)")
             let continuationIndent = "\(indent)  "
-            for line in proseLines.dropFirst() {
-                out.append("\(continuationIndent)\(line)")
+            if Self.markdownFenceMarker(firstLine) != nil {
+                out.append(bidComment.isEmpty ? "\(indent)-" : "\(indent)- \(bidComment)")
+                for line in proseLines {
+                    out.append("\(continuationIndent)\(line)")
+                }
+            } else {
+                let firstContent = [firstLine, bidComment]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                out.append(firstContent.isEmpty ? "\(indent)-" : "\(indent)- \(firstContent)")
+                for line in proseLines.dropFirst() {
+                    out.append("\(continuationIndent)\(line)")
+                }
             }
 
             let propLines = renderProperties(for: block, indent: indent)

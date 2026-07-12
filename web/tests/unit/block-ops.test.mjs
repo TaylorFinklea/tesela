@@ -22,6 +22,7 @@ import {
   isLocalOnlyId,
   isClientMintedId,
 } from "../../src/lib/block-ops.ts";
+import { parseBlocks } from "../../src/lib/block-parser.ts";
 
 /** Minimal ParsedBlock factory — only the fields the op builders read. */
 function blk(id, { bid = null, raw_text = "", indent_level = 0 } = {}) {
@@ -132,6 +133,28 @@ test("upsertOpForBlock: single upsert with bid-stripped text + derived parent", 
     text: "child text",
     parent_bid: "p",
     indent_level: 1,
+  });
+});
+
+test("upsertOpForBlock preserves bid-shaped literal payload inside a canonical fence", () => {
+  const bid = "33333333-3333-3333-3333-333333333333";
+  const literalBid = "44444444-4444-4444-4444-444444444444";
+  const [block] = parseBlocks("note", [
+    `- <!-- bid:${bid} -->`,
+    "  ```query",
+    "  status:: done",
+    "  #literal",
+    "  - payload, not a block",
+    `  <!-- bid:${literalBid} -->`,
+    "  ```",
+  ].join("\n"));
+
+  assert.deepEqual(upsertOpForBlock([block], block.id), {
+    kind: "upsert",
+    bid,
+    text: `\`\`\`query\nstatus:: done\n#literal\n- payload, not a block\n<!-- bid:${literalBid} -->\n\`\`\``,
+    parent_bid: null,
+    indent_level: 0,
   });
 });
 

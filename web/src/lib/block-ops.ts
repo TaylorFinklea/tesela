@@ -13,6 +13,7 @@
  * `indent_level` a number.
  */
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
+import { stripStructuralBid } from "./block-parser.ts";
 
 /** Locally-created block ids carry a `:new-<timestamp>` or `:paste-` infix;
  *  they exist in the editor but not in any server-canonical body until their
@@ -80,8 +81,11 @@ export type BlockOp =
  *  carries only the human content. The engine re-stamps the marker on apply,
  *  so the wire `text` must NOT include it (else a duplicate marker lands on
  *  the line). Mirrors the strip in `BlockOutliner.buildFullContent`. */
-export function stripBid(rawText: string): string {
-  return rawText.replace(/\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, "");
+export function stripBid(rawText: string, expectedBid?: string): string {
+  const newline = rawText.indexOf("\n");
+  const firstLine = newline >= 0 ? rawText.slice(0, newline) : rawText;
+  const rest = newline >= 0 ? rawText.slice(newline) : "";
+  return stripStructuralBid(firstLine, expectedBid).text + rest;
 }
 
 /**
@@ -143,7 +147,7 @@ export function upsertOpForBlock(
   return {
     kind: "upsert",
     bid: block.bid,
-    text: stripBid(block.raw_text),
+    text: stripBid(block.raw_text, block.bid),
     parent_bid: parentBidFor(blocks, index),
     indent_level: block.indent_level,
   };
@@ -182,7 +186,7 @@ export function upsertOpForStructuralBlock(
   return {
     kind: "upsert",
     bid: block.bid,
-    text: stripBid(block.raw_text),
+    text: stripBid(block.raw_text, block.bid),
     parent_bid: parentBidFor(blocks, index),
     indent_level: block.indent_level,
     ...(after_bid !== undefined ? { after_bid } : {}),
@@ -327,10 +331,10 @@ export function diffOpsForSnapshot(
     const b = next[i];
     const parent_bid = parentBidFor(next, i);
     const before = prevByBid.get(b.bid!);
-    const text = stripBid(b.raw_text);
+    const text = stripBid(b.raw_text, b.bid!);
     if (
       before &&
-      stripBid(before.raw_text) === text &&
+      stripBid(before.raw_text, before.bid!) === text &&
       before.indent_level === b.indent_level &&
       parentBidFor(prev, prev.indexOf(before)) === parent_bid
     ) {

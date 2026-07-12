@@ -704,6 +704,85 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(rendered, body)
     }
 
+    func testCanonicalLiftedHeadingProseAndFenceDisplayAndEditRoundTrip() {
+        let headingBid = "11111111-1111-1111-1111-111111111111"
+        let proseBid = "22222222-2222-2222-2222-222222222222"
+        let fenceBid = "33333333-3333-3333-3333-333333333333"
+        let literalBid = "44444444-4444-4444-4444-444444444444"
+        let body = [
+            "- # Heading <!-- bid:\(headingBid) -->",
+            "- Prose one <!-- bid:\(proseBid) -->",
+            "  prose two",
+            "- <!-- bid:\(fenceBid) -->",
+            "  ```query",
+            "  status:: done",
+            "  #literal",
+            "  - payload, not a block",
+            "  ",
+            "    extra-indented payload  ",
+            "  <!-- bid:\(literalBid) -->",
+            "  ```",
+        ].joined(separator: "\n")
+
+        let service = MockMosaicService()
+        var blocks = service.testableParseBlocks(from: body, noteId: "mixed")
+
+        XCTAssertEqual(blocks.count, 3)
+        XCTAssertEqual(blocks.map(\.id), [headingBid, proseBid, fenceBid])
+        XCTAssertEqual(blocks[0].displayText, "# Heading")
+        XCTAssertEqual(blocks[1].displayText, "Prose one\nprose two")
+        XCTAssertEqual(
+            blocks[2].displayText,
+            "```query\nstatus:: done\n#literal\n- payload, not a block\n\n  extra-indented payload  \n<!-- bid:\(literalBid) -->\n```"
+        )
+        XCTAssertEqual(blocks[2].text, "```query")
+        XCTAssertTrue(blocks[2].properties.isEmpty)
+        XCTAssertTrue(blocks[2].tags.isEmpty)
+        XCTAssertFalse(blocks[2].displayText.contains(fenceBid))
+        XCTAssertTrue(blocks[2].displayText.contains(literalBid))
+        XCTAssertEqual(
+            MockMosaicService.stripPropertyLines(blocks[2].displayText),
+            blocks[2].displayText
+        )
+        let inlineProjection = MockMosaicService.splitInlineTags(blocks[2].displayText)
+        XCTAssertEqual(inlineProjection.body, blocks[2].displayText)
+        XCTAssertTrue(inlineProjection.tags.isEmpty)
+        XCTAssertEqual(
+            blocks.map { MockMosaicService.engineExactText(of: $0) },
+            blocks.map(\.displayText)
+        )
+
+        func replacing(_ needle: String, with replacement: String, in block: Block) -> Block {
+            let exact = MockMosaicService.engineExactText(of: block)
+            let range = (exact as NSString).range(of: needle)
+            guard range.location != NSNotFound else {
+                XCTFail("Missing splice target: \(needle)")
+                return block
+            }
+            return MockMosaicService.applyFaithfulSplice(
+                to: block,
+                utf16Offset: range.location,
+                utf16DeleteLen: range.length,
+                insert: replacement
+            ).block
+        }
+        blocks[0] = replacing("Heading", with: "Heading edited", in: blocks[0])
+        blocks[1] = replacing("prose two", with: "prose two edited", in: blocks[1])
+        blocks[2] = replacing("status:: done", with: "status:: todo", in: blocks[2])
+        let rendered = service.testableRenderBody(from: blocks)
+        let reparsed = service.testableParseBlocks(from: rendered, noteId: "mixed")
+
+        XCTAssertEqual(reparsed.count, 3)
+        XCTAssertEqual(reparsed.map(\.id), [headingBid, proseBid, fenceBid])
+        XCTAssertEqual(reparsed[0].displayText, "# Heading edited")
+        XCTAssertEqual(reparsed[1].displayText, "Prose one\nprose two edited")
+        XCTAssertEqual(
+            reparsed[2].displayText,
+            "```query\nstatus:: todo\n#literal\n- payload, not a block\n\n  extra-indented payload  \n<!-- bid:\(literalBid) -->\n```"
+        )
+        XCTAssertTrue(rendered.contains("- <!-- bid:\(fenceBid) -->\n  ```query"))
+    }
+
     /// `tags:: Issue` is the canonical block-tag form emitted by the
     /// desktop/web engine. iOS should surface it as a visible tag chip,
     /// keep it out of generic properties, and write it back as `tags::`
