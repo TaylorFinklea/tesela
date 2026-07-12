@@ -24,22 +24,17 @@
 //!
 //! - Frontmatter (a YAML block bracketed by `---` lines at the top of the
 //!   file) is preserved verbatim across parse + serialize.
-//! - Bullet lines (`- text`) are the only content type recognized as
-//!   blocks. Indent is two spaces per level, matching the existing
-//!   `parse_blocks` in [`crate::block`].
+//! - Bullet lines (`- text`) retain their outliner structure. Indent is
+//!   two spaces per level, matching the existing `parse_blocks` in
+//!   [`crate::block`].
 //! - Continuation lines (indented lines following a bullet, used for
 //!   properties like `status:: doing`) are folded into the parent
 //!   block's `text` joined by newlines.
-//! - Non-bullet body content does NOT survive the round trip: a heading
-//!   or prose paragraph before the first bullet is dropped by
-//!   `parse_body_blocks`, and blank-line-separated prose after a bullet
-//!   folds into the preceding block as continuation text. The tree model
-//!   (and the Loro doc model it seeds) has no home for non-bullet
-//!   segments, so writers that re-serialize a parsed tree over an
-//!   arbitrary file must gate on a lossless round trip first — see
-//!   [`stamp_existing_notes`]'s content-preserving check (audit A9b,
-//!   2026-06-09). True preservation requires a raw-segment home in the
-//!   doc model (deferred with the structured-block-tree work).
+//! - Non-bullet headings, prose regions, and fenced regions are lifted
+//!   into ordinary top-level blocks. This keeps one authoritative block
+//!   model while making the parse structurally full-coverage. Writers
+//!   that run automatically over arbitrary external files must still
+//!   gate canonicalization — see [`stamp_existing_notes`].
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -102,10 +97,9 @@ pub const BID_SUFFIX: &str = " -->";
 
 /// Parse a note file's contents into a [`NoteTree`].
 ///
-/// Stamps fresh UUIDv7 ids on any unstamped bullets. Frontmatter is
-/// captured verbatim. Non-bullet body content currently does not survive
-/// the round trip (see module docs); revisit when there is a real user
-/// note that hits this.
+/// Stamps fresh UUIDv7 ids on any unstamped or lifted blocks. Frontmatter
+/// is captured verbatim. Non-bullet body regions are represented as
+/// ordinary top-level blocks (see module docs).
 pub fn parse_note(content: &str) -> NoteTree {
     let (frontmatter, body) = split_frontmatter(content);
     let (page_properties, rest) = split_page_properties(body);
@@ -302,12 +296,14 @@ pub fn serialize_note(tree: &NoteTree) -> String {
     }
     for block in &tree.blocks {
         let indent_spaces = "  ".repeat(block.indent as usize);
-        let mut lines = block.text.lines();
-        let first = lines.next().unwrap_or("");
-        // First line: bullet + text + bid comment.
+        let first = block.text.lines().next().unwrap_or("");
+        let fence_first = fence_marker(first).is_some();
+        // A leading fence cannot share its opener with a trailing bid:
+        // that would change the info string. Emit a bid-only bullet and
+        // put the complete fence in continuation lines instead.
         out.push_str(&indent_spaces);
         out.push_str("- ");
-        if !first.is_empty() {
+        if !first.is_empty() && !fence_first {
             out.push_str(first);
             out.push(' ');
         }
@@ -315,12 +311,26 @@ pub fn serialize_note(tree: &NoteTree) -> String {
         out.push_str(&format_bid(block.id));
         out.push_str(BID_SUFFIX);
         out.push('\n');
-        // Continuation lines: indented two more spaces under the bullet.
-        for line in lines {
-            out.push_str(&indent_spaces);
-            out.push_str("  ");
-            out.push_str(line);
-            out.push('\n');
+        if fence_first {
+            // `split` (unlike `lines`) retains a terminal empty logical
+            // line. That matters for an unclosed fence ending in a blank
+            // payload line, which the scanner stores in `text` as a
+            // trailing newline.
+            for line in block.text.split('\n') {
+                out.push_str(&indent_spaces);
+                out.push_str("  ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            // Ordinary block continuation lines keep the historical
+            // normalization of a terminal line ending.
+            for line in block.text.lines().skip(1) {
+                out.push_str(&indent_spaces);
+                out.push_str("  ");
+                out.push_str(line);
+                out.push('\n');
+            }
         }
         // Container property lines: rendered AFTER the prose, in the given
         // order, one `key:: value` continuation line each (Logseq reflow).
@@ -367,52 +377,199 @@ fn split_frontmatter(content: &str) -> (Option<String>, &str) {
     (None, content)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FenceMarker {
+    byte: u8,
+    width: usize,
+}
+
+/// Recognize a Markdown fence opener after up to three preserved spaces.
+/// Both backtick and tilde fences are supported. The caller retains the
+/// original line; this helper is only scanner state.
+fn fence_marker(line: &str) -> Option<FenceMarker> {
+    let bytes = line.as_bytes();
+    let leading = bytes.iter().take_while(|byte| **byte == b' ').count();
+    if leading > 3 || leading >= bytes.len() {
+        return None;
+    }
+    let byte = bytes[leading];
+    if byte != b'`' && byte != b'~' {
+        return None;
+    }
+    let width = bytes[leading..]
+        .iter()
+        .take_while(|candidate| **candidate == byte)
+        .count();
+    (width >= 3).then_some(FenceMarker { byte, width })
+}
+
+fn closes_fence(line: &str, marker: FenceMarker) -> bool {
+    let bytes = line.as_bytes();
+    let leading = bytes.iter().take_while(|byte| **byte == b' ').count();
+    if leading > 3 || leading >= bytes.len() || bytes[leading] != marker.byte {
+        return false;
+    }
+    let width = bytes[leading..]
+        .iter()
+        .take_while(|candidate| **candidate == marker.byte)
+        .count();
+    width >= marker.width
+        && bytes[leading + width..]
+            .iter()
+            .all(|byte| byte.is_ascii_whitespace())
+}
+
+fn continuation_line(line: &str, block_indent: u16) -> Option<&str> {
+    let expected = (usize::from(block_indent) + 1) * 2;
+    let prefix = line.as_bytes().get(..expected)?;
+    prefix
+        .iter()
+        .all(|byte| *byte == b' ')
+        .then(|| &line[expected..])
+}
+
+fn bullet_line(line: &str) -> Option<(u16, String, Option<Uuid>)> {
+    let spaces = line
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    let rest = &line[spaces..];
+    let body = if let Some(body) = rest.strip_prefix("- ") {
+        body
+    } else if rest.trim_end() == "-" {
+        ""
+    } else {
+        return None;
+    };
+    let (text, bid) = extract_bid(body.trim_end());
+    Some(((spaces / 2) as u16, text, bid))
+}
+
 fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
-    // Two-pass: collect raw block data (indent, text-with-bid, first-line-bid),
-    // then resolve parents from the indent stack and return FlatBlocks.
+    // Two-pass: first scan every nonblank body line into either an
+    // existing bullet or a lifted top-level region, then resolve parents
+    // from the indent stack.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SourceKind {
+        Bullet,
+        Lifted,
+    }
+
     struct RawBlock {
         indent: u16,
         bid: Option<Uuid>,
-        text: String, // first line with bid stripped, plus continuation lines
+        text: String,
+        source: SourceKind,
+        fence: Option<FenceMarker>,
     }
 
     let mut raw: Vec<RawBlock> = Vec::new();
     let mut current: Option<RawBlock> = None;
     let mut stamped_any = false;
 
-    for line in body.lines() {
-        let trim_start = line.trim_start();
-        if trim_start.is_empty() {
-            // Blank line inside body: ends the current block's continuation
-            // run but does not introduce a new block.
+    for (line, _) in line_spans(body) {
+        // Once a fence opens it owns every line through a matching close,
+        // including blank and bullet-looking lines. For a fence nested in
+        // a bullet, strip exactly the list continuation prefix and retain
+        // every additional space.
+        if let Some((source, indent, marker)) = current.as_ref().and_then(|block| {
+            block
+                .fence
+                .map(|marker| (block.source, block.indent, marker))
+        }) {
+            let content_line = match source {
+                SourceKind::Bullet => continuation_line(line, indent).unwrap_or(line),
+                SourceKind::Lifted => line,
+            };
+            let closes = closes_fence(content_line, marker);
+            let block = current.as_mut().expect("fence state has a current block");
+            block.text.push('\n');
+            block.text.push_str(content_line);
+            if closes {
+                block.fence = None;
+            }
+            if closes && source == SourceKind::Lifted {
+                raw.push(current.take().expect("lifted fence block exists"));
+            }
             continue;
         }
-        let spaces = line.len() - trim_start.len();
-        let indent = (spaces / 2) as u16;
 
-        let trimmed_end = trim_start.trim_end();
-        let is_bullet = trim_start.starts_with("- ") || trimmed_end == "-";
-
-        if is_bullet {
+        if line.trim().is_empty() {
             if let Some(b) = current.take() {
                 raw.push(b);
             }
-            let body_text = trim_start
-                .strip_prefix("- ")
-                .or_else(|| trim_start.strip_prefix('-'))
-                .unwrap_or(trim_start)
-                .trim_end();
-            let (text_no_bid, bid) = extract_bid(body_text);
+            continue;
+        }
+
+        if let Some((indent, text, bid)) = bullet_line(line) {
+            if let Some(b) = current.take() {
+                raw.push(b);
+            }
+            let fence = fence_marker(&text);
             current = Some(RawBlock {
                 indent,
                 bid,
-                text: text_no_bid,
+                text,
+                source: SourceKind::Bullet,
+                fence,
             });
-        } else if let Some(rb) = current.as_mut() {
-            // Continuation line.
-            rb.text.push('\n');
-            rb.text.push_str(trim_start.trim_end());
+            continue;
         }
+
+        if current
+            .as_ref()
+            .is_some_and(|block| block.source == SourceKind::Bullet)
+        {
+            let (indent, text_is_empty) = {
+                let block = current.as_ref().expect("checked current bullet");
+                (block.indent, block.text.is_empty())
+            };
+            if let Some(continuation) = continuation_line(line, indent) {
+                let opening_fence = fence_marker(continuation);
+                let block = current.as_mut().expect("checked current bullet");
+                // Preserve the legacy leading newline for an empty bullet's
+                // ordinary continuation/property line. A fence-first block
+                // is the one exception: its bid-only canonical bullet is
+                // scaffolding and must not enter the visible block text.
+                if !text_is_empty || opening_fence.is_none() {
+                    block.text.push('\n');
+                }
+                block.text.push_str(continuation);
+                block.fence = opening_fence;
+                continue;
+            }
+            raw.push(current.take().expect("checked current bullet"));
+        }
+
+        if current
+            .as_ref()
+            .is_some_and(|block| block.source == SourceKind::Lifted)
+        {
+            if let Some(opening_fence) = fence_marker(line) {
+                raw.push(current.take().expect("checked lifted block"));
+                current = Some(RawBlock {
+                    indent: 0,
+                    bid: None,
+                    text: line.to_string(),
+                    source: SourceKind::Lifted,
+                    fence: Some(opening_fence),
+                });
+            } else {
+                let block = current.as_mut().expect("checked lifted block");
+                block.text.push('\n');
+                block.text.push_str(line);
+            }
+            continue;
+        }
+
+        current = Some(RawBlock {
+            indent: 0,
+            bid: None,
+            text: line.to_string(),
+            source: SourceKind::Lifted,
+            fence: fence_marker(line),
+        });
     }
     if let Some(b) = current {
         raw.push(b);
@@ -472,51 +629,46 @@ pub fn parse_bid(line: &str) -> Option<Uuid> {
     extract_bid(line).1
 }
 
-/// Strip `<!-- bid:UUID -->` comments from a line of text. Returns the
-/// cleaned text and the first parsed UUID, if any. Tolerates the comment
-/// appearing anywhere on the line (not only as a trailing token) so users
-/// who type past a hidden bid in the editor don't drop block identity on
-/// save. A single leading whitespace char is consumed along with each bid
-/// to keep the join clean. Malformed bid comments are left in the text.
+/// Strip the rightmost valid `<!-- bid:UUID -->` comment from a line of
+/// text and return its UUID. The serializer owns that rightmost position;
+/// any earlier valid-looking comment may be literal lifted content and is
+/// preserved. The owned comment may still appear before typed text, so
+/// users who type past a hidden bid do not drop block identity on save. A
+/// single leading whitespace char is consumed with it to keep the join
+/// clean. Malformed bid comments are left in the text.
 fn extract_bid(line: &str) -> (String, Option<Uuid>) {
     let input = line.trim_end();
-    let mut out = String::with_capacity(input.len());
-    let mut id: Option<Uuid> = None;
     let mut idx = 0;
+    let mut owned: Option<(usize, usize, Uuid)> = None;
     while idx < input.len() {
         let Some(rel_start) = input[idx..].find(BID_PREFIX) else {
-            out.push_str(&input[idx..]);
             break;
         };
         let start = idx + rel_start;
         let after_prefix = start + BID_PREFIX.len();
         let Some(rel_end) = input[after_prefix..].find(BID_SUFFIX) else {
-            out.push_str(&input[idx..]);
             break;
         };
         let inner_end = after_prefix + rel_end;
         let end = inner_end + BID_SUFFIX.len();
-        match Uuid::parse_str(input[after_prefix..inner_end].trim()) {
-            Ok(uuid) => {
-                let preceding_end =
-                    if start > idx && matches!(input.as_bytes()[start - 1], b' ' | b'\t') {
-                        start - 1
-                    } else {
-                        start
-                    };
-                out.push_str(&input[idx..preceding_end]);
-                if id.is_none() {
-                    id = Some(uuid);
-                }
-                idx = end;
-            }
-            Err(_) => {
-                out.push_str(&input[idx..after_prefix]);
-                idx = after_prefix;
-            }
+        if let Ok(uuid) = Uuid::parse_str(input[after_prefix..inner_end].trim()) {
+            owned = Some((start, end, uuid));
         }
+        idx = end;
     }
-    (out.trim_end().to_string(), id)
+
+    let Some((start, end, id)) = owned else {
+        return (input.to_string(), None);
+    };
+    let preceding_end = if start > 0 && matches!(input.as_bytes()[start - 1], b' ' | b'\t') {
+        start - 1
+    } else {
+        start
+    };
+    let mut out = String::with_capacity(input.len() - (end - preceding_end));
+    out.push_str(&input[..preceding_end]);
+    out.push_str(&input[end..]);
+    (out.trim_end().to_string(), Some(id))
 }
 
 fn format_bid(id: Uuid) -> String {
@@ -572,12 +724,37 @@ fn strip_valid_bid_comments(content: &str) -> String {
 
 /// Whether rewriting `original` as `stamped` changes ONLY bid comments —
 /// i.e. the parse→serialize round trip preserved every other byte. False
-/// whenever the round trip would drop or reshape content: non-bullet
-/// headings/prose (deleted), blank-line-separated prose after a bullet
-/// (folded into the block), non-canonical indentation or blank lines
-/// (normalized away), a missing frontmatter separator line (inserted).
+/// whenever the round trip would reshape source syntax: lifted non-bullet
+/// regions become canonical bullets, separators/indentation may normalize,
+/// or a missing frontmatter separator line is inserted.
 pub fn stamp_is_content_preserving(original: &str, stamped: &str) -> bool {
     strip_valid_bid_comments(original) == strip_valid_bid_comments(stamped)
+}
+
+/// Whether `canonical` has the same modeled note structure as `original`
+/// after parsing, ignoring generated block ids and their derived parent ids.
+///
+/// This is intentionally broader than [`stamp_is_content_preserving`]: it
+/// permits the explicit canonical lift from raw Markdown regions into
+/// ordinary bullet blocks, while still rejecting lost/reordered text,
+/// changed indentation, frontmatter, or page properties. Automatic startup
+/// stamping continues to use the byte-conservative predicate above.
+pub fn canonicalization_preserves_structure(original: &str, canonical: &str) -> bool {
+    let original = parse_note(original);
+    let canonical = parse_note(canonical);
+
+    original.frontmatter == canonical.frontmatter
+        && original.page_properties == canonical.page_properties
+        && original.blocks.len() == canonical.blocks.len()
+        && original
+            .blocks
+            .iter()
+            .zip(&canonical.blocks)
+            .all(|(left, right)| {
+                left.indent == right.indent
+                    && left.text == right.text
+                    && left.properties == right.properties
+            })
 }
 
 /// Walk a mosaic's `notes/` directory and ensure every `.md` file has
@@ -588,18 +765,15 @@ pub fn stamp_is_content_preserving(original: &str, stamped: &str) -> bool {
 /// and silently ignores files that don't parse as a note tree (e.g.
 /// the mosaic's `.tesela/` configs).
 ///
-/// ## Lossy-round-trip gate (audit A9b, 2026-06-09)
-/// This runs at every server startup over files Tesela did not
-/// necessarily write (hand-authored notes, external drops, migration
-/// artifacts), and `parse_note → serialize_note` deletes non-bullet body
-/// content (see module docs). Before writing, the stamped output is
-/// compared against the original with bid comments stripped from both:
-/// if anything else would change, the file is left byte-for-byte intact
-/// and a warning names it. Such notes simply stay unstamped until the
-/// content is reshaped through a normal edit path. Preserving non-bullet
-/// segments through the round trip needs a raw-segment home in the tree
-/// AND the Loro doc model (the engine re-materializes files from the doc,
-/// so parser-only preservation would still be lost) — deferred.
+/// ## Conservative startup rewrite gate (audit A9b, 2026-06-09)
+/// This runs at every server startup over files Tesela did not necessarily
+/// write (hand-authored notes, external drops, migration artifacts). Even
+/// though parsing now preserves non-bullet content structurally, automatic
+/// startup must not silently canonicalize its source syntax. Before writing,
+/// the stamped output is compared against the original with bid comments
+/// stripped from both: if anything else would change, the file is left
+/// byte-for-byte intact and a warning names it. Explicit engine hydration may
+/// use [`canonicalization_preserves_structure`] before accepting that reshape.
 pub async fn stamp_existing_notes(notes_dir: &std::path::Path) -> std::io::Result<usize> {
     if !notes_dir.is_dir() {
         return Ok(0);
@@ -627,9 +801,9 @@ pub async fn stamp_existing_notes(notes_dir: &std::path::Path) -> std::io::Resul
         // nothing but bid comments. See the function docs.
         if !stamp_is_content_preserving(&content, &stamped_content) {
             tracing::warn!(
-                "stamp_existing_notes: skipping {} — its body would not \
-                 survive the parse→serialize round trip (non-bullet or \
-                 non-canonical content); leaving it unstamped",
+                "stamp_existing_notes: skipping {} — stamping would \
+                 canonicalize non-bullet or non-canonical source syntax; \
+                 leaving it byte-identical and unstamped",
                 path.display()
             );
             continue;
@@ -853,6 +1027,182 @@ mod tests {
         assert_eq!(s1, s2);
     }
 
+    fn structural_blocks(tree: &NoteTree) -> Vec<(u16, &str)> {
+        tree.blocks
+            .iter()
+            .map(|block| (block.indent, block.text.as_str()))
+            .collect()
+    }
+
+    fn assert_structural_round_trip(content: &str) -> String {
+        let parsed = parse_note(content);
+        let canonical = serialize_note(&parsed);
+        let reparsed = parse_note(&canonical);
+
+        assert_eq!(reparsed.frontmatter, parsed.frontmatter);
+        assert_eq!(reparsed.page_properties, parsed.page_properties);
+        assert_eq!(structural_blocks(&reparsed), structural_blocks(&parsed));
+        assert_eq!(
+            reparsed
+                .blocks
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<_>>(),
+            parsed
+                .blocks
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<_>>()
+        );
+        assert!(!reparsed.stamped_any);
+        assert_eq!(serialize_note(&reparsed), canonical);
+        assert!(canonicalization_preserves_structure(content, &canonical));
+
+        canonical
+    }
+
+    #[test]
+    fn lifts_heading_and_prose_around_existing_bullets() {
+        let bullet_id = fixture_uuid(0x90);
+        let content = format!(
+            "# Heading\n\nFirst prose line\nsecond prose line\n\n- Existing <!-- bid:{} -->\n\nTrailing prose\n",
+            bullet_id,
+        );
+
+        let tree = parse_note(&content);
+        assert_eq!(
+            structural_blocks(&tree),
+            vec![
+                (0, "# Heading"),
+                (0, "First prose line\nsecond prose line"),
+                (0, "Existing"),
+                (0, "Trailing prose"),
+            ]
+        );
+        assert_structural_round_trip(&content);
+    }
+
+    #[test]
+    fn lifts_page_properties_then_raw_body_and_all_raw_pages() {
+        let with_properties = "type:: Reference\nsort:: title\n\n# Catalog\n\nAlpha\nBeta";
+        let tree = parse_note(with_properties);
+        assert_eq!(
+            tree.page_properties,
+            vec![
+                ("type".to_string(), "Reference".to_string()),
+                ("sort".to_string(), "title".to_string()),
+            ]
+        );
+        assert_eq!(
+            structural_blocks(&tree),
+            vec![(0, "# Catalog"), (0, "Alpha\nBeta")]
+        );
+        assert_structural_round_trip(with_properties);
+
+        let all_raw = "One paragraph\ncontinues here\n\nSecond paragraph";
+        assert_eq!(
+            structural_blocks(&parse_note(all_raw)),
+            vec![
+                (0, "One paragraph\ncontinues here"),
+                (0, "Second paragraph"),
+            ]
+        );
+        assert_structural_round_trip(all_raw);
+    }
+
+    #[test]
+    fn canonicalizes_query_fence_as_bid_only_bullet_without_leading_newline() {
+        let content = "```query\n{:find [?b]\n :where\n [?b :block/content \"- literal\"]}\n```";
+        let tree = parse_note(content);
+        assert_eq!(structural_blocks(&tree), vec![(0, content)]);
+
+        let canonical = assert_structural_round_trip(content);
+        assert!(canonical.starts_with("- <!-- bid:"));
+        assert!(canonical.contains(" -->\n  ```query\n"));
+        assert_eq!(parse_note(&canonical).blocks[0].text, content);
+    }
+
+    #[test]
+    fn fence_payload_preserves_blank_lines_extra_indent_and_internal_bullets() {
+        let content = "```text\n+---+\n\n    - payload, not a block  \n  | x |\n```\n- Real block";
+        let tree = parse_note(content);
+        assert_eq!(tree.blocks.len(), 2);
+        assert_eq!(
+            tree.blocks[0].text,
+            "```text\n+---+\n\n    - payload, not a block  \n  | x |\n```"
+        );
+        assert_eq!(tree.blocks[1].text, "Real block");
+        assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn fence_inside_bullet_owns_bullet_like_lines_until_close() {
+        let content = "- Example\n  before\n  ```query\n  - payload, not a child\n    extra indent\n  ```\n  after\n- Sibling";
+        let tree = parse_note(content);
+        assert_eq!(tree.blocks.len(), 2);
+        assert_eq!(
+            tree.blocks[0].text,
+            "Example\nbefore\n```query\n- payload, not a child\n  extra indent\n```\nafter"
+        );
+        assert_eq!(tree.blocks[1].text, "Sibling");
+        assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn unclosed_fence_owns_the_rest_of_the_body() {
+        let content = "```query\n- payload, not a block\n\n  still payload";
+        let tree = parse_note(content);
+        assert_eq!(tree.blocks.len(), 1);
+        assert_eq!(tree.blocks[0].text, content);
+        assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn unclosed_fence_preserves_a_terminal_blank_payload_line() {
+        let content = "```text\npayload\n\n";
+        let tree = parse_note(content);
+        assert_eq!(tree.blocks[0].text, "```text\npayload\n");
+        assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn longer_tilde_fence_ignores_shorter_marker_and_splits_adjacent_prose() {
+        let content = "before\n~~~~query\n~~~\n- payload, not a block\n~~~~\nafter";
+        let tree = parse_note(content);
+        assert_eq!(
+            structural_blocks(&tree),
+            vec![
+                (0, "before"),
+                (0, "~~~~query\n~~~\n- payload, not a block\n~~~~"),
+                (0, "after"),
+            ]
+        );
+        assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn valid_bid_comment_in_lifted_prose_remains_content() {
+        let literal_bid = fixture_uuid(0xa1);
+        let content = format!("literal metadata <!-- bid:{} --> remains", literal_bid);
+        let tree = parse_note(&content);
+        assert_eq!(tree.blocks[0].text, content);
+        assert_ne!(tree.blocks[0].id, literal_bid);
+
+        let canonical = assert_structural_round_trip(&content);
+        assert!(canonical.contains(&content));
+        assert_eq!(parse_note(&canonical).blocks[0].text, content);
+    }
+
+    #[test]
+    fn continuation_removes_only_expected_indent_and_short_indent_lifts_raw() {
+        let content = "- Diagram\n    +---+\n      | x |\n one-space raw\n    deeper raw";
+        let tree = parse_note(content);
+        assert_eq!(tree.blocks.len(), 2);
+        assert_eq!(tree.blocks[0].text, "Diagram\n  +---+\n    | x |");
+        assert_eq!(tree.blocks[1].text, " one-space raw\n    deeper raw");
+        assert_structural_round_trip(content);
+    }
+
     #[test]
     fn malformed_bid_treated_as_text() {
         let content = "- thing <!-- bid:not-a-uuid -->\n";
@@ -913,14 +1263,10 @@ mod tests {
         assert_eq!(after, after2);
     }
 
-    /// Audit A9b (2026-06-09): `parse_note → serialize_note` silently
-    /// deletes non-bullet body content (a `# Heading` / prose paragraph
-    /// before the first bullet), and `stamp_existing_notes` runs that
-    /// round-trip over every notes/*.md at server startup — so a
-    /// hand-authored or externally-dropped note with a heading + unstamped
-    /// bullets lost the heading permanently on first launch. The stamper
-    /// must detect the lossy round-trip and SKIP the file (warn) instead
-    /// of rewriting it.
+    /// Audit A9b (2026-06-09): startup stamping once deleted non-bullet
+    /// content. The parser now lifts that content, but the stamper remains
+    /// deliberately byte-conservative: it must not silently change an
+    /// external heading/prose page into canonical bullets on first launch.
     #[tokio::test]
     async fn stamp_existing_notes_preserves_non_bullet_heading() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -968,7 +1314,8 @@ mod tests {
         let tree = parse_note(&partly);
         assert!(stamp_is_content_preserving(&partly, &serialize_note(&tree)));
 
-        // And it must REFUSE when a heading would be dropped.
+        // And it must REFUSE when a heading would be structurally preserved
+        // but source-canonicalized into a bullet.
         let heading = "# H\n\n- bullet\n";
         let tree = parse_note(heading);
         assert!(!stamp_is_content_preserving(
@@ -977,10 +1324,9 @@ mod tests {
         ));
     }
 
-    /// Same gate, the other lossy shape: a blank-line-separated standalone
-    /// paragraph AFTER a bullet folds into the preceding block as
-    /// continuation text (structure mangled, blank line dropped). The
-    /// stamper must skip this file too.
+    /// Same gate, another canonicalizing shape: a standalone paragraph after
+    /// a bullet is now lifted safely, but startup still leaves the external
+    /// source byte-identical rather than rewriting it as a new bullet.
     #[tokio::test]
     async fn stamp_existing_notes_skips_prose_after_bullet() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -996,7 +1342,7 @@ mod tests {
         let after = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(
             after, original,
-            "a note whose round-trip folds prose into a bullet must be skipped"
+            "a note whose round-trip canonicalizes prose must be skipped"
         );
         assert_eq!(count, 0);
     }

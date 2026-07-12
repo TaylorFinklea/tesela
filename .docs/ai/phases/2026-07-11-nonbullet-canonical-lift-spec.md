@@ -98,7 +98,9 @@ The real-graph sandbox gate copies `~/logseq` without modifying it and proves:
 ## Phase boundaries
 
 1. Core scanner/serializer, semantic-preservation predicate, and golden corpus.
-2. Engine hydration, materialization, snapshot, relay, and convergence tests.
+2. Engine hydration, materialization, snapshot, relay, and convergence tests;
+   make Rust block indexing plus property/lifecycle classification fence-aware
+   so payload lines such as `- literal` and `status:: done` remain inert text.
 3. Web/iOS display and edit regressions for lifted heading/prose/fence blocks.
 4. `tesela-ewj.1` writer seam plus shared stable note-id helper.
 5. In-process server import through the correct active/temporary engine, with
