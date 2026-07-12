@@ -8,6 +8,7 @@ bench = false
 
 [dependencies]
 tesela-core = { path = "../tesela-core" }
+anyhow.workspace = true
 
 # Serialization + wire format
 serde.workspace = true

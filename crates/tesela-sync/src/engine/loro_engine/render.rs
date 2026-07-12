@@ -84,37 +84,53 @@ impl LoroEngine {
     /// be resolved. This is what makes LoroEngine the sole writer of the
     /// mosaic in authoritative mode.
     pub(super) async fn materialize_note(&self, note_id: [u8; 16]) {
+        if let Err(e) = self.materialize_note_checked(note_id).await {
+            tracing::warn!(
+                "tesela-sync/loro: materialize {}: {e}",
+                hex_id(&note_id)
+            );
+        }
+    }
+
+    pub(super) async fn materialize_note_checked(
+        &self,
+        note_id: [u8; 16],
+    ) -> SyncResult<()> {
         // The views registry doc never materializes to notes/ — it has no
         // slug and is not a note (it would otherwise warn every import).
         if Self::is_views_doc(&note_id) {
-            return;
+            return Ok(());
         }
         let Some(dir) = self.inner.materialize_dir.as_ref() else {
-            return;
+            return Ok(());
         };
         let Some(full) = self.render_note_full(note_id).await else {
-            return;
+            return Err(SyncError::Storage(format!(
+                "cannot render {}",
+                hex_id(&note_id)
+            )));
         };
         let Some(slug) = self.slug_for_note(note_id).await else {
-            tracing::warn!(
-                "tesela-sync/loro: cannot materialize {} — no slug",
+            return Err(SyncError::Storage(format!(
+                "cannot materialize {} — no slug",
                 hex_id(&note_id)
-            );
-            return;
+            )));
         };
         let path = dir.join(format!("{slug}.md"));
         let tmp = unique_tmp(&path);
-        if let Err(e) = tokio::fs::write(&tmp, full.as_bytes()).await {
-            tracing::warn!("tesela-sync/loro: materialize write {}: {e}", tmp.display());
-            return;
-        }
+        tokio::fs::write(&tmp, full.as_bytes())
+            .await
+            .map_err(|e| {
+                SyncError::Storage(format!("materialize write {}: {e}", tmp.display()))
+            })?;
         if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-            tracing::warn!(
-                "tesela-sync/loro: materialize rename {}: {e}",
-                path.display()
-            );
             let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(SyncError::Storage(format!(
+                "materialize rename {}: {e}",
+                path.display()
+            )));
         }
+        Ok(())
     }
 
     /// Remove a materialized `<slug>.md` (authoritative NoteDelete). No-op

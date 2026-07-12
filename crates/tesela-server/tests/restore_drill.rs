@@ -149,13 +149,19 @@ async fn seed_two_peer_mosaic(mosaic: &Path) -> SeededMosaic {
         })
         .await
         .expect("first upsert");
-    // A second op so the doc carries multi-op HISTORY, not one commit.
+    // A second op so the doc carries multi-op HISTORY, not one commit. Use
+    // the stamped materialization and assign the new block an explicit bid,
+    // matching the identity-preserving whole-note edit path real clients use.
+    let second_content = format!(
+        "{}- gamma added later <!-- bid:33333333-3333-3333-3333-333333333333 -->\n",
+        engine.render_note(note_id).await.expect("render first upsert")
+    );
     engine
         .record_local(OpPayload::NoteUpsert {
             note_id,
             display_alias: Some(DRILL_SLUG.into()),
             title: "Drill Note".into(),
-            content: "- alpha\n- beta\n- gamma added later\n".into(),
+            content: second_content,
             created_at_millis: 1_750_000_000_000,
         })
         .await
@@ -180,15 +186,20 @@ async fn seed_two_peer_mosaic(mosaic: &Path) -> SeededMosaic {
         .import_doc_update(note_id, &full)
         .await
         .expect("B bootstraps from A");
+    let device_b_content = format!(
+        "{}- {} <!-- bid:44444444-4444-4444-4444-444444444444 -->\n",
+        engine_b
+            .render_note(note_id)
+            .await
+            .expect("B renders imported note"),
+        DEVICE_B_LINE
+    );
     engine_b
         .record_local(OpPayload::NoteUpsert {
             note_id,
             display_alias: Some(DRILL_SLUG.into()),
             title: "Drill Note".into(),
-            content: format!(
-                "- alpha\n- beta\n- gamma added later\n- {}\n",
-                DEVICE_B_LINE
-            ),
+            content: device_b_content,
             created_at_millis: 1_750_000_000_000,
         })
         .await
@@ -344,15 +355,19 @@ async fn engine_level_restore_drill() {
     assert_eq!(seeded.group_id_before, group_after.group_id);
 
     // The restored engine keeps writing as the SAME lineage.
+    let post_restore_content = format!(
+        "{}- post-restore edit <!-- bid:55555555-5555-5555-5555-555555555555 -->\n",
+        engine2
+            .render_note_full(note_id)
+            .await
+            .expect("render before post-restore write")
+    );
     engine2
         .record_local(OpPayload::NoteUpsert {
             note_id,
             display_alias: Some(DRILL_SLUG.into()),
             title: "Drill Note".into(),
-            content: format!(
-                "- alpha\n- beta\n- gamma added later\n- {}\n- post-restore edit\n",
-                DEVICE_B_LINE
-            ),
+            content: post_restore_content,
             created_at_millis: 1_750_000_000_000,
         })
         .await

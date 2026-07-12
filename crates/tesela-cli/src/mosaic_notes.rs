@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 pub(crate) use tesela_core::stable_uuid_from_slug;
-use tesela_sync::{Hlc, LoroEngine, OpPayload, SyncEngine};
+use tesela_sync::{Hlc, LoroEngine};
 
 use crate::backfill_task::{acquire_mosaic_lock, hex16, load_device_id};
 
@@ -86,24 +86,6 @@ pub(crate) fn read_non_resident_notes(
     Ok(out)
 }
 
-/// `title:` from a YAML frontmatter block (mirrors the engine's reseed
-/// title extraction); `None` if absent.
-pub(crate) fn frontmatter_title(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()?.trim_end_matches('\r') != "---" {
-        return None;
-    }
-    for line in lines {
-        if line.trim_end_matches('\r') == "---" {
-            return None;
-        }
-        if let Some(v) = line.strip_prefix("title:") {
-            return Some(v.trim().trim_matches('"').to_string());
-        }
-    }
-    None
-}
-
 /// Hydrate a non-resident note into the engine: a `NoteUpsert` of its
 /// materialized content — the per-bid-reconcile op every editor save
 /// records — so subsequent structured ops can address its blocks.
@@ -113,14 +95,7 @@ pub(crate) async fn hydrate_note(
     slug: &str,
     content: &str,
 ) -> Result<()> {
-    engine
-        .record_local(OpPayload::NoteUpsert {
-            note_id,
-            display_alias: Some(slug.to_string()),
-            title: frontmatter_title(content).unwrap_or_else(|| slug.to_string()),
-            content: content.to_string(),
-            created_at_millis: 0,
-        })
+    tesela_sync::hydrate_note(engine, note_id, slug, content)
         .await
         .map_err(|e| anyhow::anyhow!("hydrate note {slug}: {e}"))?;
     Ok(())

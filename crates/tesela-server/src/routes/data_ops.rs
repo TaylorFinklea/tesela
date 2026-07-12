@@ -7,7 +7,7 @@
 //! out to the installed `tesela` CLI binary — they're heavy + rare and
 //! avoid duplicating the ~2000-line importer modules.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -19,6 +19,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tesela_core::config::Config;
 use tesela_core::db::SqliteIndex;
+use tesela_core::import_logseq::{
+    apply_plan_with_writer, ApplyDecisions, ApplyOutcome, ImportPlan, PlanKind,
+};
+use tesela_sync::{EngineImportNoteWriter, Hlc, LoroEngine, SyncEngine};
 
 use crate::state::AppState;
 
@@ -591,6 +595,158 @@ pub struct ImportResponse {
     pub stderr: String,
 }
 
+struct ImportEngineHandle {
+    engine: Arc<dyn SyncEngine>,
+    _lock: Option<std::fs::File>,
+}
+
+async fn canonical_mosaic(path: &Path) -> Result<PathBuf, (StatusCode, String)> {
+    if !path.join(".tesela").is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{} is not a Tesela mosaic", path.display()),
+        ));
+    }
+    tokio::fs::canonicalize(path)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}: {e}", path.display())))
+}
+
+async fn validate_logseq_plan(
+    plan: &ImportPlan,
+    mosaic: &Path,
+) -> Result<(), (StatusCode, String)> {
+    let canonical_target = canonical_mosaic(mosaic).await?;
+    let canonical_plan = canonical_mosaic(Path::new(&plan.mosaic)).await?;
+    if canonical_plan != canonical_target {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Logseq plan was built for a different mosaic".to_string(),
+        ));
+    }
+    let canonical_notes = tokio::fs::canonicalize(mosaic.join("notes"))
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("notes directory: {e}")))?;
+    for item in &plan.items {
+        if item.kind == PlanKind::HardSkip {
+            continue;
+        }
+        let id_path = Path::new(&item.target_id);
+        let valid_id = !item.target_id.is_empty()
+            && id_path.parent() == Some(Path::new(""))
+            && id_path.file_name().and_then(|name| name.to_str()) == Some(item.target_id.as_str());
+        if !valid_id {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid import target id: {}", item.target_id),
+            ));
+        }
+        let target = PathBuf::from(&item.target_path);
+        let expected_name = format!("{}.md", item.target_id);
+        if target.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid target path for {}", item.target_id),
+            ));
+        }
+        let Some(parent) = target.parent() else {
+            return Err((StatusCode::BAD_REQUEST, "target path has no parent".to_string()));
+        };
+        let canonical_parent = tokio::fs::canonicalize(parent)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("target parent: {e}")))?;
+        if canonical_parent != canonical_notes {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("target escapes mosaic notes directory: {}", target.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn open_temporary_import_engine(
+    mosaic: &Path,
+) -> Result<ImportEngineHandle, (StatusCode, String)> {
+    canonical_mosaic(mosaic).await?;
+    let lock = crate::acquire_mosaic_lock(mosaic).map_err(|e| {
+        (
+            StatusCode::CONFLICT,
+            format!(
+                "could not lock import target {}: {e}; another server may be using it",
+                mosaic.display()
+            ),
+        )
+    })?;
+    let device = crate::load_or_create_device_id(mosaic).await;
+    let engine = LoroEngine::with_dirs(
+        device,
+        Arc::new(Hlc::new(device)),
+        mosaic.join(".tesela/loro"),
+        Some(mosaic.join("notes")),
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("open import engine: {e}"),
+        )
+    })?;
+    Ok(ImportEngineHandle {
+        engine: Arc::new(engine),
+        _lock: Some(lock),
+    })
+}
+
+async fn import_engine_for_mosaic(
+    state: &AppState,
+    mosaic: &Path,
+) -> Result<ImportEngineHandle, (StatusCode, String)> {
+    if canonical_mosaic(mosaic).await? == canonical_mosaic(&state.mosaic_root).await? {
+        return Ok(ImportEngineHandle {
+            engine: state.sync_engine.clone(),
+            _lock: None,
+        });
+    }
+    open_temporary_import_engine(mosaic).await
+}
+
+async fn apply_logseq_to_engine(
+    plan: &ImportPlan,
+    decisions: &ApplyDecisions,
+    mosaic: &Path,
+    handle: &ImportEngineHandle,
+) -> Result<ApplyOutcome, (StatusCode, String)> {
+    validate_logseq_plan(plan, mosaic).await?;
+    let mut writer = EngineImportNoteWriter::new(&*handle.engine);
+    apply_plan_with_writer(plan, decisions, mosaic, &mut writer)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+fn logseq_plan_summary(plan: &ImportPlan, dry_run: bool) -> String {
+    let counts = tesela_core::import_logseq::summarize(plan);
+    format!(
+        "{}:\n  Would import: {}\n  Unchanged (idempotent): {}\n  Conflicts: {}\n  Hard-skipped: {}\n",
+        if dry_run { "Dry run complete" } else { "Import complete" },
+        counts.new_imports,
+        counts.unchanged,
+        counts.conflicts,
+        counts.hard_skips
+    )
+}
+
+fn logseq_outcome_summary(outcome: &ApplyOutcome) -> String {
+    format!(
+        "  Imported: {}\n  Overwritten: {}\n  Renamed: {}\n  Skipped: {}\n  Assets copied: {}\n",
+        outcome.imported,
+        outcome.overwritten,
+        outcome.renamed,
+        outcome.skipped,
+        outcome.assets_copied
+    )
+}
+
 /// Shell out to the installed `tesela` CLI for imports. Avoids
 /// duplicating ~2000 lines of importer logic into both crates. The
 /// CLI's stdout already prints a structured summary; we just relay it.
@@ -639,9 +795,41 @@ pub async fn import_logseq(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ImportResponse>, (StatusCode, String)> {
-    run_import_cli(&state, "import-logseq", &req.source, req.dry_run)
-        .await
-        .map(Json)
+    let source = PathBuf::from(&req.source);
+    let mosaic = state.mosaic_root.clone();
+    let plan_mosaic = mosaic.clone();
+    let plan = tokio::task::spawn_blocking(move || {
+        tesela_core::import_logseq::build_plan(&source, &plan_mosaic)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut stdout = logseq_plan_summary(&plan, req.dry_run);
+    if req.dry_run {
+        return Ok(Json(ImportResponse {
+            kind: "logseq".to_string(),
+            success: true,
+            stdout,
+            stderr: String::new(),
+        }));
+    }
+
+    let handle = import_engine_for_mosaic(&state, &mosaic).await?;
+    let outcome = apply_logseq_to_engine(
+        &plan,
+        &ApplyDecisions::default(),
+        &mosaic,
+        &handle,
+    )
+    .await?;
+    stdout.push_str(&logseq_outcome_summary(&outcome));
+    let stderr = outcome.errors.join("\n");
+    Ok(Json(ImportResponse {
+        kind: "logseq".to_string(),
+        success: outcome.errors.is_empty(),
+        stdout,
+        stderr,
+    }))
 }
 
 pub async fn import_org(
@@ -711,9 +899,8 @@ pub async fn apply_logseq(
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(|| state.mosaic_root.clone());
-    let outcome = tesela_core::import_logseq::apply_plan(&req.plan, &req.decisions, &mosaic)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)))?;
+    let handle = import_engine_for_mosaic(&state, &mosaic).await?;
+    let outcome = apply_logseq_to_engine(&req.plan, &req.decisions, &mosaic, &handle).await?;
     Ok(Json(outcome))
 }
 
@@ -1047,37 +1234,62 @@ pub async fn create_mosaic(
     let mut import_success = None;
 
     if let Some(spec) = req.import {
-        let subcommand = match spec.kind.as_str() {
-            "obsidian" => "import-obsidian",
-            "logseq" => "import-logseq",
-            "org" => "import-org",
-            other => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("unknown import kind: {}", other),
-                ));
-            }
-        };
-        let mosaic_str = path.to_string_lossy().into_owned();
-        let source_owned = spec.source.clone();
-        let subcommand_owned = subcommand.to_string();
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("tesela")
-                .arg("--mosaic")
-                .arg(&mosaic_str)
-                .arg(&subcommand_owned)
-                .arg("--source")
-                .arg(&source_owned)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-        })
-        .await
-        .map_err(internal)?
-        .map_err(internal_io)?;
-        import_success = Some(output.status.success());
-        import_stdout = Some(String::from_utf8_lossy(&output.stdout).into_owned());
-        import_stderr = Some(String::from_utf8_lossy(&output.stderr).into_owned());
+        if spec.kind == "logseq" {
+            let source = PathBuf::from(&spec.source);
+            let plan_mosaic = path.clone();
+            let plan = tokio::task::spawn_blocking(move || {
+                tesela_core::import_logseq::build_plan(&source, &plan_mosaic)
+            })
+            .await
+            .map_err(internal)?
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            let handle = open_temporary_import_engine(&path).await?;
+            let outcome = apply_logseq_to_engine(
+                &plan,
+                &ApplyDecisions::default(),
+                &path,
+                &handle,
+            )
+            .await?;
+            import_success = Some(outcome.errors.is_empty());
+            import_stdout = Some(format!(
+                "{}{}",
+                logseq_plan_summary(&plan, false),
+                logseq_outcome_summary(&outcome)
+            ));
+            import_stderr = Some(outcome.errors.join("\n"));
+        } else {
+            let subcommand = match spec.kind.as_str() {
+                "obsidian" => "import-obsidian",
+                "org" => "import-org",
+                other => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("unknown import kind: {}", other),
+                    ));
+                }
+            };
+            let mosaic_str = path.to_string_lossy().into_owned();
+            let source_owned = spec.source.clone();
+            let subcommand_owned = subcommand.to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("tesela")
+                    .arg("--mosaic")
+                    .arg(&mosaic_str)
+                    .arg(&subcommand_owned)
+                    .arg("--source")
+                    .arg(&source_owned)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output()
+            })
+            .await
+            .map_err(internal)?
+            .map_err(internal_io)?;
+            import_success = Some(output.status.success());
+            import_stdout = Some(String::from_utf8_lossy(&output.stdout).into_owned());
+            import_stderr = Some(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
     }
 
     Ok(Json(CreateMosaicResponse {
@@ -1347,6 +1559,7 @@ fn server_error<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn respawn_detached_command_clears_parent_watchdog_env_before_exec() {
@@ -1356,5 +1569,36 @@ mod tests {
         assert!(
             command.contains("TESELA_DEFAULT_MOSAIC='/tmp/my mosaic' exec '/tmp/tesela-server'")
         );
+    }
+
+    #[tokio::test]
+    async fn logseq_plan_validation_rejects_engine_slug_traversal() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".tesela")).unwrap();
+        std::fs::create_dir_all(temp.path().join("notes")).unwrap();
+        let plan = ImportPlan {
+            items: vec![tesela_core::import_logseq::PlanItem {
+                source_rel: "pages/Escape.md".to_string(),
+                source_sha: "sha".to_string(),
+                target_id: "../escape".to_string(),
+                target_path: temp
+                    .path()
+                    .join("notes/escape.md")
+                    .to_string_lossy()
+                    .into_owned(),
+                kind: PlanKind::NewImport,
+                reason: None,
+                rendered_preview: None,
+                existing_preview: None,
+                existing_sha: None,
+                rendered_full: Some("- escape\n".to_string()),
+            }],
+            source: temp.path().to_string_lossy().into_owned(),
+            mosaic: temp.path().to_string_lossy().into_owned(),
+        };
+
+        let error = validate_logseq_plan(&plan, temp.path()).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.contains("invalid import target id"));
     }
 }

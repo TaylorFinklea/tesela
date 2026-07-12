@@ -390,6 +390,24 @@ pub trait ImportNoteWriter: Send {
         target_path: &Path,
         content: &str,
     ) -> Result<()>;
+
+    async fn write_notes(&mut self, writes: &[ImportNoteWrite]) -> Vec<Result<()>> {
+        let mut results = Vec::with_capacity(writes.len());
+        for write in writes {
+            results.push(
+                self.write_note(&write.target_id, &write.target_path, &write.content)
+                    .await,
+            );
+        }
+        results
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportNoteWrite {
+    pub target_id: String,
+    pub target_path: PathBuf,
+    pub content: String,
 }
 
 #[derive(Debug, Default)]
@@ -411,6 +429,12 @@ impl ImportNoteWriter for FilesystemImportNoteWriter {
     }
 }
 
+enum ApplyWriteKind {
+    Import,
+    Overwrite,
+    Rename,
+}
+
 pub async fn apply_plan(
     plan: &ImportPlan,
     decisions: &ApplyDecisions,
@@ -427,6 +451,8 @@ pub async fn apply_plan_with_writer<W: ImportNoteWriter + ?Sized>(
     writer: &mut W,
 ) -> Result<ApplyOutcome> {
     let mut outcome = ApplyOutcome::default();
+    let mut note_writes = Vec::new();
+    let mut write_kinds = Vec::new();
 
     for item in &plan.items {
         let decision = decisions
@@ -455,34 +481,24 @@ pub async fn apply_plan_with_writer<W: ImportNoteWriter + ?Sized>(
                     continue;
                 }
                 let content = item.rendered_full.as_deref().unwrap_or_default();
-                match writer
-                    .write_note(&item.target_id, &target_path, content)
-                    .await
-                {
-                    Ok(_) => outcome.imported += 1,
-                    Err(e) => {
-                        outcome
-                            .errors
-                            .push(format!("write {}: {}", target_path.display(), e))
-                    }
-                }
+                note_writes.push(ImportNoteWrite {
+                    target_id: item.target_id.clone(),
+                    target_path,
+                    content: content.to_string(),
+                });
+                write_kinds.push(ApplyWriteKind::Import);
             }
             PlanKind::ConflictDiffSha | PlanKind::ConflictForeign => {
                 let content = item.rendered_full.as_deref().unwrap_or_default();
                 match decision {
                     Decision::Skip => outcome.skipped += 1,
                     Decision::Overwrite => {
-                        match writer
-                            .write_note(&item.target_id, &target_path, content)
-                            .await
-                        {
-                            Ok(_) => outcome.overwritten += 1,
-                            Err(e) => outcome.errors.push(format!(
-                                "overwrite {}: {}",
-                                target_path.display(),
-                                e
-                            )),
-                        }
+                        note_writes.push(ImportNoteWrite {
+                            target_id: item.target_id.clone(),
+                            target_path,
+                            content: content.to_string(),
+                        });
+                        write_kinds.push(ApplyWriteKind::Overwrite);
                     }
                     Decision::Rename { suffix } => {
                         let renamed_id = format!("{}{}", item.target_id, sanitize_suffix(&suffix));
@@ -494,17 +510,50 @@ pub async fn apply_plan_with_writer<W: ImportNoteWriter + ?Sized>(
                             ));
                             continue;
                         }
-                        match writer.write_note(&renamed_id, &renamed, content).await {
-                            Ok(_) => outcome.renamed += 1,
-                            Err(e) => outcome.errors.push(format!(
-                                "rename write {}: {}",
-                                renamed.display(),
-                                e
-                            )),
-                        }
+                        note_writes.push(ImportNoteWrite {
+                            target_id: renamed_id,
+                            target_path: renamed,
+                            content: content.to_string(),
+                        });
+                        write_kinds.push(ApplyWriteKind::Rename);
                     }
                 }
             }
+        }
+    }
+
+    if !note_writes.is_empty() {
+        let mut results = writer.write_notes(&note_writes).await.into_iter();
+        for (write, kind) in note_writes.iter().zip(write_kinds) {
+            match results.next() {
+                Some(Ok(())) => match kind {
+                    ApplyWriteKind::Import => outcome.imported += 1,
+                    ApplyWriteKind::Overwrite => outcome.overwritten += 1,
+                    ApplyWriteKind::Rename => outcome.renamed += 1,
+                },
+                Some(Err(e)) => {
+                    let action = match kind {
+                        ApplyWriteKind::Import => "write",
+                        ApplyWriteKind::Overwrite => "overwrite",
+                        ApplyWriteKind::Rename => "rename write",
+                    };
+                    outcome.errors.push(format!(
+                        "{} {}: {}",
+                        action,
+                        write.target_path.display(),
+                        e
+                    ));
+                }
+                None => outcome.errors.push(format!(
+                    "writer returned no result for {}",
+                    write.target_path.display()
+                )),
+            }
+        }
+        if results.next().is_some() {
+            outcome
+                .errors
+                .push("writer returned more results than requested".to_string());
         }
     }
 
@@ -1224,6 +1273,7 @@ tags:: idea, project
     #[derive(Default)]
     struct RecordingWriter {
         writes: Vec<(String, PathBuf, String)>,
+        batch_calls: usize,
     }
 
     #[async_trait::async_trait]
@@ -1240,6 +1290,18 @@ tags:: idea, project
                 content.to_string(),
             ));
             Ok(())
+        }
+
+        async fn write_notes(&mut self, writes: &[ImportNoteWrite]) -> Vec<Result<()>> {
+            self.batch_calls += 1;
+            let mut results = Vec::with_capacity(writes.len());
+            for write in writes {
+                results.push(
+                    self.write_note(&write.target_id, &write.target_path, &write.content)
+                        .await,
+                );
+            }
+            results
         }
     }
 
@@ -1300,6 +1362,7 @@ tags:: idea, project
         assert_eq!(outcome.renamed, 1);
         assert_eq!(outcome.unchanged, 1);
         assert_eq!(outcome.skipped, 1);
+        assert_eq!(writer.batch_calls, 1);
         assert_eq!(
             writer.writes,
             vec![

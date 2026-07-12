@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use tesela_core::stable_uuid_from_slug;
-use tesela_sync::{DeviceId, Hlc, LoroEngine, OpPayload, SyncEngine};
+use tesela_sync::{DeviceId, Hlc, LoroEngine};
 
 /// Read the mosaic's existing device id (no write); falls back to a random
 /// id if absent/malformed. Mirrors `tesela-cli::backfill_task::load_device_id`.
@@ -69,24 +69,6 @@ fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
         anyhow::bail!("lock held (EWOULDBLOCK)");
     }
     Ok(file)
-}
-
-/// `title:` from a YAML frontmatter block; `None` if absent. Mirrors
-/// `tesela-cli::mosaic_notes::frontmatter_title`.
-fn frontmatter_title(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()?.trim_end_matches('\r') != "---" {
-        return None;
-    }
-    for line in lines {
-        if line.trim_end_matches('\r') == "---" {
-            return None;
-        }
-        if let Some(v) = line.strip_prefix("title:") {
-            return Some(v.trim().trim_matches('"').to_string());
-        }
-    }
-    None
 }
 
 /// Turn a plain-text body into the bullet form the block-model round trip
@@ -137,14 +119,7 @@ async fn hydrate_note(
     slug: &str,
     content: &str,
 ) -> Result<()> {
-    engine
-        .record_local(OpPayload::NoteUpsert {
-            note_id,
-            display_alias: Some(slug.to_string()),
-            title: frontmatter_title(content).unwrap_or_else(|| slug.to_string()),
-            content: content.to_string(),
-            created_at_millis: 0,
-        })
+    tesela_sync::hydrate_note(engine, note_id, slug, content)
         .await
         .map_err(|e| anyhow::anyhow!("hydrate note {slug}: {e}"))?;
     Ok(())

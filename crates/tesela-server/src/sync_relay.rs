@@ -1424,13 +1424,20 @@ mod tests {
             .map(|(_, _, p)| p.clone())
             .expect("B deposited in the first pass");
 
-        // Edit ONLY note A.
+        // Edit ONLY note A. Preserve the materialized bid, as real clients do;
+        // a changed unstamped whole-note rewrite is intentionally ambiguous
+        // against resident CRDT history and must fail closed.
+        let edited_a = engine_a
+            .render_note(NID_A)
+            .await
+            .unwrap()
+            .replace("hello delta", "hello delta EDITED");
         engine_a
             .record_local(OpPayload::NoteUpsert {
                 note_id: NID_A,
                 display_alias: Some("delta".into()),
                 title: "delta".into(),
-                content: "- hello delta EDITED\n".into(),
+                content: edited_a,
                 created_at_millis: 2,
             })
             .await

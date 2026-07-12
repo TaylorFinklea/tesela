@@ -39,11 +39,12 @@ use crate::hlc::Hlc;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload, PropOp};
 use crate::PropScalar;
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
 use loro::{
     ExportMode, LoroDoc, LoroText, LoroTree, TreeID, TreeParentId, UpdateOptions, VersionVector,
 };
 use loro::cursor::{Cursor, Side};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -53,6 +54,8 @@ use tokio::sync::RwLock;
 /// concurrent writers never collide on the same `.tmp` path and publish
 /// a torn snapshot via rename (review finding [8]).
 static SNAPSHOT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+const IMPORT_BATCH_CONCURRENCY: usize = 16;
 
 /// Build a unique temp path next to `path` for atomic write+rename.
 fn unique_tmp(path: &Path) -> PathBuf {
@@ -242,6 +245,10 @@ struct Inner {
     /// Lets callers list notes / resolve refs without loading every
     /// per-note doc into memory. Persisted to `<dir>/_index.bin`.
     index: LoroDoc,
+    /// Serializes `_index.bin` export + atomic publish. Unique temp names
+    /// prevent torn files, but without this lock an older export can rename
+    /// after a newer one and leave a current-schema yet incomplete index.
+    index_persist_lock: tokio::sync::Mutex<()>,
     /// Resident block_id → note_id map. Lets block-only ops
     /// (BlockMove/BlockDelete) resolve the owning note in O(1) instead
     /// of scanning every doc's tree, and is the prerequisite for
@@ -366,6 +373,7 @@ impl LoroEngine {
                 hlc,
                 snapshot_dir: None,
                 index: LoroDoc::new(),
+                index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
@@ -391,6 +399,7 @@ impl LoroEngine {
                 hlc,
                 snapshot_dir: None,
                 index: LoroDoc::new(),
+                index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
@@ -472,7 +481,6 @@ impl LoroEngine {
             .and_then(|v| v.into_value().ok())
             .and_then(|v| v.into_i64().ok())
             .unwrap_or(0);
-        let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION && !docs.is_empty();
         // Build the block_index from the loaded docs (block_id → note_id).
         let block_index = build_block_index(&docs);
         // Restore per-note broadcast cursors so a restart doesn't re-emit
@@ -488,6 +496,7 @@ impl LoroEngine {
                 hlc,
                 snapshot_dir: Some(snapshot_dir.clone()),
                 index,
+                index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(block_index),
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
@@ -498,11 +507,13 @@ impl LoroEngine {
                 outbound_strand_alarms: AtomicU64::new(0),
             }),
         };
+        let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION
+            || !engine.index_matches_loaded_docs().await;
         if needs_rebuild {
             engine.rebuild_index_from_docs().await;
             engine.save_index_snapshot(&snapshot_dir).await;
             tracing::info!(
-                "tesela-sync/loro: rebuilt index (schema {} → {})",
+                "tesela-sync/loro: rebuilt index projection (schema {} → {})",
                 stored_version,
                 INDEX_SCHEMA_VERSION
             );
@@ -1152,43 +1163,55 @@ impl LoroEngine {
         }
     }
 
-    /// Write the per-note snapshot to disk, or delete the snapshot
-    /// file if the note's doc has been removed (NoteDelete). Best-effort
-    /// — failures warn but don't propagate.
+    /// Best-effort wrapper used by ordinary single mutations.
     async fn save_snapshot(&self, dir: &Path, note_id: [u8; 16]) {
+        if let Err(e) = self.save_snapshot_checked(dir, note_id).await {
+            tracing::warn!(
+                "tesela-sync/loro: snapshot persist for {}: {e}",
+                hex_id(&note_id)
+            );
+        }
+    }
+
+    /// Write the per-note snapshot to disk, or delete it after NoteDelete.
+    /// The import batch uses the checked result so it never publishes a
+    /// Markdown file for a note whose CRDT snapshot was not durable.
+    async fn save_snapshot_checked(&self, dir: &Path, note_id: [u8; 16]) -> SyncResult<()> {
         let path = dir.join(format!("{}.bin", hex_id(&note_id)));
         let docs = self.inner.docs.read().await;
         match docs.get(&note_id) {
             Some(doc) => {
-                let bytes = match doc.export(ExportMode::Snapshot) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(
-                            "tesela-sync/loro: snapshot export for {}: {e}",
-                            hex_id(&note_id)
-                        );
-                        return;
-                    }
-                };
+                let bytes = doc.export(ExportMode::Snapshot).map_err(|e| {
+                    SyncError::Storage(format!(
+                        "snapshot export for {}: {e}",
+                        hex_id(&note_id)
+                    ))
+                })?;
                 let tmp = unique_tmp(&path);
-                if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
-                    tracing::warn!("tesela-sync/loro: snapshot write {}: {e}", tmp.display());
-                    return;
-                }
+                tokio::fs::write(&tmp, &bytes).await.map_err(|e| {
+                    SyncError::Storage(format!("snapshot write {}: {e}", tmp.display()))
+                })?;
                 if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-                    tracing::warn!("tesela-sync/loro: snapshot rename {}: {e}", path.display());
                     let _ = tokio::fs::remove_file(&tmp).await;
+                    return Err(SyncError::Storage(format!(
+                        "snapshot rename {}: {e}",
+                        path.display()
+                    )));
                 }
             }
             None => {
                 // Doc gone (NoteDelete). Remove the snapshot if present.
                 if let Err(e) = tokio::fs::remove_file(&path).await {
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!("tesela-sync/loro: snapshot delete {}: {e}", path.display());
+                        return Err(SyncError::Storage(format!(
+                            "snapshot delete {}: {e}",
+                            path.display()
+                        )));
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Persist the per-note broadcast cursors to `<snapshot_dir>/_broadcast.bin`
@@ -2546,6 +2569,45 @@ impl SyncEngine for LoroEngine {
         }
     }
 
+    async fn record_local_batch(
+        &self,
+        payloads: Vec<OpPayload>,
+    ) -> Vec<SyncResult<ContentHash>> {
+        let mut note_ids = HashSet::with_capacity(payloads.len());
+        let unique_note_upserts = payloads.iter().all(|payload| match payload {
+            OpPayload::NoteUpsert { note_id, .. } => note_ids.insert(*note_id),
+            _ => false,
+        });
+        if !unique_note_upserts {
+            let mut results = Vec::with_capacity(payloads.len());
+            for payload in payloads {
+                results.push(self.record_local(payload).await);
+            }
+            return results;
+        }
+
+        let results = stream::iter(payloads.into_iter().map(|payload| {
+            let engine = self.clone();
+            async move {
+                let note_id = match &payload {
+                    OpPayload::NoteUpsert { note_id, .. } => *note_id,
+                    _ => unreachable!("batch eligibility checked above"),
+                };
+                let apply_lock = engine.apply_lock_for_note(note_id).await;
+                let _apply_guard = apply_lock.lock().await;
+                engine.record_import_note_upsert_locked(payload).await
+            }
+        }))
+        .buffered(IMPORT_BATCH_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_index_snapshot(dir).await;
+        }
+        results
+    }
+
     async fn local_cursor(&self) -> SyncResult<LocalCursor> {
         Ok(LocalCursor::Earliest)
     }
@@ -2711,10 +2773,38 @@ impl LoroEngine {
     /// `tokio::sync::Mutex` from within its own critical section deadlocks
     /// (it is not reentrant).
     async fn record_local_locked(&self, payload: OpPayload) -> SyncResult<ContentHash> {
+        self.record_local_locked_with_index(payload, true).await
+    }
+
+    async fn record_local_locked_with_index(
+        &self,
+        payload: OpPayload,
+        persist_index_snapshot: bool,
+    ) -> SyncResult<ContentHash> {
         let hlc = self.inner.hlc.now();
         let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
         let hash = op.content_hash;
-        self.apply_payload(&payload).await?;
+        self.apply_payload_with_index_snapshot(&payload, persist_index_snapshot)
+            .await?;
+        Ok(hash)
+    }
+
+    async fn record_import_note_upsert_locked(
+        &self,
+        payload: OpPayload,
+    ) -> SyncResult<ContentHash> {
+        let hlc = self.inner.hlc.now();
+        let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
+        let hash = op.content_hash;
+        let note_id = self.apply_payload_inner(&payload).await?.ok_or_else(|| {
+            SyncError::Protocol("import NoteUpsert did not touch a note".to_string())
+        })?;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot_checked(dir, note_id).await?;
+        }
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note_checked(note_id).await?;
+        }
         Ok(hash)
     }
 
@@ -2729,6 +2819,14 @@ impl LoroEngine {
     /// engine was constructed with `with_snapshot_dir` — so the shadow
     /// survives process restart without re-replaying the oplog.
     pub async fn apply_payload(&self, payload: &OpPayload) -> SyncResult<()> {
+        self.apply_payload_with_index_snapshot(payload, true).await
+    }
+
+    async fn apply_payload_with_index_snapshot(
+        &self,
+        payload: &OpPayload,
+        persist_index_snapshot: bool,
+    ) -> SyncResult<()> {
         // For an authoritative NoteDelete, resolve the slug BEFORE the
         // inner apply drops the doc + index entry — afterwards
         // `slug_for_note` can't find it, so a NoteDelete whose op carries
@@ -2751,10 +2849,12 @@ impl LoroEngine {
             self.save_snapshot(dir, note_id).await;
             // The index only changes on note create/delete; persist it
             // then (cheap, infrequent).
-            if matches!(
-                payload,
-                OpPayload::NoteUpsert { .. } | OpPayload::NoteDelete { .. }
-            ) {
+            if persist_index_snapshot
+                && matches!(
+                    payload,
+                    OpPayload::NoteUpsert { .. } | OpPayload::NoteDelete { .. }
+                )
+            {
                 self.save_index_snapshot(dir).await;
             }
         }

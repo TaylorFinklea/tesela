@@ -97,6 +97,65 @@ fn extract_index_metadata(
 }
 
 impl LoroEngine {
+    /// Confirm that the persisted derived index is the exact projection of
+    /// the durable note snapshots loaded at boot. Note-id coverage alone is
+    /// insufficient: a failed batch-final checkpoint can leave current-schema
+    /// title/tag/link metadata stale for an existing note.
+    pub(super) async fn index_matches_loaded_docs(&self) -> bool {
+        let existing: std::collections::HashMap<String, crate::engine::IndexEntry> = self
+            .index_entries()
+            .await
+            .into_iter()
+            .map(|entry| (entry.note_id.clone(), entry))
+            .collect();
+        let docs = self.inner.docs.read().await;
+        let note_count = docs
+            .keys()
+            .filter(|note_id| !Self::is_views_doc(note_id))
+            .count();
+        if existing.len() != note_count {
+            return false;
+        }
+
+        for (note_id, doc) in docs.iter() {
+            if Self::is_views_doc(note_id) {
+                continue;
+            }
+            let key = hex_id(note_id);
+            let Some(entry) = existing.get(&key) else {
+                return false;
+            };
+            let root = doc.get_map("root");
+            let read = |field: &str| -> String {
+                root.get(field)
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .map(|value| (*value).clone())
+                    .unwrap_or_default()
+            };
+            let content = doc_full_markdown(doc);
+            let slug = match read("slug") {
+                value if !value.is_empty() => value,
+                _ => entry.slug.clone(),
+            };
+            let title = match read("title") {
+                value if !value.is_empty() => value,
+                _ if !entry.title.is_empty() => entry.title.clone(),
+                _ => frontmatter_title(&content).unwrap_or_else(|| slug.clone()),
+            };
+            let parsed = tesela_core::note_tree::parse_note(&content);
+            let (tags, links) = extract_index_metadata(&content, &parsed.page_properties);
+            if entry.title != title
+                || entry.slug != slug
+                || entry.tags != tags
+                || entry.links != links
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Rebuild every index entry from the loaded per-note docs. Each doc's
     /// full markdown is reconstructed via `doc_full_markdown` (frontmatter +
     /// rendered body, or the legacy root `content` for pre-dedup docs), and
@@ -286,6 +345,7 @@ impl LoroEngine {
 
     /// Persist the index doc to `<dir>/_index.bin`. Best-effort.
     pub(super) async fn save_index_snapshot(&self, dir: &Path) {
+        let _persist_guard = self.inner.index_persist_lock.lock().await;
         let bytes = match self.inner.index.export(ExportMode::Snapshot) {
             Ok(b) => b,
             Err(e) => {

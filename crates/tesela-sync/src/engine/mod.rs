@@ -2,10 +2,12 @@
 
 pub mod applied;
 pub mod cursor;
+pub mod hydration;
 pub mod loro_engine;
 
 pub use applied::AppliedChanges;
 pub use cursor::{LocalCursor, PeerCursor};
+pub use hydration::{hydrate_note, EngineImportNoteWriter};
 pub use loro_engine::LoroEngine;
 
 use crate::device::DeviceId;
@@ -117,6 +119,21 @@ pub trait SyncEngine: Send + Sync {
     /// here when sync is enabled. The engine appends an oplog row and
     /// returns the resulting content hash.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash>;
+
+    /// Record a bounded group of independent local mutations. The default is
+    /// deliberately sequential; `LoroEngine` specializes unique NoteUpserts
+    /// so bulk import can checkpoint the shared derived index once while each
+    /// note still completes its own durable snapshot + materialization tail.
+    async fn record_local_batch(
+        &self,
+        payloads: Vec<OpPayload>,
+    ) -> Vec<SyncResult<ContentHash>> {
+        let mut results = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            results.push(self.record_local(payload).await);
+        }
+        results
+    }
 
     /// Current cursor for ops THIS device has produced.
     async fn local_cursor(&self) -> SyncResult<LocalCursor>;

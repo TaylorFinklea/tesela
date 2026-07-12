@@ -215,6 +215,47 @@ fn test_completions() {
         .success();
 }
 
+#[cfg(unix)]
+#[test]
+fn logseq_import_refuses_a_server_locked_mosaic() {
+    use std::os::unix::io::AsRawFd;
+
+    let temp = TempDir::new().unwrap();
+    let mosaic = temp.path().join("mosaic");
+    let source = temp.path().join("graph/pages");
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("init")
+        .arg(&mosaic)
+        .assert()
+        .success();
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("Locked.md"), "- locked\n").unwrap();
+
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(mosaic.join(".tesela/server.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("--mosaic")
+        .arg(&mosaic)
+        .arg("import-logseq")
+        .arg("--source")
+        .arg(temp.path().join("graph"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("CLI refuses to bypass the lock"));
+}
+
 /// Trust artifact: full end-to-end flow proving an imported Logseq
 /// graph round-trips losslessly through the backup pipeline.
 ///
