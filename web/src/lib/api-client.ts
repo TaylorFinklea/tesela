@@ -731,6 +731,8 @@ export interface SyncPairWithCodeResult {
   display_name: string;
   url: string;
   adopted_group: boolean;
+  relay_configured: boolean;
+  restart_required: boolean;
 }
 /** `tesela-ra7` P0.3c — the current mosaic's 24-word BIP39 recovery
  *  phrase. Space-separated; the phrase IS the group key in plaintext. */

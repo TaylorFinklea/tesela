@@ -201,9 +201,12 @@
     pasteResultMsg = null;
     try {
       const r = await api.syncPairWithCode(pasteCode.trim());
-      pasteResultMsg = r.adopted_group
+      const pairedMessage = r.adopted_group
         ? `Paired with ${r.display_name || r.device_id_hex.slice(0, 8)} (adopted their group key).`
         : `Paired with ${r.display_name || r.device_id_hex.slice(0, 8)}.`;
+      pasteResultMsg = r.restart_required
+        ? `${pairedMessage} Quit and reopen Tesela to start relay sync.`
+        : pairedMessage;
       pasteCode = "";
       await refresh();
     } catch (e) {
@@ -373,9 +376,10 @@
     Pair via code
   </h2>
   <p class="text-[11px] text-muted-foreground/70 mb-2">
-    On the device you want to bring in, open <span class="font-mono">Settings → Devices</span>, click
-    <em>Show pairing code</em>, copy the code, and paste it below. One step pairs the device and
-    shares the group key.
+    On the device that already has the mosaic you want to join, open
+    <span class="font-mono">Settings → Devices</span>, click <em>Show pairing code</em>, and copy
+    the raw code. Then paste it on this joining device below. This device will adopt the issuer's
+    mosaic identity.
   </p>
   <textarea
     placeholder="Paste pairing code…"

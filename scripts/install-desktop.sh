@@ -56,6 +56,11 @@ rm -rf "$BACKUP"
 echo "→ installing new build → $DST"
 rm -rf "$DST"
 cp -R "$SRC" "$DST"
+if ! codesign --verify --deep --strict "$DST" >/dev/null 2>&1; then
+  echo "→ sealing local bundle with an ad-hoc signature…"
+  codesign --force --deep --sign - "$DST"
+fi
+codesign --verify --deep --strict "$DST"
 echo "  installed: $(stat -f '%Sm' "$DST/Contents/MacOS/tesela-desktop")"
 
 echo "→ relaunching…"

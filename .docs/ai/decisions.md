@@ -609,3 +609,9 @@ Fable orchestrated a first full GPT-5.6 fleet (Taylor-directed 5.6-only, all thr
 **Decision:** every non-dry Logseq apply hydrates `NoteUpsert`s through the engine; the importer never writes note Markdown directly. An active-mosaic request reuses the server's resident engine and existing flock. Any other mosaic gets a temporary engine while its own server lock is held. The standalone CLI also acquires that lock, so it fails visibly instead of racing a server.
 
 **Batch durability:** unique-note imports run with bounded concurrency while each note keeps its apply lock through CRDT mutation, checked snapshot persistence, and checked Markdown materialization. Only the rebuildable shared index checkpoint is deferred to the end. Successful notes remain committed on a partial failure; detailed failures are returned, and the CLI exits nonzero. On restart, the loaded index's complete title/slug/tag/link projection is compared with durable note snapshots and rebuilt on any drift, including same-ID overwrites and ghost-only indexes. This removes the O(n²) index rewrite without widening the per-note mutation-to-snapshot crash window.
+
+### 2026-07-12 — Desktop minimum macOS 12 matches the transcription runtime
+
+**Decision:** declare `bundle.macOS.minimumSystemVersion` as `12.0`. Tauri otherwise targets macOS 10.13, but the bundled transcribe.cpp/ggml backend requires C++ `std::filesystem` (macOS 10.15) and calls Metal shared-event synchronization APIs introduced in macOS 12 without a compatibility guard. macOS 12 is therefore the first supportable deployment target, not merely a compiler workaround.
+
+An environment-only `MACOSX_DEPLOYMENT_TARGET` override was rejected: it would leave the canonical build script broken on a clean machine and let the app metadata overstate runtime compatibility. Keeping the minimum in `tauri.conf.json` makes Tauri apply the same boundary to compilation and the installed bundle's `LSMinimumSystemVersion`.

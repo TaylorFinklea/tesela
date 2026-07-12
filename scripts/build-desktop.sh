@@ -19,7 +19,9 @@ echo "==> 1/3  building web frontend (web/build)…"
 # exported (e.g. CI secrets); otherwise pull from the macOS Keychain items
 # this repo's `tesela-ejn.1` setup created (`security add-generic-password`,
 # never a file on disk). Missing either just means `cargo tauri build` won't
-# emit updater artifacts — the sign/notarize/zip path is unaffected.
+# emit updater artifacts. Tauri treats createUpdaterArtifacts=true plus a
+# configured public key as an error when the private key is unavailable, so
+# local builds explicitly override that one setting instead.
 if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
   if TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -a "$USER" -s tesela-desktop-updater-key -w 2>/dev/null)"; then
     export TAURI_SIGNING_PRIVATE_KEY
@@ -32,7 +34,15 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && command -v security >/d
 fi
 
 echo "==> 2/3  bundling desktop app…"
-( cd "$REPO" && cargo tauri build --bundles app )
+TAURI_CONFIG_ARGS=()
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" || -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
+  echo "    updater signing key unavailable; building local app without updater artifacts"
+  unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  UPDATER_TAR="$REPO/target/release/bundle/macos/Tesela.app.tar.gz"
+  /bin/rm -f "$UPDATER_TAR" "${UPDATER_TAR}.sig"
+  TAURI_CONFIG_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+fi
+( cd "$REPO" && cargo tauri build --bundles app "${TAURI_CONFIG_ARGS[@]}" )
 
 echo "==> 3/3  installing + relaunching…"
 bash "$REPO/scripts/install-desktop.sh"

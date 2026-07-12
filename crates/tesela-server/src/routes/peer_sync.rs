@@ -362,6 +362,14 @@ pub struct PairWithCodeResp {
     pub restart_required: bool,
 }
 
+fn restart_required_after_pair(
+    adopted_group: bool,
+    relay_configured: bool,
+    relay_was_configured: bool,
+) -> bool {
+    relay_configured || (adopted_group && relay_was_configured)
+}
+
 pub async fn pair_with_code(
     State(s): State<Arc<AppState>>,
     Json(req): Json<PairWithCodeReq>,
@@ -409,18 +417,25 @@ pub async fn pair_with_code(
     // boot-time only, so signal restart_required rather than hot-swapping it.
     let relay_configured = match parsed.relay_url.as_deref() {
         Some(url) if !url.trim().is_empty() => {
-            persist_relay_url(&s.mosaic_root, url)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("relay config: {e}")))?;
+            persist_relay_url(&s.mosaic_root, url).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("relay config: {e}"),
+                )
+            })?;
             true
         }
         _ => false,
     };
+    let restart_required =
+        restart_required_after_pair(adopted, relay_configured, s.relay_url.is_some());
 
     tracing::info!(
-        "sync_peer: paired via code with {} (adopted_group={}, relay_configured={})",
+        "sync_peer: paired via code with {} (adopted_group={}, relay_configured={}, restart_required={})",
         peer.device_id_hex,
         adopted,
-        relay_configured
+        relay_configured,
+        restart_required
     );
     Ok(Json(PairWithCodeResp {
         device_id_hex: peer.device_id_hex,
@@ -428,7 +443,7 @@ pub async fn pair_with_code(
         url: peer.url,
         adopted_group: adopted,
         relay_configured,
-        restart_required: relay_configured,
+        restart_required,
     }))
 }
 
@@ -600,5 +615,13 @@ mod tests {
 
         let cfg = Config::load(&tmp.path().join(".tesela").join("config.toml")).unwrap();
         assert_eq!(cfg.sync.relay.unwrap().url, "http://100.64.0.1:9999");
+    }
+
+    #[test]
+    fn adopting_group_with_existing_relay_requires_restart() {
+        assert!(restart_required_after_pair(true, false, true));
+        assert!(!restart_required_after_pair(true, false, false));
+        assert!(!restart_required_after_pair(false, false, true));
+        assert!(restart_required_after_pair(false, true, false));
     }
 }
