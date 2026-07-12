@@ -1,18 +1,17 @@
 # Current State
-Branch: main (NOT pushed — Taylor reviews+pushes; well ahead of origin: cycle-2 + the 2026-07-10 fleet cycle)
+Branch: main (synced with origin at plan start; local phase commits are never pushed)
 
-## Plan — GPT-5.6 fleet cycle (2026-07-10, Fable-led) — DONE; awaiting Taylor's product test
-- [x] 6 parity features shipped+merged (Lead-reviewed, web 805 green): FTS-in-⌘K (8zd.10), attachments route (8zd.1), paste-upload (8zd.2), PDF (8zd.4), rail (8zd.13), sync-dot (ewj.8), block-move (8zd.15)
-- [x] Security: attachment CSP-sandbox+nosniff (automated-review catch, live-verified). tesela-myh interim reseed gate SHIPPED (Sol, TDD) — still open tracking the durable wt5-class fix + gating nnm.3
-- [x] Lead specs 8zd.5/.7/.3: Terra draft → Sol REJECT (28 findings) → Terra revise (0 contested) → on main, implementation-ready
-- [x] Desktop rebuilt+relaunched on the fresh bundle (running). Server-side of all 6 features mechanically verified live (attachments/upload/traversal/FTS/relay-status). Scorecard+bench: 11 dispatches logged; digest regenerated
-- [?] AWAITING TAYLOR: product test `tesela/20260710-fleet-product-test` (6 UI checks) + dictation retest after build-76 model-download failure fix
-- [ ] Next wave (on Taylor's go): implement 8zd.5/.7/.3 from the approved specs — ALL ewj.1-gated (import-engine adoption lands first)
+## Plan — tesela-myh canonical lift → ewj.1 → real product test (2026-07-11)
+- [x] P0 Lead decision/spec: canonical structural lift; `.docs/ai/phases/2026-07-11-nonbullet-canonical-lift-spec.md`. Verify: `test -s .docs/ai/phases/2026-07-11-nonbullet-canonical-lift-spec.md`
+- [ ] P1 core fence-aware full-coverage scanner + canonical serializer (TDD) · tier_floor: senior · complexity: M. Verify: `cargo test -p tesela-core note_tree`
+- [ ] P2 engine hydration/materialization/cold-reload/two-engine convergence (TDD) · tier_floor: senior · complexity: M. Verify: `cargo test -p tesela-sync -p tesela-core`
+- [ ] P3 web+iOS display/edit regressions for lifted heading/prose/fence blocks · tier_floor: senior · complexity: M. Verify: `pnpm --dir web check && pnpm --dir web test:unit && xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 17'`
+- [ ] P4 ewj.1 writer seam + one shared stable note-id helper · tier_floor: senior · complexity: M. Verify: `cargo test -p tesela-core -p tesela-sync -p tesela-cli -p tesela-mcp`
+- [ ] P5 in-process active/temporary-engine import + idempotence/scale integration test; Lead review · tier_floor: senior · complexity: L. Verify: `cargo test -p tesela-server -p tesela-sync`
+- [ ] P6 real-graph sandbox import, restart/reimport QA, report + harness-deck product test · tier_floor: senior · complexity: M. Verify: `cargo test -p tesela-server --test import_product_test && test -s .docs/ai/phases/2026-07-11-nonbullet-canonical-lift-report.md`
 
 ## Blockers
-- ewj.1 (import sole-writer) gates the whole parity wave + block-refs; still open, Lead-review-required
-- tesela-64g: sigterm_triggers_validated_backup now fails CONSISTENTLY — poisons `cargo test -p tesela-server`; workspace fmt drift blocks `cargo fmt --all --check` (bead filed)
+- P6 ends at Taylor's named human product check; source graph and live mosaic remain read-only.
 
 ## Open Questions
-- Taylor: product-test verdict (which of 6 pass) · push main · greenlight next parity wave
-- Taylor: next-build live dictation retest (download + 640 vs 1120ms default) · device relay-topology check · phone-Logseq-since-Jun-16
+- None — Taylor delegated direction and authorized MiniMax/GLM/Ollama/GPT/Claude adversarial dispatch.
