@@ -20,6 +20,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
+use tesela_core::stable_uuid_from_slug;
 use tesela_sync::{DeviceId, Hlc, LoroEngine, OpPayload, SyncEngine};
 
 /// Read the mosaic's existing device id (no write); falls back to a random
@@ -68,16 +69,6 @@ fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
         anyhow::bail!("lock held (EWOULDBLOCK)");
     }
     Ok(file)
-}
-
-/// System-wide stable note id: blake3(slug) truncated to 16 bytes — mirrors
-/// the server's `stable_uuid_from_slug` and
-/// `tesela-cli::mosaic_notes::stable_uuid_from_slug`.
-pub(crate) fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&hash.as_bytes()[..16]);
-    out
 }
 
 /// `title:` from a YAML frontmatter block; `None` if absent. Mirrors

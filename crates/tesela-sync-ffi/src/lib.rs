@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use rand::RngCore;
+use tesela_core::stable_uuid_from_slug;
 use tesela_sync::crypto::aead::{open as aead_open, presence_aad, seal as aead_seal};
 use tesela_sync::crypto::relay_auth::{
     canonical_request, compute_request_mac, derive_relay_auth_key,
@@ -593,19 +594,6 @@ fn parse_hex(s: &str) -> Option<Vec<u8>> {
         out.push((hi << 4) | lo);
     }
     Some(out)
-}
-
-/// Mirror of `tesela-server::routes::notes::stable_uuid_from_slug`:
-/// blake3-hash the slug, take the first 16 bytes as the note's stable
-/// 128-bit id. iOS uses this so its NoteUpsert ops land on the same
-/// note id Mac would have minted from the same slug, instead of
-/// creating an orphan.
-fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let bytes = hash.as_bytes();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes[..16]);
-    out
 }
 
 fn nibble(c: u8) -> Option<u8> {

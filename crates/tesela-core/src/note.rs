@@ -50,6 +50,18 @@ impl From<&str> for NoteId {
     }
 }
 
+/// System-wide stable sync document id for a note slug.
+///
+/// Two clients deriving an id for the same slug must address the same Loro
+/// document, so every writer uses this BLAKE3 truncation rather than carrying
+/// a private copy of the algorithm.
+pub fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
+    let hash = blake3::hash(slug.as_bytes());
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&hash.as_bytes()[..16]);
+    out
+}
+
 /// Represents a note with its metadata and content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -205,5 +217,16 @@ mod tests {
         set.insert(NoteId::new("b"));
         set.insert(NoteId::new("a")); // duplicate
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn stable_note_id_matches_blake3_128_bit_vector() {
+        assert_eq!(
+            stable_uuid_from_slug("abc"),
+            [
+                0x64, 0x37, 0xb3, 0xac, 0x38, 0x46, 0x51, 0x33, 0xff, 0xb6, 0x3b, 0x75, 0x27,
+                0x3a, 0x8d, 0xb5,
+            ]
+        );
     }
 }

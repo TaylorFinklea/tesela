@@ -7239,7 +7239,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "blake3",
  "chrono",
  "clap",
  "clap_complete",
@@ -7269,6 +7268,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blake3",
  "chrono",
  "criterion",
  "dirs 5.0.1",
@@ -7336,7 +7336,6 @@ name = "tesela-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
  "chrono",
  "libc",
  "serde",
@@ -7400,7 +7399,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "blake3",
  "block2",
  "chrono",
  "clap",
@@ -7481,7 +7479,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
- "blake3",
  "postcard",
  "rand 0.8.5",
  "reqwest 0.12.28",

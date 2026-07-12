@@ -77,10 +77,7 @@ fn read_identity(mosaic: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 /// reseed reproduces the SAME note id, so id presence proves nothing —
 /// only lineage does.
 fn note_id_for_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let mut id = [0u8; 16];
-    id.copy_from_slice(&hash.as_bytes()[..16]);
-    id
+    tesela_core::stable_uuid_from_slug(slug)
 }
 
 /// Loro PeerID for a DeviceId — mirrors `LoroEngine::peer_id` (first 8

@@ -327,14 +327,8 @@ mod tests {
     //! in `tests/ws_delta_round_trip.rs`.
     use super::*;
     use std::sync::Arc;
+    use tesela_core::stable_uuid_from_slug as note_id_for;
     use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
-
-    fn note_id_for(slug: &str) -> [u8; 16] {
-        let hash = blake3::hash(slug.as_bytes());
-        let mut out = [0u8; 16];
-        out.copy_from_slice(&hash.as_bytes()[..16]);
-        out
-    }
 
     /// A server engine that materializes to disk, plus the matching store +
     /// index reading from the same mosaic, and a separate "device" engine.

@@ -711,12 +711,9 @@ pub async fn apply_logseq(
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(|| state.mosaic_root.clone());
-    let outcome = tokio::task::spawn_blocking(move || {
-        tesela_core::import_logseq::apply_plan(&req.plan, &req.decisions, &mosaic)
-    })
-    .await
-    .map_err(internal)?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)))?;
+    let outcome = tesela_core::import_logseq::apply_plan(&req.plan, &req.decisions, &mosaic)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)))?;
     Ok(Json(outcome))
 }
 

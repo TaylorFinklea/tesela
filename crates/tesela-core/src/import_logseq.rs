@@ -1,5 +1,6 @@
 use crate::regex_cache::{LOGSEQ_DATE_RE, PRIORITY_RE};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -131,8 +132,9 @@ pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let outcome =
-        apply_plan(&plan, &ApplyDecisions::default(), mosaic).context("apply logseq import")?;
+    let outcome = apply_plan(&plan, &ApplyDecisions::default(), mosaic)
+        .await
+        .context("apply logseq import")?;
     println!("  Imported: {}", outcome.imported);
     println!("  Overwritten: {}", outcome.overwritten);
     println!("  Renamed: {}", outcome.renamed);
@@ -380,10 +382,49 @@ fn plan_one(
 // Apply
 // ──────────────────────────────────────────────────────────────────────
 
-pub fn apply_plan(
+#[async_trait]
+pub trait ImportNoteWriter: Send {
+    async fn write_note(
+        &mut self,
+        target_id: &str,
+        target_path: &Path,
+        content: &str,
+    ) -> Result<()>;
+}
+
+#[derive(Debug, Default)]
+struct FilesystemImportNoteWriter;
+
+#[async_trait]
+impl ImportNoteWriter for FilesystemImportNoteWriter {
+    async fn write_note(
+        &mut self,
+        _target_id: &str,
+        target_path: &Path,
+        content: &str,
+    ) -> Result<()> {
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(target_path, content).await?;
+        Ok(())
+    }
+}
+
+pub async fn apply_plan(
     plan: &ImportPlan,
     decisions: &ApplyDecisions,
     mosaic: &Path,
+) -> Result<ApplyOutcome> {
+    let mut writer = FilesystemImportNoteWriter;
+    apply_plan_with_writer(plan, decisions, mosaic, &mut writer).await
+}
+
+pub async fn apply_plan_with_writer<W: ImportNoteWriter + ?Sized>(
+    plan: &ImportPlan,
+    decisions: &ApplyDecisions,
+    mosaic: &Path,
+    writer: &mut W,
 ) -> Result<ApplyOutcome> {
     let mut outcome = ApplyOutcome::default();
 
@@ -413,11 +454,11 @@ pub fn apply_plan(
                     outcome.skipped += 1;
                     continue;
                 }
-                if let Some(parent) = target_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
                 let content = item.rendered_full.as_deref().unwrap_or_default();
-                match std::fs::write(&target_path, content) {
+                match writer
+                    .write_note(&item.target_id, &target_path, content)
+                    .await
+                {
                     Ok(_) => outcome.imported += 1,
                     Err(e) => {
                         outcome
@@ -430,20 +471,22 @@ pub fn apply_plan(
                 let content = item.rendered_full.as_deref().unwrap_or_default();
                 match decision {
                     Decision::Skip => outcome.skipped += 1,
-                    Decision::Overwrite => match std::fs::write(&target_path, content) {
-                        Ok(_) => outcome.overwritten += 1,
-                        Err(e) => outcome.errors.push(format!(
-                            "overwrite {}: {}",
-                            target_path.display(),
-                            e
-                        )),
-                    },
+                    Decision::Overwrite => {
+                        match writer
+                            .write_note(&item.target_id, &target_path, content)
+                            .await
+                        {
+                            Ok(_) => outcome.overwritten += 1,
+                            Err(e) => outcome.errors.push(format!(
+                                "overwrite {}: {}",
+                                target_path.display(),
+                                e
+                            )),
+                        }
+                    }
                     Decision::Rename { suffix } => {
-                        let renamed = target_path.with_file_name(format!(
-                            "{}{}.md",
-                            item.target_id,
-                            sanitize_suffix(&suffix)
-                        ));
+                        let renamed_id = format!("{}{}", item.target_id, sanitize_suffix(&suffix));
+                        let renamed = target_path.with_file_name(format!("{renamed_id}.md"));
                         if renamed.exists() {
                             outcome.errors.push(format!(
                                 "rename target {} already exists",
@@ -451,10 +494,7 @@ pub fn apply_plan(
                             ));
                             continue;
                         }
-                        if let Some(parent) = renamed.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        match std::fs::write(&renamed, content) {
+                        match writer.write_note(&renamed_id, &renamed, content).await {
                             Ok(_) => outcome.renamed += 1,
                             Err(e) => outcome.errors.push(format!(
                                 "rename write {}: {}",
@@ -475,7 +515,7 @@ pub fn apply_plan(
     let assets_src = PathBuf::from(&plan.source).join("assets");
     if assets_src.exists() {
         let attach_dst = mosaic.join("attachments");
-        let _ = std::fs::create_dir_all(&attach_dst);
+        let _ = tokio::fs::create_dir_all(&attach_dst).await;
         for entry in walkdir::WalkDir::new(&assets_src).into_iter().flatten() {
             if !entry.file_type().is_file() {
                 continue;
@@ -489,9 +529,9 @@ pub fn apply_plan(
                 continue;
             }
             if let Some(parent) = dst.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                let _ = tokio::fs::create_dir_all(parent).await;
             }
-            if let Err(e) = std::fs::copy(entry.path(), &dst) {
+            if let Err(e) = tokio::fs::copy(entry.path(), &dst).await {
                 outcome
                     .errors
                     .push(format!("copy asset {}: {}", entry.path().display(), e));
@@ -1181,8 +1221,113 @@ tags:: idea, project
         }
     }
 
-    #[test]
-    fn apply_rename_writes_suffixed_file() {
+    #[derive(Default)]
+    struct RecordingWriter {
+        writes: Vec<(String, PathBuf, String)>,
+    }
+
+    #[async_trait::async_trait]
+    impl ImportNoteWriter for RecordingWriter {
+        async fn write_note(
+            &mut self,
+            target_id: &str,
+            target_path: &Path,
+            content: &str,
+        ) -> Result<()> {
+            self.writes.push((
+                target_id.to_string(),
+                target_path.to_path_buf(),
+                content.to_string(),
+            ));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_writer_is_the_only_note_writer_for_all_apply_paths() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("graph");
+        let mosaic = temp.path().join("mosaic");
+        let notes = mosaic.join("notes");
+        fs::create_dir_all(&source).unwrap();
+
+        let item = |source_rel: &str, target_id: &str, kind: PlanKind| PlanItem {
+            source_rel: source_rel.to_string(),
+            source_sha: "source-sha".to_string(),
+            target_id: target_id.to_string(),
+            target_path: notes
+                .join(format!("{target_id}.md"))
+                .to_string_lossy()
+                .into_owned(),
+            kind,
+            reason: None,
+            rendered_preview: None,
+            existing_preview: None,
+            existing_sha: None,
+            rendered_full: Some(format!("- {target_id}\n")),
+        };
+        let plan = ImportPlan {
+            items: vec![
+                item("pages/New.md", "new", PlanKind::NewImport),
+                item("pages/Overwrite.md", "overwrite", PlanKind::ConflictForeign),
+                item("pages/Rename.md", "rename", PlanKind::ConflictDiffSha),
+                item("pages/Unchanged.md", "unchanged", PlanKind::Unchanged),
+                item("whiteboards/Skip.edn", "skip", PlanKind::HardSkip),
+            ],
+            source: source.to_string_lossy().into_owned(),
+            mosaic: mosaic.to_string_lossy().into_owned(),
+        };
+        let decisions = ApplyDecisions {
+            per_item: HashMap::from([
+                ("pages/Overwrite.md".to_string(), Decision::Overwrite),
+                (
+                    "pages/Rename.md".to_string(),
+                    Decision::Rename {
+                        suffix: "copy".to_string(),
+                    },
+                ),
+            ]),
+            default: Decision::Skip,
+        };
+        let mut writer = RecordingWriter::default();
+
+        let outcome = apply_plan_with_writer(&plan, &decisions, &mosaic, &mut writer)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.overwritten, 1);
+        assert_eq!(outcome.renamed, 1);
+        assert_eq!(outcome.unchanged, 1);
+        assert_eq!(outcome.skipped, 1);
+        assert_eq!(
+            writer.writes,
+            vec![
+                (
+                    "new".to_string(),
+                    notes.join("new.md"),
+                    "- new\n".to_string(),
+                ),
+                (
+                    "overwrite".to_string(),
+                    notes.join("overwrite.md"),
+                    "- overwrite\n".to_string(),
+                ),
+                (
+                    "rename-copy".to_string(),
+                    notes.join("rename-copy.md"),
+                    "- rename\n".to_string(),
+                ),
+            ]
+        );
+        assert!(
+            !notes.exists(),
+            "custom writer must bypass filesystem note writes for every decision"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_rename_writes_suffixed_file() {
         let temp = TempDir::new().unwrap();
         let graph = temp.path().join("graph");
         let mosaic = temp.path().join("mosaic");
@@ -1207,7 +1352,7 @@ tags:: idea, project
                 suffix: "imported".to_string(),
             },
         );
-        let outcome = apply_plan(&plan, &decisions, &mosaic).unwrap();
+        let outcome = apply_plan(&plan, &decisions, &mosaic).await.unwrap();
         assert_eq!(outcome.renamed, 1);
         assert!(notes.join("foo-imported.md").exists());
         // Original untouched.

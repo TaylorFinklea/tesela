@@ -21,7 +21,7 @@ use tesela_core::{
     property::{parse_scalar, ValueType},
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
-    Note,
+    stable_uuid_from_slug, Note,
 };
 use tesela_sync::{OpPayload, PropOp, PropScalar};
 
@@ -1671,19 +1671,6 @@ async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) -> anyhow::Resu
         );
     }
     Ok(())
-}
-
-/// Phase 1.5 stable note_id derivation: blake3(slug) truncated to 16
-/// bytes. Two devices independently creating the same slug produce the
-/// same note_id, so it looks like an update rather than a primary-key
-/// collision. Real UUID-v7 identity arrives with the Mutation API
-/// refactor (Phase 2 data model).
-fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let bytes = hash.as_bytes();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes[..16]);
-    out
 }
 
 /// Desktop bootstrap-before-author — the piece that CLOSES the daily garble

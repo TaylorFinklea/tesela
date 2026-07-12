@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+pub(crate) use tesela_core::stable_uuid_from_slug;
 use tesela_sync::{Hlc, LoroEngine, OpPayload, SyncEngine};
 
 use crate::backfill_task::{acquire_mosaic_lock, hex16, load_device_id};
@@ -83,17 +84,6 @@ pub(crate) fn read_non_resident_notes(
         out.push((stem.to_string(), content));
     }
     Ok(out)
-}
-
-/// System-wide stable note id: blake3(slug) truncated to 16 bytes —
-/// mirrors the server's `stable_uuid_from_slug` (routes/notes.rs) and
-/// the engine's `reseed_from_disk`, so the CLI addresses the SAME doc
-/// every other surface does.
-pub(crate) fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&hash.as_bytes()[..16]);
-    out
 }
 
 /// `title:` from a YAML frontmatter block (mirrors the engine's reseed

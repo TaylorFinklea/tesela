@@ -28,6 +28,7 @@ notify.workspace = true
 tokio-util.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

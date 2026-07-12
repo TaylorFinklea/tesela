@@ -1102,12 +1102,7 @@ mod tests {
         .unwrap();
 
         // Slug → note_id derivation matches notes.rs::stable_uuid_from_slug.
-        let note_id = {
-            let h = blake3::hash(b"n");
-            let mut out = [0u8; 16];
-            out.copy_from_slice(&h.as_bytes()[..16]);
-            out
-        };
+        let note_id = tesela_core::stable_uuid_from_slug("n");
 
         // Device A authors the note locally (separate engine), then we
         // pre-seed the SAME base into the server so its index resolves the
@@ -1339,12 +1334,7 @@ mod tests {
         // the blake3-of-slug derivation), so the materialized file is
         // clobber.md and the WsEvent re-read / HTTP GET resolve. (A neutral
         // slug — "daily" collides with the special `/notes/daily` route.)
-        let note_id = {
-            let h = blake3::hash(b"clobber");
-            let mut out = [0u8; 16];
-            out.copy_from_slice(&h.as_bytes()[..16]);
-            out
-        };
+        let note_id = tesela_core::stable_uuid_from_slug("clobber");
 
         // ── DISJOINT base: server AND device each author the same note body
         // INDEPENDENTLY (no shared import) → rival TreeIDs for A/B. This is the
@@ -1592,12 +1582,7 @@ mod tests {
         .await
         .unwrap();
 
-        let note_id = {
-            let h = blake3::hash(b"merge");
-            let mut out = [0u8; 16];
-            out.copy_from_slice(&h.as_bytes()[..16]);
-            out
-        };
+        let note_id = tesela_core::stable_uuid_from_slug("merge");
 
         // ── SHARED base: the server seeds the note, then the device IMPORTS the
         // server's snapshot — so both hold the SAME TreeID + LoroText lineage

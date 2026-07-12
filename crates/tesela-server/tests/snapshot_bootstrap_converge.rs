@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use tesela_core::stable_uuid_from_slug;
 use tesela_sync::{DeviceId, Hlc, LoroEngine, OpPayload, SyncEngine};
 
 const ALPHA_BID: [u8; 16] = [0x01; 16];
@@ -28,16 +29,6 @@ fn engine(device_byte: u8) -> LoroEngine {
     let device = DeviceId::from_bytes([device_byte; 16]);
     let hlc = Arc::new(Hlc::new(device));
     LoroEngine::new(device, hlc)
-}
-
-/// Mirror of `tesela_server::routes::notes::stable_uuid_from_slug` (the
-/// derivation the snapshot endpoint uses to address a note's doc): blake3 of
-/// the slug, truncated to 16 bytes.
-fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&hash.as_bytes()[..16]);
-    out
 }
 
 fn seed_body() -> String {

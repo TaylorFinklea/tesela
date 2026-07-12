@@ -18,10 +18,7 @@ fn engine(b: u8) -> LoroEngine {
 }
 
 fn note_id(slug: &str) -> [u8; 16] {
-    let h = blake3::hash(slug.as_bytes());
-    let mut o = [0u8; 16];
-    o.copy_from_slice(&h.as_bytes()[..16]);
-    o
+    tesela_core::stable_uuid_from_slug(slug)
 }
 
 async fn author_disjoint(e: &LoroEngine, note: [u8; 16], bid: &str, text: &str) {

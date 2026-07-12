@@ -1442,9 +1442,7 @@ impl LoroEngine {
                 skipped += 1;
                 continue;
             }
-            let hash = blake3::hash(stem.as_bytes());
-            let mut note_id = [0u8; 16];
-            note_id.copy_from_slice(&hash.as_bytes()[..16]);
+            let note_id = tesela_core::stable_uuid_from_slug(stem);
             let title = frontmatter_title(&content).unwrap_or_else(|| stem.to_string());
             let payload = OpPayload::NoteUpsert {
                 note_id,
