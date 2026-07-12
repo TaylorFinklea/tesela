@@ -624,6 +624,31 @@ pub async fn upsert_blocks(
         s.store.get(&note_id).await?.ok_or_else(|| {
             AppError::NotFound(format!("Note not found after block write: {}", id))
         })?;
+    // Phase 12.2 — server-side recurrence (tesela-ewj.7): a `done` flip
+    // authored through the block-granular write path (the web outliner's
+    // main write surface — typing a DONE marker into a block's text) must
+    // roll the recurrence, not silently no-op until a peer imports the
+    // delta (arch-review cycle 2, server-api PARTIAL finding). Invoke the
+    // SAME idempotence-guarded pure-fns the PUT path (`update_note`) and
+    // `set_block_property` route through (`persist_lifecycle_rolls` →
+    // `compute_lifecycle_container_sets`, the GUARDED variant — the same
+    // mechanism the engine hook `apply_block_lifecycle` uses), comparing
+    // the pre-ops materialized view to the post-ops re-materialized view.
+    // The roll is authored as CONTAINER `BlockPropertySet` ops so it lands
+    // authoritatively regardless of prior key residency; idempotence-guarded
+    // so a re-delivered completion can't double-advance the series. Mirrors
+    // `set_block_property`: re-read the note AFTER the roll so indexing,
+    // versioning, the WS echo, and the live delta all reflect the rolled
+    // state. A non-recurring / already-completed flip produces no roll and
+    // authors nothing (the guard returns an empty roll set).
+    let after_blocks_content = updated.content.clone();
+    let rolled_bumps =
+        persist_lifecycle_rolls(&s, delta_note_id, &id, &prev_content, &after_blocks_content)
+            .await;
+    let updated =
+        s.store.get(&note_id).await?.ok_or_else(|| {
+            AppError::NotFound(format!("Note not found after block lifecycle roll: {}", id))
+        })?;
     s.index.reindex(&updated).await?;
     // Refresh the link graph for this note (same as the PUT path).
     {
@@ -674,6 +699,19 @@ pub async fn upsert_blocks(
             }
             Err(e) => tracing::warn!("ws: encode live delta for {} failed: {}", id, e),
         }
+    }
+    // Phase 12.3 — fire `RecurringRolled` per bumped block (parity with
+    // `update_note` + `set_block_property`), from the GUARDED
+    // `persist_lifecycle_rolls` result so the event set matches the roll
+    // actually persisted to the container. A guard-tripped re-completion
+    // authors nothing and emits nothing.
+    for info in rolled_bumps {
+        let _ = s.ws_tx.send(WsEvent::RecurringRolled {
+            block_id: info.block_id,
+            title: info.title,
+            note_id: id.clone(),
+            next_deadline: info.next_deadline,
+        });
     }
     Ok(Json(updated))
 }
@@ -3242,6 +3280,7 @@ mod tests {
         async fn seeded_state(
             tmp: &std::path::Path,
             slug: &str,
+            seed_content: &str,
             container_props: &[(&str, &str)],
         ) -> Arc<AppState> {
             std::fs::create_dir_all(tmp.join("notes")).unwrap();
@@ -3262,7 +3301,7 @@ mod tests {
                     note_id,
                     display_alias: Some(slug.into()),
                     title: slug.into(),
-                    content: format!("- water plants <!-- bid:{BID_HEX} -->\n"),
+                    content: seed_content.to_string(),
                     created_at_millis: 1,
                 })
                 .await
@@ -3322,6 +3361,14 @@ mod tests {
             })
         }
 
+        /// The default seed block (prose-only, no in-text props) — the
+        /// `lifecycle_container_roll` tests drive props into the CONTAINER via
+        /// `BlockPropertySet` in `seeded_state`, so the seed text carries only
+        /// the bullet's prose + bid marker.
+        fn default_seed_content() -> String {
+            format!("- water plants <!-- bid:{BID_HEX} -->\n")
+        }
+
         /// The seed: a `daily count 3` recurrence whose 2nd occurrence is due,
         /// with completion memory from the 1st occurrence — all CONTAINER-
         /// resident. Completing it must roll to occurrence #3.
@@ -3344,7 +3391,8 @@ mod tests {
         async fn set_block_property_second_completion_rolls_all_container_keys() {
             let tmp = tempfile::TempDir::new().unwrap();
             let slug = "chores";
-            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+            let state =
+                seeded_state(tmp.path(), slug, &default_seed_content(), &resident_seed()).await;
 
             let res = set_block_property(
                 State(Arc::clone(&state)),
@@ -3394,7 +3442,8 @@ mod tests {
         async fn update_note_completion_rolls_on_container_resident_block() {
             let tmp = tempfile::TempDir::new().unwrap();
             let slug = "chores";
-            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+            let state =
+                seeded_state(tmp.path(), slug, &default_seed_content(), &resident_seed()).await;
 
             // The client PUTs the materialized body with the block flipped to
             // done (exactly what a status toggle sends over the whole-body PUT).
@@ -3460,7 +3509,8 @@ mod tests {
         async fn set_block_property_completion_over_scalar_seed_succeeds() {
             let tmp = tempfile::TempDir::new().unwrap();
             let slug = "chores";
-            let state = seeded_state(tmp.path(), slug, &resident_seed()).await;
+            let state =
+                seeded_state(tmp.path(), slug, &default_seed_content(), &resident_seed()).await;
 
             let res = set_block_property(
                 State(Arc::clone(&state)),
@@ -3510,7 +3560,7 @@ mod tests {
                 ("deadline", "[[2026-05-08]]"),
                 ("status", "todo"),
             ];
-            let state = seeded_state(tmp.path(), slug, &fresh).await;
+            let state = seeded_state(tmp.path(), slug, &default_seed_content(), &fresh).await;
 
             for round in 1..=2 {
                 let res = set_block_property(
@@ -3567,7 +3617,8 @@ mod tests {
                 ("last_completed", "[[2026-05-08]]"),
                 ("status", "todo"),
             ];
-            let state = seeded_state(tmp.path(), slug, &already_completed).await;
+            let state =
+                seeded_state(tmp.path(), slug, &default_seed_content(), &already_completed).await;
 
             let before = state
                 .store
@@ -3616,6 +3667,115 @@ mod tests {
             assert_eq!(
                 rolled_events, 0,
                 "a guard-tripped completion must emit NO RecurringRolled event"
+            );
+        }
+
+        /// tesela-ewj.7: a `done` flip authored through the block-granular write
+        /// path (`upsert_blocks` — the web outliner's main write surface) must
+        /// roll the recurrence, not silently no-op until a peer imports the
+        /// delta (arch-review cycle 2, server-api PARTIAL finding). Seeds a
+        /// recurring block whose lifecycle keys are IN-TEXT continuation lines
+        /// (the common web-outliner authoring shape — notes seeded from
+        /// markdown carry props in prose, not in the typed container), flips
+        /// `status:: todo` → `status:: done` via a `BlockUpsert` op (typing a
+        /// DONE marker), and asserts the deadline advances + the
+        /// `RecurringRolled` WS event fires. On base this is a silent no-op:
+        /// `upsert_blocks` had no lifecycle roll, so a recurring task toggled
+        /// done via block edit never advanced its deadline until a peer
+        /// imported the delta.
+        #[tokio::test]
+        async fn upsert_blocks_done_flip_rolls_recurrence() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let slug = "chores";
+            // The 2nd occurrence is due (deadline 05-08, completion memory
+            // from the 1st at 05-07); completing must roll to occurrence #3.
+            // Props are IN-TEXT (no container), the web outliner's common
+            // shape for notes seeded from markdown.
+            let seed = format!(
+                "- water plants <!-- bid:{BID_HEX} -->\n  recurring:: daily count 3\n  deadline:: [[2026-05-08]]\n  recurrence_done:: 1\n  last_completed:: [[2026-05-07]]\n  status:: todo\n",
+            );
+            let state = seeded_state(tmp.path(), slug, &seed, &[]).await;
+
+            // The materialized pre-edit view renders the in-text props (no
+            // container shadows them yet).
+            let before = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert_eq!(
+                before.matches("status:: todo").count(),
+                1,
+                "seed must have exactly one status line; render:\n{before}"
+            );
+
+            // The web outliner sends a `BlockUpsert` with the block's
+            // `FlatBlock.text` shape (first-line prose + continuation lines
+            // joined by `\n`, no `- ` bullet, no bid marker) — status flipped
+            // to done (typing a DONE marker).
+            let flipped_text = "water plants\nrecurring:: daily count 3\ndeadline:: [[2026-05-08]]\nrecurrence_done:: 1\nlast_completed:: [[2026-05-07]]\nstatus:: done";
+
+            let mut rx = state.ws_tx.subscribe();
+            let res = upsert_blocks(
+                Path(slug.to_string()),
+                State(Arc::clone(&state)),
+                Json(UpsertBlocksReq {
+                    ops: vec![BlockOp::Upsert {
+                        bid: BID_HEX.into(),
+                        text: flipped_text.into(),
+                        parent_bid: None,
+                        indent_level: 0,
+                        after_bid: None,
+                    }],
+                }),
+            )
+            .await;
+            assert!(res.is_ok(), "upsert_blocks should succeed");
+
+            let rendered = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .unwrap()
+                .expect("note present")
+                .content;
+            assert!(
+                rendered.contains("deadline:: [[2026-05-09]]"),
+                "deadline must advance to 05-09 (silent no-op on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("recurrence_done:: 2"),
+                "recurrence_done must roll to 2 (silent no-op on base); render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("last_completed:: [[2026-05-08]]"),
+                "last_completed must stamp 05-08; render:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("status:: todo") && !rendered.contains("status:: done"),
+                "status must reset to todo after the roll; render:\n{rendered}"
+            );
+
+            // Parity with `update_note` + `set_block_property`: exactly one
+            // `RecurringRolled` event fires from the GUARDED roll, carrying the
+            // rolled deadline as the next-deadline ISO.
+            let mut rolled = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                if let WsEvent::RecurringRolled { next_deadline, .. } = ev {
+                    rolled.push(next_deadline);
+                }
+            }
+            assert_eq!(
+                rolled.len(),
+                1,
+                "exactly one RecurringRolled event must fire for the roll"
+            );
+            assert!(
+                rolled[0].contains("2026-05-09"),
+                "RecurringRolled next_deadline must be the rolled 2026-05-09; got {}",
+                rolled[0]
             );
         }
     }
