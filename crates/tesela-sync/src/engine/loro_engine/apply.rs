@@ -571,7 +571,11 @@ fn block_status_of(fb: &tesela_core::note_tree::FlatBlock) -> Option<String> {
     if let Some((_, v)) = fb.properties.iter().find(|(k, _)| k == "status") {
         return Some(v.clone());
     }
+    let mut fence = tesela_core::note_tree::MarkdownFenceTracker::default();
     for line in fb.text.lines() {
+        if fence.line_is_fenced(line) {
+            continue;
+        }
         if let Some((k, v)) = tesela_core::lifecycle::property_kv(line) {
             if k == "status" {
                 return Some(v);
@@ -608,4 +612,40 @@ fn any_status_flip_to_done(before: &LoroDoc, after: &LoroDoc) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod fence_status_tests {
+    use super::*;
+
+    fn block(text: &str, properties: Vec<(String, String)>) -> tesela_core::note_tree::FlatBlock {
+        tesela_core::note_tree::FlatBlock {
+            id: uuid::Uuid::nil(),
+            parent: None,
+            indent: 0,
+            text: text.to_string(),
+            properties,
+        }
+    }
+
+    #[test]
+    fn fenced_status_line_is_not_lifecycle_state() {
+        let fenced = block("```text\nstatus:: done\n```", Vec::new());
+        assert_eq!(block_status_of(&fenced), None);
+
+        let real = block(
+            "before\n```text\nstatus:: done\n```\nstatus:: todo",
+            Vec::new(),
+        );
+        assert_eq!(block_status_of(&real).as_deref(), Some("todo"));
+    }
+
+    #[test]
+    fn typed_status_still_wins_over_fenced_payload() {
+        let block = block(
+            "```text\nstatus:: literal\n```",
+            vec![("status".into(), "done".into())],
+        );
+        assert_eq!(block_status_of(&block).as_deref(), Some("done"));
+    }
 }

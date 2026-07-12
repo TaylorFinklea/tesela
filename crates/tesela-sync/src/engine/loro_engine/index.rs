@@ -5,8 +5,9 @@ use super::*;
 /// rebuilt from the (self-describing) per-note docs on boot — no manual
 /// cache clear. v1 = {title, slug}. v2 = + {tags, links} (comma-joined).
 /// v3 = tags/links newline-joined (comma collided with link targets like
-/// `[[Smith, John]]` — review finding [7]).
-pub(super) const INDEX_SCHEMA_VERSION: i64 = 3;
+/// `[[Smith, John]]` — review finding [7]). v4 = fenced regions excluded
+/// from inline tag/link derivation.
+pub(super) const INDEX_SCHEMA_VERSION: i64 = 4;
 
 /// Delimiter for the multi-valued tags/links fields stored as a single
 /// string in an index entry. Newline can't appear in a tag name
@@ -78,8 +79,9 @@ fn extract_index_metadata(
             }
         }
     }
-    // Inline `#tags`.
-    for t in tesela_core::block::extract_tags(content) {
+    // The shared extractors use the structural note scanner, so fenced
+    // code/query payload is inert even inside nested canonical blocks.
+    for t in tesela_core::block::extract_tags_from_note(content) {
         if !t.is_empty() {
             tags.insert(t);
         }

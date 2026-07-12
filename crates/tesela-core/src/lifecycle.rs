@@ -609,30 +609,21 @@ pub fn apply_dependency_cycles(prev: &str, next: &str, note_id: &str) -> (String
 /// `None` when no `status::` line is found within the block's continuation
 /// range, which signals the caller to skip rather than silently mis-edit.
 fn set_status_to_todo(body: &str, bullet_line: usize) -> Option<String> {
-    let lines: Vec<&str> = body.lines().collect();
-    if bullet_line >= lines.len() {
-        return None;
-    }
-    let bullet = lines[bullet_line];
-    let bullet_indent = bullet.len() - bullet.trim_start().len();
-    let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, _) = block_range(body, bullet_line)?;
+    let fenced = block_fence_mask(&lines, bullet_line, end);
 
-    for (i, line) in lines.iter().enumerate().skip(bullet_line + 1) {
-        let trim = line.trim_start();
-        if trim.is_empty() {
+    for i in (bullet_line + 1)..end {
+        if fenced[i] {
             continue;
         }
-        let indent = line.len() - trim.len();
-        // End of block: indent <= bullet's, AND the line starts a new bullet.
-        if indent <= bullet_indent && (trim.starts_with("- ") || trim == "-") {
-            break;
-        }
-        if let Some(_rest) = trim.strip_prefix("status::") {
+        let line = &lines[i];
+        let trim = line.trim_start();
+        if trim.strip_prefix("status::").is_some() {
+            let indent = line.len() - trim.len();
             let prefix: String = " ".repeat(indent);
-            new_lines[i] = format!("{}status:: todo", prefix);
-            // Preserve trailing newline behavior — `lines()` strips them,
-            // and `join("\n")` rebuilds.
-            return Some(new_lines.join("\n") + if body.ends_with('\n') { "\n" } else { "" });
+            lines[i] = format!("{}status:: todo", prefix);
+            return Some(join_lines(lines, trailing_newline));
         }
     }
     None
@@ -818,9 +809,26 @@ fn block_range(body: &str, block_line_num: usize) -> Option<(Vec<String>, usize,
         return None;
     }
     let block_indent_spaces = block_line.len() - trim_start.len();
+    let expected_continuation = block_indent_spaces + 2;
+    let bullet_text = trim_start
+        .strip_prefix("- ")
+        .or_else(|| trim_start.strip_prefix('-'))
+        .unwrap_or(trim_start);
+    let visible = crate::note_tree::strip_bid_comment(bullet_text);
+    let mut fence = crate::note_tree::MarkdownFenceTracker::default();
+    fence.line_is_fenced(&visible);
 
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(block_line_num + 1) {
+        let fence_content = l
+            .as_bytes()
+            .get(..expected_continuation)
+            .filter(|prefix| prefix.iter().all(|byte| *byte == b' '))
+            .map(|_| &l[expected_continuation..])
+            .unwrap_or_else(|| l.trim_start());
+        if fence.line_is_fenced(fence_content) {
+            continue;
+        }
         let t = l.trim_start();
         if t.is_empty() {
             continue;
@@ -835,6 +843,34 @@ fn block_range(body: &str, block_line_num: usize) -> Option<(Vec<String>, usize,
 
     let cont_indent = " ".repeat(block_indent_spaces + 2);
     Some((lines, end, cont_indent))
+}
+
+fn block_fence_mask(lines: &[String], block_line_num: usize, end: usize) -> Vec<bool> {
+    let mut mask = vec![false; lines.len()];
+    if block_line_num >= end || block_line_num >= lines.len() {
+        return mask;
+    }
+    let bullet = lines[block_line_num].trim_start();
+    let bullet_text = bullet
+        .strip_prefix("- ")
+        .or_else(|| bullet.strip_prefix('-'))
+        .unwrap_or(bullet);
+    let visible = crate::note_tree::strip_bid_comment(bullet_text);
+    let mut fence = crate::note_tree::MarkdownFenceTracker::default();
+    mask[block_line_num] = fence.line_is_fenced(&visible);
+    let block_indent = lines[block_line_num].len() - bullet.len();
+    let expected = block_indent + 2;
+    for i in (block_line_num + 1)..end.min(lines.len()) {
+        let line = &lines[i];
+        let content = line
+            .as_bytes()
+            .get(..expected)
+            .filter(|prefix| prefix.iter().all(|byte| *byte == b' '))
+            .map(|_| &line[expected..])
+            .unwrap_or_else(|| line.trim_start());
+        mask[i] = fence.line_is_fenced(content);
+    }
+    mask
 }
 
 /// Finish a `block_range` mutation: join lines, restore trailing newline.
@@ -858,6 +894,7 @@ fn rewrite_block_for_complete(
 ) -> Option<String> {
     let trailing_newline = body.ends_with('\n');
     let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
+    let fenced = block_fence_mask(&lines, block_line_num, end);
 
     let mut updated_status = false;
     let mut updated_deadline = false;
@@ -865,7 +902,15 @@ fn rewrite_block_for_complete(
     let mut updated_last_completed = false;
     let mut updated_recurrence_done = false;
 
-    for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
+    for (i, line) in lines
+        .iter_mut()
+        .enumerate()
+        .take(end)
+        .skip(block_line_num + 1)
+    {
+        if fenced[i] {
+            continue;
+        }
         if let Some((key, _)) = property_kv(line) {
             match key.as_str() {
                 "status" => {
@@ -938,12 +983,21 @@ fn rewrite_block_for_skip(
 ) -> Option<String> {
     let trailing_newline = body.ends_with('\n');
     let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
+    let fenced = block_fence_mask(&lines, block_line_num, end);
 
     let mut updated_deadline = false;
     let mut updated_scheduled = false;
     let mut updated_recurrence_done = false;
 
-    for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
+    for (i, line) in lines
+        .iter_mut()
+        .enumerate()
+        .take(end)
+        .skip(block_line_num + 1)
+    {
+        if fenced[i] {
+            continue;
+        }
         if let Some((key, _)) = property_kv(line) {
             match key.as_str() {
                 "deadline" => {
@@ -993,9 +1047,18 @@ fn rewrite_block_for_skip(
 fn rewrite_block_for_spent(body: &str, block_line_num: usize, new_done: u32) -> Option<String> {
     let trailing_newline = body.ends_with('\n');
     let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
+    let fenced = block_fence_mask(&lines, block_line_num, end);
 
     let mut updated_recurrence_done = false;
-    for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
+    for (i, line) in lines
+        .iter_mut()
+        .enumerate()
+        .take(end)
+        .skip(block_line_num + 1)
+    {
+        if fenced[i] {
+            continue;
+        }
         if let Some((key, _)) = property_kv(line) {
             if key == "recurrence_done" {
                 *line = format!("{}recurrence_done:: {}", cont_indent, new_done);
@@ -1064,9 +1127,10 @@ fn reassemble_content(original_content: &str, original_body: &str, new_body: &st
 /// owns skipping the `daily` tag.
 pub fn collect_note_tags(note: &Note) -> Vec<String> {
     let mut all_tags: Vec<String> = note.metadata.tags.clone();
+    let indexable_body = crate::note_tree::unfenced_markdown(&note.body);
 
     let tag_re = regex::Regex::new(r"#([A-Za-z][A-Za-z0-9_-]*)").unwrap();
-    for cap in tag_re.captures_iter(&note.body) {
+    for cap in tag_re.captures_iter(&indexable_body) {
         let tag = cap[1].to_string();
         if !all_tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
             all_tags.push(tag);
@@ -1074,7 +1138,7 @@ pub fn collect_note_tags(note: &Note) -> Vec<String> {
     }
 
     let block_tags_re = regex::Regex::new(r"(?m)^\s*tags::\s*(.+)$").unwrap();
-    for cap in block_tags_re.captures_iter(&note.body) {
+    for cap in block_tags_re.captures_iter(&indexable_body) {
         for raw in cap[1].split(',') {
             let tag = raw.trim();
             if !tag.is_empty() && !all_tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
@@ -1622,6 +1686,34 @@ mod dependency_cycle_tests {
 }
 
 #[cfg(test)]
+mod fence_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn fenced_recurrence_and_done_flip_are_inert() {
+        let prev = "- <!-- bid:44444444-4444-4444-4444-444444444444 -->\n  ```text\n  recurring:: daily\n  deadline:: [[2026-07-11]]\n  status:: todo\n  ```\n";
+        let next = prev.replace("status:: todo", "status:: done");
+
+        let (rewritten, bumps) = apply_post_save_bumps_with_info(prev, &next, "note");
+        assert!(bumps.is_empty());
+        assert_eq!(rewritten, next, "fenced payload must remain byte-identical");
+    }
+
+    #[test]
+    fn real_recurrence_roll_does_not_rewrite_same_keys_inside_fence() {
+        let prev = "- Task <!-- bid:45454545-4545-4545-4545-454545454545 -->\n  ```text\n  status:: fenced literal\n  deadline:: [[1999-01-01]]\n  ```\n  recurring:: daily\n  deadline:: [[2026-07-11]]\n  status:: todo\n";
+        let next = prev.replacen("  status:: todo", "  status:: done", 1);
+
+        let (rewritten, bumps) = apply_post_save_bumps_with_info(prev, &next, "note");
+        assert_eq!(bumps.len(), 1);
+        assert!(rewritten.contains("status:: fenced literal"));
+        assert!(rewritten.contains("deadline:: [[1999-01-01]]"));
+        assert!(rewritten.contains("deadline:: [[2026-07-12]]"));
+        assert!(rewritten.contains("status:: todo"));
+    }
+}
+
+#[cfg(test)]
 mod tag_autocreate_pure_tests {
     use super::*;
     use crate::note::{Note, NoteId, NoteMetadata};
@@ -1664,6 +1756,31 @@ mod tag_autocreate_pure_tests {
     #[test]
     fn no_tags_anywhere_returns_empty() {
         let note = note_with(vec![], "- plain task, nothing special\n");
+        assert!(collect_note_tags(&note).is_empty());
+    }
+
+    #[test]
+    fn collect_note_tags_ignores_nested_fenced_hash_and_property_tags() {
+        let body = concat!(
+            "- Parent\n",
+            "  - Child\n",
+            "    ```text\n    #nested-fake\n    tags:: nested-prop-fake\n    ```\n",
+            "  - ```text\n    #same-line-fake\n    tags:: same-line-prop-fake\n    ```\n",
+            "- Outside #real\n  tags:: chip\n",
+        );
+        let note = note_with(vec!["front".to_string()], body);
+        let tags = collect_note_tags(&note);
+
+        assert_eq!(tags, vec!["front", "real", "chip"]);
+    }
+
+    #[test]
+    fn collect_note_tags_treats_frontmatter_shaped_body_as_body() {
+        let note = note_with(
+            Vec::new(),
+            "---\n```text\n#hidden\ntags:: hidden-prop\n[[hidden]]\n```\n---",
+        );
+
         assert!(collect_note_tags(&note).is_empty());
     }
 

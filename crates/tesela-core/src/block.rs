@@ -69,10 +69,43 @@ pub struct ParsedBlock {
 /// previous block. Child blocks inherit the tags of their ancestors.
 pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
     // Pass 1: collect raw block data (line_num, indent, text)
-    let mut raw_blocks: Vec<(usize, usize, String)> = Vec::new();
-    let mut current: Option<(usize, usize, String)> = None;
+    struct RawBlock {
+        line_num: usize,
+        indent: usize,
+        text: String,
+        fence: crate::note_tree::MarkdownFenceTracker,
+    }
+
+    let mut raw_blocks: Vec<RawBlock> = Vec::new();
+    let mut current: Option<RawBlock> = None;
+    let mut global_fence = crate::note_tree::MarkdownFenceTracker::default();
 
     for (line_num, line) in body.lines().enumerate() {
+        // Fence ownership outranks blank/bullet detection. Canonical fence
+        // payload is indented as a list continuation; remove exactly that
+        // structural prefix and preserve every remaining byte.
+        if current.as_ref().is_some_and(|block| block.fence.is_open()) {
+            let block = current.as_mut().expect("checked open fence");
+            let expected = (block.indent + 1) * 2;
+            let content = line
+                .as_bytes()
+                .get(..expected)
+                .filter(|prefix| prefix.iter().all(|byte| *byte == b' '))
+                .map(|_| &line[expected..])
+                .unwrap_or(line);
+            block.text.push('\n');
+            block.text.push_str(content);
+            block.fence.line_is_fenced(content);
+            continue;
+        }
+
+        // Raw top-level fences can appear before the first canonical bullet.
+        // They are not ParsedBlocks on this legacy indexing surface, but their
+        // bullet/property-shaped payload must remain inert.
+        if current.is_none() && global_fence.line_is_fenced(line) {
+            continue;
+        }
+
         let trim_start = line.trim_start();
         if trim_start.is_empty() {
             continue;
@@ -96,10 +129,27 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
                 .unwrap_or(trim_start)
                 .trim_end()
                 .to_string();
-            current = Some((line_num, indent, text));
-        } else if let Some((_, _, ref mut text)) = current {
-            text.push('\n');
-            text.push_str(trim_start.trim_end());
+            let visible = crate::note_tree::strip_bid_comment(&text);
+            let mut fence = crate::note_tree::MarkdownFenceTracker::default();
+            fence.line_is_fenced(&visible);
+            current = Some(RawBlock {
+                line_num,
+                indent,
+                text,
+                fence,
+            });
+        } else if let Some(block) = current.as_mut() {
+            let expected = (block.indent + 1) * 2;
+            let continuation = line
+                .as_bytes()
+                .get(..expected)
+                .filter(|prefix| prefix.iter().all(|byte| *byte == b' '))
+                .map(|_| &line[expected..])
+                .unwrap_or(trim_start)
+                .trim_end();
+            block.text.push('\n');
+            block.text.push_str(continuation);
+            block.fence.line_is_fenced(continuation);
         }
     }
     if let Some(b) = current {
@@ -110,7 +160,13 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
     let mut ancestor_stack: Vec<(usize, Vec<String>)> = Vec::new(); // (indent, tags)
     let mut blocks = Vec::with_capacity(raw_blocks.len());
 
-    for (line_num, indent, raw_text) in raw_blocks {
+    for RawBlock {
+        line_num,
+        indent,
+        text: raw_text,
+        ..
+    } in raw_blocks
+    {
         // Pop stack entries that are at the same or deeper indent (not true ancestors)
         while ancestor_stack
             .last()
@@ -142,7 +198,8 @@ fn make_block(
     raw_text: &str,
     inherited_tags: Vec<String>,
 ) -> ParsedBlock {
-    let mut properties = extract_properties(raw_text);
+    let metadata_text = crate::note_tree::unfenced_markdown(raw_text);
+    let mut properties = extract_properties(&metadata_text);
 
     // Position-aware tag classification (tag-system spec):
     //
@@ -153,7 +210,7 @@ fn make_block(
     // The split runs on raw_text (the full block content). The trailing
     // cluster is consumed left-to-right after the last non-tag/non-
     // whitespace character.
-    let (inline_tags, trailing_tags) = split_inline_and_trailing_tags(raw_text);
+    let (inline_tags, trailing_tags) = split_inline_and_trailing_tags(&metadata_text);
 
     // Merge tags from three sources, preserving order, deduplicated:
     //   1. `tags::` property line — legacy back-compat read path
@@ -183,7 +240,18 @@ fn make_block(
     // sync round-trips back to the canonical on-disk form.
     let first_line = raw_text.lines().next().unwrap_or(raw_text);
     let bid_stripped = crate::note_tree::strip_bid_comment(first_line);
-    let display_text = TAG_RE.replace_all(&bid_stripped, "").trim().to_string();
+    let display_source = if bid_stripped.trim().is_empty() {
+        let candidate = raw_text.lines().nth(1).unwrap_or("");
+        let mut fence = crate::note_tree::MarkdownFenceTracker::default();
+        if fence.line_is_fenced(candidate) {
+            candidate
+        } else {
+            bid_stripped.as_str()
+        }
+    } else {
+        bid_stripped.as_str()
+    };
+    let display_text = TAG_RE.replace_all(display_source, "").trim().to_string();
     // Surface the on-disk bid so clients can re-emit it on save.
     let bid = crate::note_tree::parse_bid(first_line).map(|u| u.to_string());
 
@@ -275,8 +343,20 @@ pub fn split_inline_and_trailing_tags(raw_text: &str) -> (Vec<String>, Vec<Strin
 
 /// Extract all `#tag` names from text (inline + trailing), via `TAG_RE`.
 pub fn extract_tags(text: &str) -> Vec<String> {
+    let indexable = crate::note_tree::unfenced_markdown(text);
+    extract_tags_from_projection(&indexable)
+}
+
+/// Full-note variant of [`extract_tags`], preserving YAML/page-property
+/// context while masking fenced regions in the Markdown body.
+pub fn extract_tags_from_note(content: &str) -> Vec<String> {
+    let indexable = crate::note_tree::unfenced_note_markdown(content);
+    extract_tags_from_projection(&indexable)
+}
+
+fn extract_tags_from_projection(indexable: &str) -> Vec<String> {
     TAG_RE
-        .captures_iter(text)
+        .captures_iter(indexable)
         .map(|cap| cap[1].to_string())
         .collect()
 }
@@ -348,6 +428,73 @@ mod tests {
             Some(&"high".to_string())
         );
         assert_eq!(blocks[0].tags, vec!["Task"]);
+    }
+
+    #[test]
+    fn parse_blocks_keeps_fenced_bullets_properties_and_tags_inert() {
+        let body = "- <!-- bid:11111111-1111-1111-1111-111111111111 -->\n  ```query\n  status:: done\n  - payload, not a child\n  #not-a-tag\n  ```\n  status:: todo";
+        let blocks = parse_blocks("test", body);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].bid.as_deref(),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+        assert_eq!(blocks[0].text, "```query");
+        assert_eq!(
+            blocks[0].raw_text,
+            "<!-- bid:11111111-1111-1111-1111-111111111111 -->\n```query\nstatus:: done\n- payload, not a child\n#not-a-tag\n```\nstatus:: todo"
+        );
+        assert_eq!(
+            blocks[0].properties.get("status"),
+            Some(&"todo".to_string())
+        );
+        assert!(blocks[0].tags.is_empty());
+    }
+
+    #[test]
+    fn parse_blocks_uses_long_tilde_and_unclosed_fence_grammar() {
+        let body = "- <!-- bid:12121212-1212-1212-1212-121212121212 -->\n  ~~~~text\n  ~~~\n  - payload, not a child\n  status:: inert\n  #inert\n";
+        let blocks = parse_blocks("test", body);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "~~~~text");
+        assert!(blocks[0].properties.is_empty());
+        assert!(blocks[0].tags.is_empty());
+        assert!(blocks[0].raw_text.contains("- payload, not a child"));
+    }
+
+    #[test]
+    fn raw_top_level_fence_does_not_create_fake_blocks_or_properties() {
+        let body = "```query\n- payload, not a block\nstatus:: done\n#fake\n```\n- Real #outside";
+        let blocks = parse_blocks("test", body);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "Real");
+        assert_eq!(blocks[0].tags, vec!["outside"]);
+        assert!(blocks[0].properties.is_empty());
+    }
+
+    #[test]
+    fn fenced_tags_are_inert_without_changing_trailing_classification() {
+        let body = "- Work #inline\n  ```text\n  #hidden\n  ```\n  #terminal";
+        let blocks = parse_blocks("test", body);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].inline_tags, vec!["inline"]);
+        assert_eq!(blocks[0].trailing_tags, vec!["terminal"]);
+        assert_eq!(blocks[0].tags, vec!["inline", "terminal"]);
+    }
+
+    #[test]
+    fn frontmatter_shaped_block_fragment_keeps_fenced_metadata_inert() {
+        let body = "- ---\n  ```text\n  #hidden\n  tags:: hidden-prop\n  ```\n  ---";
+        let blocks = parse_blocks("test", body);
+
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].tags.is_empty());
+        assert!(blocks[0].properties.is_empty());
+        assert!(blocks[0].raw_text.contains("#hidden"));
     }
 
     #[test]

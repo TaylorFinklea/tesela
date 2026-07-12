@@ -101,15 +101,26 @@ pub const BID_SUFFIX: &str = " -->";
 /// is captured verbatim. Non-bullet body regions are represented as
 /// ordinary top-level blocks (see module docs).
 pub fn parse_note(content: &str) -> NoteTree {
+    parse_note_with_minted_ids(content).0
+}
+
+/// Parse a note and return the ids that were minted because their source
+/// blocks had no persisted `bid` marker.
+///
+/// The per-block provenance matters to sync hydration: [`NoteTree::stamped_any`]
+/// is only an aggregate signal, so it cannot distinguish a raw lifted region
+/// from an explicitly identified neighbor in a partially stamped note.
+pub fn parse_note_with_minted_ids(content: &str) -> (NoteTree, Vec<Uuid>) {
     let (frontmatter, body) = split_frontmatter(content);
     let (page_properties, rest) = split_page_properties(body);
-    let (blocks, stamped_any) = parse_body_blocks(rest);
-    NoteTree {
+    let (blocks, minted_block_ids) = parse_body_blocks(rest);
+    let tree = NoteTree {
         frontmatter,
         page_properties,
         blocks,
-        stamped_any,
-    }
+        stamped_any: !minted_block_ids.is_empty(),
+    };
+    (tree, minted_block_ids)
 }
 
 /// Consume leading page-property lines (`key:: value`) from the top of
@@ -383,6 +394,113 @@ struct FenceMarker {
     width: usize,
 }
 
+/// Stateful Markdown fence classifier for logical/deindented block lines.
+///
+/// [`line_is_fenced`](Self::line_is_fenced) returns `true` for the opener,
+/// every payload line, and the matching closer. An unclosed fence therefore
+/// keeps returning `true` through EOF. The grammar is the same one the note
+/// scanner uses: backticks or tildes, opener width >= 3, up to three leading
+/// spaces, and a same-character closer at least as wide with whitespace-only
+/// suffix.
+#[derive(Clone, Debug, Default)]
+pub struct MarkdownFenceTracker {
+    marker: Option<FenceMarker>,
+}
+
+impl MarkdownFenceTracker {
+    pub fn is_open(&self) -> bool {
+        self.marker.is_some()
+    }
+
+    pub fn line_is_fenced(&mut self, line: &str) -> bool {
+        if let Some(marker) = self.marker {
+            if closes_fence(line, marker) {
+                self.marker = None;
+            }
+            return true;
+        }
+        if let Some(marker) = fence_marker(line) {
+            self.marker = Some(marker);
+            return true;
+        }
+        false
+    }
+}
+
+/// Fenced source ranges discovered by the same structural scanner that builds
+/// the canonical note tree.
+#[derive(Clone, Debug, Default)]
+pub struct MarkdownFenceMask {
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl MarkdownFenceMask {
+    /// Whether any byte in `span` belongs to a fenced opener, payload, or
+    /// closer. Full-range overlap (not only the start offset) prevents a
+    /// malformed multi-line token from crossing a fenced region.
+    pub fn overlaps(&self, span: std::ops::Range<usize>) -> bool {
+        self.ranges
+            .iter()
+            .any(|range| span.start < range.end && range.start < span.end)
+    }
+}
+
+/// Classify fenced regions in a complete note.
+///
+/// Unlike [`MarkdownFenceTracker`], this accepts serialized Tesela Markdown:
+/// it understands a fence on a bullet's first line, exact list-continuation
+/// deindent (including nested blocks whose source opener has four or more
+/// spaces), raw top-level fences, long delimiters, and unclosed fences.
+pub fn markdown_fence_mask(content: &str) -> MarkdownFenceMask {
+    let (_, body) = split_frontmatter(content);
+    let (_, rest) = split_page_properties(body);
+    let body_offset = content.len() - rest.len();
+    let mut mask = markdown_body_fence_mask(rest);
+    for range in &mut mask.ranges {
+        range.start += body_offset;
+        range.end += body_offset;
+    }
+    mask
+}
+
+/// Classify fenced regions in an already-extracted note body or a logical
+/// block fragment. This deliberately does not interpret leading/trailing
+/// `---` lines as YAML frontmatter; thematic rules are valid block text.
+pub fn markdown_body_fence_mask(body: &str) -> MarkdownFenceMask {
+    let (_, ranges) = scan_body_blocks(body);
+    MarkdownFenceMask { ranges }
+}
+
+/// Replace fenced bytes for metadata extraction while retaining source byte
+/// offsets and line boundaries. The `|` sentinel is deliberately non-
+/// whitespace, so a fence stays a hard token boundary instead of turning a
+/// preceding inline tag into a trailing tag.
+/// Note serialization always retains the original fenced bytes.
+pub fn unfenced_markdown(text: &str) -> String {
+    project_unfenced(text, markdown_body_fence_mask(text))
+}
+
+/// Full-note counterpart to [`unfenced_markdown`], excluding YAML
+/// frontmatter and leading page-property lines from fence classification.
+pub fn unfenced_note_markdown(content: &str) -> String {
+    project_unfenced(content, markdown_fence_mask(content))
+}
+
+fn project_unfenced(text: &str, mask: MarkdownFenceMask) -> String {
+    if mask.ranges.is_empty() {
+        return text.to_string();
+    }
+    let mut projected = text.as_bytes().to_vec();
+    for range in mask.ranges {
+        for byte in &mut projected[range] {
+            if !matches!(*byte, b'\n' | b'\r') {
+                *byte = b'|';
+            }
+        }
+    }
+    String::from_utf8(projected).expect("fence projection replaces complete UTF-8 byte ranges")
+}
+
 /// Recognize a Markdown fence opener after up to three preserved spaces.
 /// Both backtick and tilde fences are supported. The caller retains the
 /// original line; this helper is only scanner state.
@@ -446,29 +564,26 @@ fn bullet_line(line: &str) -> Option<(u16, String, Option<Uuid>)> {
     Some(((spaces / 2) as u16, text, bid))
 }
 
-fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
-    // Two-pass: first scan every nonblank body line into either an
-    // existing bullet or a lifted top-level region, then resolve parents
-    // from the indent stack.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum SourceKind {
-        Bullet,
-        Lifted,
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Bullet,
+    Lifted,
+}
 
-    struct RawBlock {
-        indent: u16,
-        bid: Option<Uuid>,
-        text: String,
-        source: SourceKind,
-        fence: Option<FenceMarker>,
-    }
+struct RawBlock {
+    indent: u16,
+    bid: Option<Uuid>,
+    text: String,
+    source: SourceKind,
+    fence: Option<FenceMarker>,
+}
 
+fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) {
     let mut raw: Vec<RawBlock> = Vec::new();
     let mut current: Option<RawBlock> = None;
-    let mut stamped_any = false;
+    let mut fenced_ranges = Vec::new();
 
-    for (line, _) in line_spans(body) {
+    for (line, line_range) in line_spans(body) {
         // Once a fence opens it owns every line through a matching close,
         // including blank and bullet-looking lines. For a fence nested in
         // a bullet, strip exactly the list continuation prefix and retain
@@ -478,6 +593,7 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
                 .fence
                 .map(|marker| (block.source, block.indent, marker))
         }) {
+            fenced_ranges.push(line_range.clone());
             let content_line = match source {
                 SourceKind::Bullet => continuation_line(line, indent).unwrap_or(line),
                 SourceKind::Lifted => line,
@@ -507,6 +623,9 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
                 raw.push(b);
             }
             let fence = fence_marker(&text);
+            if fence.is_some() {
+                fenced_ranges.push(line_range);
+            }
             current = Some(RawBlock {
                 indent,
                 bid,
@@ -537,6 +656,9 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
                 }
                 block.text.push_str(continuation);
                 block.fence = opening_fence;
+                if opening_fence.is_some() {
+                    fenced_ranges.push(line_range);
+                }
                 continue;
             }
             raw.push(current.take().expect("checked current bullet"));
@@ -548,6 +670,7 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
         {
             if let Some(opening_fence) = fence_marker(line) {
                 raw.push(current.take().expect("checked lifted block"));
+                fenced_ranges.push(line_range);
                 current = Some(RawBlock {
                     indent: 0,
                     bid: None,
@@ -563,21 +686,34 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
             continue;
         }
 
+        let fence = fence_marker(line);
+        if fence.is_some() {
+            fenced_ranges.push(line_range);
+        }
         current = Some(RawBlock {
             indent: 0,
             bid: None,
             text: line.to_string(),
             source: SourceKind::Lifted,
-            fence: fence_marker(line),
+            fence,
         });
     }
     if let Some(b) = current {
         raw.push(b);
     }
+    (raw, fenced_ranges)
+}
+
+fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, Vec<Uuid>) {
+    // Two-pass: first scan every nonblank body line into either an
+    // existing bullet or a lifted top-level region, then resolve parents
+    // from the indent stack.
+    let (raw, _) = scan_body_blocks(body);
 
     // Resolve parents via indent stack.
     let mut blocks: Vec<FlatBlock> = Vec::with_capacity(raw.len());
     let mut parent_stack: Vec<(u16, Uuid)> = Vec::new();
+    let mut minted_block_ids = Vec::new();
     for rb in raw {
         while parent_stack
             .last()
@@ -590,8 +726,9 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
         let id = match rb.bid {
             Some(id) => id,
             None => {
-                stamped_any = true;
-                Uuid::now_v7()
+                let id = Uuid::now_v7();
+                minted_block_ids.push(id);
+                id
             }
         };
         parent_stack.push((rb.indent, id));
@@ -603,7 +740,7 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
             properties: Vec::new(),
         });
     }
-    (blocks, stamped_any)
+    (blocks, minted_block_ids)
 }
 
 /// Public wrapper around [`extract_bid`] for callers that only need the
@@ -1083,6 +1220,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_reports_per_block_minted_identity() {
+        let explicit = fixture_uuid(0x91);
+        let content = format!("# Lifted\n\n- Explicit <!-- bid:{explicit} -->\n");
+        let (tree, minted) = parse_note_with_minted_ids(&content);
+
+        assert_eq!(minted, vec![tree.blocks[0].id]);
+        assert!(!minted.contains(&explicit));
+        assert_eq!(tree.blocks[1].id, explicit);
+        assert!(tree.stamped_any);
+    }
+
+    #[test]
     fn lifts_page_properties_then_raw_body_and_all_raw_pages() {
         let with_properties = "type:: Reference\nsort:: title\n\n# Catalog\n\nAlpha\nBeta";
         let tree = parse_note(with_properties);
@@ -1178,6 +1327,62 @@ mod tests {
             ]
         );
         assert_structural_round_trip(content);
+    }
+
+    #[test]
+    fn fence_mask_handles_raw_nested_same_line_long_and_unclosed_regions() {
+        let parent = fixture_uuid(0x92);
+        let child = fixture_uuid(0x93);
+        let content = format!(
+            concat!(
+                "visible [[outside]] #real\n",
+                "```text\n[[raw-hidden]] #raw-hidden\n```\n",
+                "- Parent <!-- bid:{parent} -->\n",
+                "  - Child <!-- bid:{child} -->\n",
+                "    ```query\n    [[nested-hidden]] #nested-hidden\n    ```\n",
+                "  - ```text\n    [[same-line-hidden]] #same-line-hidden\n    ```\n",
+                "~~~~text\n[[long-hidden]]\n~~~\n~~~~\n",
+                "```text\n[[unclosed-hidden]] #unclosed-hidden",
+            ),
+            parent = parent,
+            child = child,
+        );
+        let mask = markdown_fence_mask(&content);
+        for hidden in [
+            "[[raw-hidden]]",
+            "[[nested-hidden]]",
+            "[[same-line-hidden]]",
+            "[[long-hidden]]",
+            "[[unclosed-hidden]]",
+        ] {
+            let start = content.find(hidden).unwrap();
+            assert!(
+                mask.overlaps(start..start + hidden.len()),
+                "expected fenced range for {hidden}"
+            );
+        }
+        let outside = content.find("[[outside]]").unwrap();
+        assert!(!mask.overlaps(outside..outside + "[[outside]]".len()));
+
+        let projected = unfenced_markdown(&content);
+        assert_eq!(projected.len(), content.len());
+        assert!(projected.contains("[[outside]] #real"));
+        assert!(!projected.contains("nested-hidden"));
+    }
+
+    #[test]
+    fn body_fence_mask_does_not_mistake_thematic_rules_for_frontmatter() {
+        let fragment = "---\n```text\n#hidden [[hidden]]\ntags:: hidden\n```\n---";
+        let hidden = fragment.find("#hidden").unwrap();
+
+        assert!(markdown_body_fence_mask(fragment).overlaps(hidden..hidden + 7));
+        assert!(
+            !markdown_fence_mask(fragment).overlaps(hidden..hidden + 7),
+            "the full-note API intentionally interprets the wrapper as frontmatter"
+        );
+        let projected = unfenced_markdown(fragment);
+        assert_eq!(projected.len(), fragment.len());
+        assert!(!projected.contains("#hidden"));
     }
 
     #[test]

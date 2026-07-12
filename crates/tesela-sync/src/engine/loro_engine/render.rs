@@ -189,9 +189,8 @@ fn note_tree_from_doc(
             // (`JournalView.ensureTrailingEmpty`). Dropping them made empty
             // days zero-block and un-editable (keyboard + mouse), so the
             // 2026-05-29 "drop blank blocks" experiment is reverted.
-            // Headings / non-bullet body lines are still absent — the
-            // flat-block model never captured them (that's the intended
-            // heading drop).
+            // Lifted headings, prose, and fences are ordinary FlatBlocks and
+            // therefore follow this exact same render path.
             blocks.push(fb);
         }
     }
@@ -209,7 +208,7 @@ fn note_tree_from_doc(
 /// and legacy `page_props` are disjoint stores at this stage (P1.5);
 /// migrate-on-write that folds legacy into the container and CLEARS it is
 /// P1.6, so for now we surface both without double-emitting a shared key.
-fn page_properties_materialized(doc: &LoroDoc) -> Vec<(String, String)> {
+pub(super) fn page_properties_materialized(doc: &LoroDoc) -> Vec<(String, String)> {
     let (props, prop_keys) = prop_containers::page_prop_containers(doc);
     let mut out = prop_containers::materialize_props(&props, &prop_keys);
     let seen: std::collections::HashSet<String> = out.iter().map(|(k, _)| k.clone()).collect();
@@ -318,14 +317,21 @@ pub(super) fn doc_full_markdown(doc: &LoroDoc) -> String {
 pub(super) fn classify_block_prose_and_props(text: &str) -> (String, Vec<(String, String)>) {
     let mut prose: Vec<&str> = Vec::new();
     let mut props: Vec<(String, String)> = Vec::new();
-    for line in text.lines() {
-        if let Some((key, value)) = solely_property_line(line) {
+    let mut fence = tesela_core::note_tree::MarkdownFenceTracker::default();
+    for line in text.split('\n') {
+        if fence.line_is_fenced(line) {
+            prose.push(line);
+        } else if let Some((key, value)) = solely_property_line(line) {
             props.push((key, value));
         } else {
             prose.push(line);
         }
     }
-    (prose.join("\n"), props)
+    if props.is_empty() {
+        (text.to_string(), props)
+    } else {
+        (prose.join("\n"), props)
+    }
 }
 
 /// If `line` (after trim) is SOLELY a `key:: value` property — key a leading
@@ -356,7 +362,10 @@ fn solely_property_line(line: &str) -> Option<(String, String)> {
 /// stored verbatim, so we lowercase those too). Returns `text` byte-for-byte
 /// unchanged when there are no container props OR no line is dropped, so the
 /// common no-duplicate path is untouched.
-pub(super) fn dedup_intext_props_against_container(text: String, properties: &[(String, String)]) -> String {
+pub(super) fn dedup_intext_props_against_container(
+    text: String,
+    properties: &[(String, String)],
+) -> String {
     if properties.is_empty() {
         return text;
     }
@@ -364,15 +373,17 @@ pub(super) fn dedup_intext_props_against_container(text: String, properties: &[(
         .iter()
         .map(|(k, _)| k.to_ascii_lowercase())
         .collect();
+    let mut fence = tesela_core::note_tree::MarkdownFenceTracker::default();
     let kept: Vec<&str> = text
-        .lines()
+        .split('\n')
         .filter(|line| {
-            solely_property_line(line)
-                .map(|(k, _)| !container_keys.contains(&k))
-                .unwrap_or(true)
+            fence.line_is_fenced(line)
+                || solely_property_line(line)
+                    .map(|(k, _)| !container_keys.contains(&k))
+                    .unwrap_or(true)
         })
         .collect();
-    if kept.len() == text.lines().count() {
+    if kept.len() == text.split('\n').count() {
         // Nothing dropped — preserve the exact original bytes (incl. any
         // trailing-newline nuance) so non-duplicate blocks are unaffected.
         return text;

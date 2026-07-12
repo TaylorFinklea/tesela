@@ -1383,14 +1383,15 @@ impl LoroEngine {
         self.inner.outbound_strand_alarms.load(Ordering::Relaxed)
     }
 
-    /// Reseed every content-preserving note's Loro doc from the authoritative
+    /// Reseed every structurally preserving note's Loro doc from the authoritative
     /// `.md` files in `notes_dir` by replaying a `NoteUpsert` per file. For
     /// notes already resident, `apply_payload`'s NoteUpsert tree-reconcile
     /// corrects a drifted/stale doc to match disk (the fix for the stale-shadow
     /// divergences the materialization dry-run found). For new notes it seeds
-    /// them. Notes whose parse→serialize round trip would alter more than bid
-    /// comments are skipped because the current tree/doc model cannot represent
-    /// their non-bullet content losslessly. This is the canonical-device
+    /// them. The explicit reseed may canonicalize raw headings, prose, and
+    /// fences only when the parsed structural projection is unchanged. This is
+    /// deliberately broader than automatic startup stamping, which stays
+    /// byte-conservative. This is the canonical-device
     /// bootstrap for the cutover — the source of truth on first authoritative
     /// boot is DISK, not the frozen oplog/snapshots. Returns the number of files
     /// successfully applied; warnings report each skipped note and the skipped
@@ -1431,10 +1432,11 @@ impl LoroEngine {
             };
             let parsed = tesela_core::note_tree::parse_note(&content);
             let serialized = tesela_core::note_tree::serialize_note(&parsed);
-            if !tesela_core::note_tree::stamp_is_content_preserving(&content, &serialized) {
+            if !tesela_core::note_tree::canonicalization_preserves_structure(&content, &serialized)
+            {
                 tracing::warn!(
-                    "tesela-sync/loro: reseed skip {stem} — its body would not survive the \
-                     parse→serialize round trip (non-bullet or non-canonical content); \
+                    "tesela-sync/loro: reseed skip {stem} — canonicalization changed its \
+                     structural projection; \
                      leaving the file byte-identical and Loro state untouched"
                 );
                 skipped += 1;
@@ -1448,7 +1450,7 @@ impl LoroEngine {
                 note_id,
                 display_alias: Some(stem.to_string()),
                 title,
-                content,
+                content: serialized,
                 created_at_millis: 0,
             };
             if let Err(e) = self.apply_payload(&payload).await {
@@ -1462,7 +1464,7 @@ impl LoroEngine {
         } else {
             tracing::warn!(
                 "tesela-sync/loro: reseed summary: {count} applied, {skipped} skipped because \
-                 their parse→serialize round trip was not content-preserving"
+                 canonicalization changed their structural projection"
             );
         }
         Ok(count)
@@ -2067,7 +2069,7 @@ mod prop_containers;
 mod render;
 use render::{
     classify_block_prose_and_props, dedup_intext_props_against_container, doc_full_markdown,
-    set_page_properties,
+    page_properties_materialized, set_page_properties,
 };
 mod index;
 use index::{build_block_index, frontmatter_title, INDEX_SCHEMA_VERSION};
@@ -2127,6 +2129,159 @@ fn tree_matches_blocks(tree: &LoroTree, blocks: &[tesela_core::note_tree::FlatBl
         }
     }
     true
+}
+
+fn blocks_match_structurally(
+    left: &tesela_core::note_tree::FlatBlock,
+    right: &tesela_core::note_tree::FlatBlock,
+) -> bool {
+    let (left_prose, _) = classify_block_prose_and_props(&left.text);
+    let (right_prose, _) = classify_block_prose_and_props(&right.text);
+    left.indent == right.indent && left_prose == right_prose
+}
+
+/// An exact unstamped whole-body reapply mints fresh parser UUIDs even though
+/// its ordered structure is unchanged. Rebind only those transient ids to the
+/// resident ids; explicit incoming bids are immutable anchors.
+///
+/// Returns `false` without mutating `blocks` unless the complete live shape is
+/// an exact structural replay. A changed unstamped resident body is ambiguous
+/// (edit vs insertion vs stale resurrection), so the caller fails closed.
+fn adopt_minted_ids_for_exact_reapply(
+    tree: &LoroTree,
+    blocks: &mut [tesela_core::note_tree::FlatBlock],
+    minted_ids: &std::collections::HashSet<uuid::Uuid>,
+) -> bool {
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|node| !matches!(tree.is_node_deleted(node), Ok(true)))
+        .collect();
+    let resident: Vec<tesela_core::note_tree::FlatBlock> = dedup_twins_by_block_id(tree, live)
+        .into_iter()
+        .filter_map(|node| flatblock_from_node(tree, node))
+        .collect();
+    if resident.len() != blocks.len() {
+        return false;
+    }
+
+    let explicit_ids: std::collections::HashSet<uuid::Uuid> = blocks
+        .iter()
+        .filter(|block| !minted_ids.contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut remap = HashMap::new();
+    for (existing, incoming) in resident.iter().zip(blocks.iter()) {
+        if !blocks_match_structurally(existing, incoming) {
+            return false;
+        }
+        if minted_ids.contains(&incoming.id) {
+            if explicit_ids.contains(&existing.id) {
+                return false;
+            }
+            remap.insert(incoming.id, existing.id);
+        } else if incoming.id != existing.id {
+            return false;
+        }
+    }
+
+    for block in blocks.iter_mut() {
+        if let Some(resident_id) = remap.get(&block.id) {
+            block.id = *resident_id;
+        }
+        if let Some(parent) = block.parent.and_then(|parent| remap.get(&parent)) {
+            block.parent = Some(*parent);
+        }
+    }
+    true
+}
+
+fn tree_has_block_history(tree: &LoroTree) -> bool {
+    !tree.nodes().is_empty()
+}
+
+/// A legacy root-content migration is trusted to introduce lifted regions
+/// that the old bullet-only tree never modeled. Reuse historical identity for
+/// every parser-minted block that has an exact structural counterpart, while
+/// preserving explicit incoming bids and leaving genuinely new lifted regions
+/// with their fresh ids.
+fn adopt_historical_ids_for_legacy_migration(
+    tree: &LoroTree,
+    blocks: &mut [tesela_core::note_tree::FlatBlock],
+    minted_ids: &std::collections::HashSet<uuid::Uuid>,
+) {
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|node| !matches!(tree.is_node_deleted(node), Ok(true)))
+        .collect();
+    let mut candidates: Vec<tesela_core::note_tree::FlatBlock> =
+        dedup_twins_by_block_id(tree, live)
+            .into_iter()
+            .filter_map(|node| flatblock_from_node(tree, node))
+            .filter(|block| !block.id.is_nil())
+            .collect();
+    let mut seen: std::collections::HashSet<uuid::Uuid> =
+        candidates.iter().map(|block| block.id).collect();
+    for node in tree
+        .nodes()
+        .into_iter()
+        .filter(|node| matches!(tree.is_node_deleted(node), Ok(true)))
+    {
+        if let Some(block) = flatblock_from_node(tree, node).filter(|block| !block.id.is_nil()) {
+            if seen.insert(block.id) {
+                candidates.push(block);
+            }
+        }
+    }
+
+    let explicit_ids: std::collections::HashSet<uuid::Uuid> = blocks
+        .iter()
+        .filter(|block| !minted_ids.contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut used = vec![false; candidates.len()];
+    let mut remap = HashMap::new();
+    for block in blocks.iter() {
+        if !minted_ids.contains(&block.id) {
+            continue;
+        }
+        if let Some((idx, existing)) = candidates.iter().enumerate().find(|(idx, existing)| {
+            !used[*idx]
+                && !explicit_ids.contains(&existing.id)
+                && blocks_match_structurally(existing, block)
+        }) {
+            used[idx] = true;
+            remap.insert(block.id, existing.id);
+        }
+    }
+    for block in blocks.iter_mut() {
+        if let Some(resident_id) = remap.get(&block.id) {
+            block.id = *resident_id;
+        }
+        if let Some(parent) = block.parent.and_then(|parent| remap.get(&parent)) {
+            block.parent = Some(*parent);
+        }
+    }
+}
+
+/// A legacy `root.content` body may be retired only by the same full modeled
+/// projection. Explicit ids already persisted in that legacy body must remain
+/// explicit identity anchors; bidless regions may receive canonical ids.
+fn legacy_content_matches_incoming(legacy: &str, incoming: &str) -> bool {
+    if !tesela_core::note_tree::canonicalization_preserves_structure(legacy, incoming) {
+        return false;
+    }
+    let (legacy_tree, legacy_minted) = tesela_core::note_tree::parse_note_with_minted_ids(legacy);
+    let incoming_tree = tesela_core::note_tree::parse_note(incoming);
+    let legacy_minted: std::collections::HashSet<uuid::Uuid> = legacy_minted.into_iter().collect();
+    legacy_tree
+        .blocks
+        .iter()
+        .zip(incoming_tree.blocks.iter())
+        .all(|(left, right)| legacy_minted.contains(&left.id) || left.id == right.id)
 }
 
 /// Non-destructive NoteUpsert body reconcile (2026-06-10). Brings the live
@@ -2197,7 +2352,12 @@ fn reconcile_tree_to_blocks(
                     // Deleted-wins: never resurrect via a whole-content upsert.
                     continue;
                 }
-                let node = create_block_node_positioned(tree, prev_live.as_ref())?;
+                let node = if let Some(previous) = prev_live.as_ref() {
+                    create_block_node_positioned(tree, Some(previous))?
+                } else {
+                    tree.create_at(TreeParentId::Root, 0)
+                        .map_err(|e| SyncError::Storage(format!("loro tree create: {e}")))?
+                };
                 let meta = tree
                     .get_meta(node)
                     .map_err(|e| SyncError::Storage(format!("reconcile get_meta: {e}")))?;
@@ -2659,7 +2819,56 @@ impl LoroEngine {
                 display_alias,
                 ..
             } => {
+                let (mut parsed, minted_ids) =
+                    tesela_core::note_tree::parse_note_with_minted_ids(content);
+                let minted_ids: std::collections::HashSet<uuid::Uuid> =
+                    minted_ids.into_iter().collect();
+                let canonical = tesela_core::note_tree::serialize_note(&parsed);
+                if !tesela_core::note_tree::canonicalization_preserves_structure(
+                    content, &canonical,
+                ) {
+                    return Err(SyncError::Protocol(format!(
+                        "NoteUpsert {} changed structure during canonicalization",
+                        hex_id(note_id)
+                    )));
+                }
                 let doc = self.doc_for_note_mut(*note_id).await;
+                let root_meta = doc.get_map("root");
+                let legacy_content = root_meta
+                    .get("content")
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .map(|value| (*value).clone())
+                    .unwrap_or_default();
+                if !legacy_content.is_empty()
+                    && !legacy_content_matches_incoming(&legacy_content, content)
+                {
+                    return Err(SyncError::Protocol(format!(
+                        "NoteUpsert {} does not match resident legacy content",
+                        hex_id(note_id)
+                    )));
+                }
+
+                let tree = doc.get_tree("blocks");
+                let exact_unstamped_reapply = if !legacy_content.is_empty() {
+                    adopt_historical_ids_for_legacy_migration(
+                        &tree,
+                        &mut parsed.blocks,
+                        &minted_ids,
+                    );
+                    false
+                } else if !minted_ids.is_empty() && tree_has_block_history(&tree) {
+                    if !adopt_minted_ids_for_exact_reapply(&tree, &mut parsed.blocks, &minted_ids) {
+                        return Err(SyncError::Protocol(format!(
+                            "NoteUpsert {} has changed unstamped blocks against resident history",
+                            hex_id(note_id)
+                        )));
+                    }
+                    true
+                } else {
+                    false
+                };
+
                 // Root meta makes the per-note doc SELF-DESCRIBING:
                 // frontmatter (verbatim), slug, title. The body is NOT
                 // duplicated here — it lives in the "blocks" tree, and the
@@ -2671,10 +2880,7 @@ impl LoroEngine {
                 // This lets the index still be rebuilt purely from per-note
                 // docs (no dependence on a prior index) — what makes the
                 // index self-healing across schema changes.
-                let root_meta = doc.get_map("root");
-                let frontmatter = tesela_core::note_tree::parse_note(content)
-                    .frontmatter
-                    .unwrap_or_default();
+                let frontmatter = parsed.frontmatter.clone().unwrap_or_default();
                 root_meta
                     .insert("frontmatter", frontmatter.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
@@ -2685,27 +2891,6 @@ impl LoroEngine {
                     .insert("title", title.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
 
-                // If the tree is empty, this is the first time we've
-                // seen the note. Parse the content into FlatBlocks and
-                // seed the tree so render_note matches what's on disk
-                // even when no BlockUpserts follow (legacy notes
-                // created by the pre-engine FsNoteStore.write_note
-                // path; auto-created dailies that only get NoteUpsert).
-                //
-                // Subsequent NoteUpserts for the same note skip the
-                // parse — BlockUpsert/Move/Delete ops keep the tree in
-                // sync from there. Without the skip, repeated
-                // NoteUpserts would create duplicate nodes.
-                let parsed = tesela_core::note_tree::parse_note(content);
-                // Index spine: note_id → {title, slug, tags, links},
-                // derived from content + page properties.
-                self.index_upsert(
-                    *note_id,
-                    display_alias.as_deref(),
-                    title,
-                    content,
-                    &parsed.page_properties,
-                );
                 // Page properties are authoritative from the full
                 // content and overwritten wholesale on every NoteUpsert
                 // (they only arrive via full-content ops, never block
@@ -2736,10 +2921,26 @@ impl LoroEngine {
                 // for existence), and leaves live blocks absent from the
                 // content untouched (anti-clobber). The common no-op
                 // re-save still short-circuits via `tree_matches_blocks`.
-                let tree = doc.get_tree("blocks");
-                if !tree_matches_blocks(&tree, &parsed.blocks) {
+                if !exact_unstamped_reapply && !tree_matches_blocks(&tree, &parsed.blocks) {
                     reconcile_tree_to_blocks(&tree, &parsed.blocks)?;
                 }
+                if root_meta.get("content").is_some() {
+                    root_meta
+                        .delete("content")
+                        .map_err(|e| SyncError::Storage(format!("loro root delete: {e}")))?;
+                }
+                // Index the materialized post-reconcile projection, not the
+                // possibly stale incoming subset. This keeps backlinks/tags
+                // aligned with absence-is-not-delete and legacy lift.
+                let indexed_content = doc_full_markdown(&doc);
+                let indexed_page_properties = page_properties_materialized(&doc);
+                self.index_upsert(
+                    *note_id,
+                    display_alias.as_deref(),
+                    title,
+                    &indexed_content,
+                    &indexed_page_properties,
+                );
                 doc.commit();
                 // Register this note's blocks in the block_index.
                 let block_ids: Vec<[u8; 16]> =

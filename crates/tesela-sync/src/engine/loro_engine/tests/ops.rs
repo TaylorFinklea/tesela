@@ -847,6 +847,205 @@ async fn note_upsert_after_snapshot_load_does_not_duplicate_blocks() {
 }
 
 #[tokio::test]
+async fn identical_unstamped_raw_note_upsert_is_idempotent() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x11; 16];
+    let raw = "# Heading\n\nProse\n\n```text\n- payload\n```\n";
+
+    let payload = || OpPayload::NoteUpsert {
+        note_id,
+        display_alias: Some("raw-reapply".into()),
+        title: "Raw reapply".into(),
+        content: raw.into(),
+        created_at_millis: 1,
+    };
+    engine.record_local(payload()).await.unwrap();
+    let first_ids = tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap())
+        .blocks
+        .into_iter()
+        .map(|block| block.id)
+        .collect::<Vec<_>>();
+    engine.record_local(payload()).await.unwrap();
+
+    let rendered = engine.render_note(note_id).await.unwrap();
+    let tree = tesela_core::note_tree::parse_note(&rendered);
+    assert_eq!(
+        tree.blocks.len(),
+        3,
+        "raw reapply must not duplicate blocks"
+    );
+    assert_eq!(
+        tree.blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["# Heading", "Prose", "```text\n- payload\n```"]
+    );
+    assert_eq!(
+        tree.blocks.iter().map(|block| block.id).collect::<Vec<_>>(),
+        first_ids,
+        "exact raw replay must retain resident identity"
+    );
+    let docs = engine.inner.docs.read().await;
+    let doc = docs.get(&note_id).unwrap();
+    let loro_tree = doc.get_tree("blocks");
+    let live = loro_tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|node| !matches!(loro_tree.is_node_deleted(node), Ok(true)))
+        .count();
+    assert_eq!(live, 3, "exact replay must not create hidden live twins");
+    assert!(duplicate_block_ids(doc).is_empty());
+}
+
+#[tokio::test]
+async fn partially_stamped_exact_reapply_preserves_explicit_and_minted_ids() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x13; 16];
+    let explicit = uuid::Uuid::from_bytes([0x45; 16]);
+    let content = format!("# Raw heading\n\n- Explicit <!-- bid:{explicit} -->\n");
+    let payload = || OpPayload::NoteUpsert {
+        note_id,
+        display_alias: Some("partial-stamp".into()),
+        title: "Partial stamp".into(),
+        content: content.clone(),
+        created_at_millis: 1,
+    };
+
+    engine.record_local(payload()).await.unwrap();
+    let first = tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap());
+    engine.record_local(payload()).await.unwrap();
+    let second = tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap());
+
+    assert_eq!(
+        second
+            .blocks
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>(),
+        first
+            .blocks
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(second.blocks[1].id, explicit);
+}
+
+#[tokio::test]
+async fn changed_unstamped_reapply_fails_without_duplicate_or_resurrection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("loro");
+    let device = test_device();
+    let engine = LoroEngine::with_snapshot_dir(device, Arc::new(Hlc::new(device)), dir.clone())
+        .await
+        .unwrap();
+    let note_id = [0x14; 16];
+    let raw = "First raw\n\nSecond raw\n";
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("raw-policy".into()),
+            title: "Raw policy".into(),
+            content: raw.into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    let seeded = tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap());
+
+    let edited = engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("raw-policy".into()),
+            title: "Raw policy".into(),
+            content: "First raw edited\n\nSecond raw\n".into(),
+            created_at_millis: 2,
+        })
+        .await;
+    assert!(matches!(edited, Err(SyncError::Protocol(_))));
+    assert_eq!(
+        tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap())
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["First raw", "Second raw"]
+    );
+
+    engine
+        .record_local(OpPayload::BlockDelete {
+            block_id: *seeded.blocks[0].id.as_bytes(),
+        })
+        .await
+        .unwrap();
+    let stale = engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("raw-policy".into()),
+            title: "Raw policy".into(),
+            content: raw.into(),
+            created_at_millis: 3,
+        })
+        .await;
+    assert!(matches!(stale, Err(SyncError::Protocol(_))));
+    assert_eq!(
+        tesela_core::note_tree::parse_note(&engine.render_note(note_id).await.unwrap())
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Second raw"]
+    );
+    drop(engine);
+
+    let reloaded = LoroEngine::with_snapshot_dir(device, Arc::new(Hlc::new(device)), dir)
+        .await
+        .unwrap();
+    assert_eq!(
+        tesela_core::note_tree::parse_note(&reloaded.render_note(note_id).await.unwrap())
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Second raw"]
+    );
+}
+
+#[tokio::test]
+async fn deleting_one_lifted_region_preserves_adjacent_regions() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x12; 16];
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("lifted-delete".into()),
+            title: "Lifted delete".into(),
+            content: "First raw\n\nSecond raw\n\nThird raw\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    let before = engine.render_note(note_id).await.unwrap();
+    let middle = *tesela_core::note_tree::parse_note(&before).blocks[1]
+        .id
+        .as_bytes();
+
+    engine
+        .record_local(OpPayload::BlockDelete { block_id: middle })
+        .await
+        .unwrap();
+    let rendered = engine.render_note(note_id).await.unwrap();
+    assert!(rendered.contains("First raw"));
+    assert!(!rendered.contains("Second raw"));
+    assert!(rendered.contains("Third raw"));
+}
+
+#[tokio::test]
 async fn corrupt_snapshot_skipped_on_load() {
     // Write a garbage .bin file with a valid-looking hex name.
     // Load should warn + skip without panicking, and the engine
@@ -997,6 +1196,101 @@ async fn render_note_full_includes_frontmatter() {
 }
 
 #[tokio::test]
+async fn note_upsert_updates_property_shaped_text_inside_fence() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x7d; 16];
+    let before =
+        "- <!-- bid:33333333-3333-3333-3333-333333333333 -->\n  ```text\n  status:: todo\n  ```\n";
+    let after = before.replace("status:: todo", "status:: done");
+
+    for content in [before.to_string(), after.clone()] {
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("fenced-status".into()),
+                title: "Fenced status".into(),
+                content,
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        engine.render_note(note_id).await.as_deref(),
+        Some(after.as_str())
+    );
+}
+
+#[tokio::test]
+async fn typed_property_dedup_does_not_delete_same_key_inside_fence() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x7e; 16];
+    let block_id = [0x34; 16];
+
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "```text\nstatus:: literal payload\n```".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+    engine
+        .record_local(OpPayload::BlockPropertySet {
+            note_id,
+            block_id,
+            key: "status".into(),
+            value: PropOp::SetScalar(PropScalar::Text("done".into())),
+        })
+        .await
+        .unwrap();
+
+    let rendered = engine.render_note(note_id).await.unwrap();
+    assert!(
+        rendered.contains("status:: literal payload"),
+        "fenced payload survives typed-property dedup: {rendered:?}"
+    );
+    assert!(
+        rendered.ends_with("  status:: done\n"),
+        "typed property still materializes after the fence: {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn migrate_on_apply_keeps_fenced_property_as_text() {
+    let device = test_device();
+    let engine = LoroEngine::new_migrating(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x7f; 16];
+    let block_id = [0x35; 16];
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "```text\nstatus:: literal payload\n```".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.render_note(note_id).await.as_deref(),
+        Some(
+            "- <!-- bid:35353535-3535-3535-3535-353535353535 -->\n  ```text\n  status:: literal payload\n  ```\n"
+        )
+    );
+}
+
+#[tokio::test]
 async fn note_upsert_stores_lean_frontmatter_not_full_content() {
     // The dedup invariant: a NoteUpsert must NOT duplicate the body onto
     // root meta. Storing the full markdown there doubled every snapshot
@@ -1062,6 +1356,187 @@ async fn note_upsert_stores_lean_frontmatter_not_full_content() {
         entry.tags
     );
     assert_eq!(entry.links, vec!["target".to_string()], "body link indexed");
+}
+
+#[tokio::test]
+async fn note_upsert_indexes_resident_typed_page_tags_from_materialized_doc() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x6b; 16];
+    let content = "- Body <!-- bid:4a4a4a4a-4a4a-4a4a-4a4a-4a4a4a4a4a4a -->\n";
+    let upsert = || OpPayload::NoteUpsert {
+        note_id,
+        display_alias: Some("typed-page-tag".into()),
+        title: "Typed page tag".into(),
+        content: content.into(),
+        created_at_millis: 1,
+    };
+    engine.record_local(upsert()).await.unwrap();
+    engine
+        .record_local(OpPayload::PagePropertySet {
+            note_id,
+            key: "tags".into(),
+            value: PropOp::AddToList(PropScalar::Text("resident".into())),
+        })
+        .await
+        .unwrap();
+
+    // This whole-content payload omits the typed page property. Its legacy
+    // list is replaced, but the typed container remains authoritative.
+    engine.record_local(upsert()).await.unwrap();
+
+    assert!(engine
+        .render_note_full(note_id)
+        .await
+        .unwrap()
+        .contains("tags:: resident"));
+    let entry = engine
+        .index_entries()
+        .await
+        .into_iter()
+        .find(|entry| entry.note_id == hex_id(&note_id))
+        .unwrap();
+    assert!(entry.tags.contains(&"resident".to_string()));
+}
+
+#[tokio::test]
+async fn large_lifted_fence_snapshot_does_not_duplicate_body() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x6d; 16];
+    let payload = "x".repeat(128 * 1024);
+    let content = format!("```text\n{payload}\n```\n");
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("large-fence".into()),
+            title: "Large fence".into(),
+            content: content.clone(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+    let snapshot = engine.export_doc_update(note_id, None).await.unwrap();
+    assert!(
+        snapshot.len() < content.len() + content.len() / 2,
+        "snapshot must carry one body copy, not the old doubled root mirror: snapshot={} source={}",
+        snapshot.len(),
+        content.len()
+    );
+    let docs = engine.inner.docs.read().await;
+    assert!(docs
+        .get(&note_id)
+        .unwrap()
+        .get_map("root")
+        .get("content")
+        .is_none());
+}
+
+#[tokio::test]
+async fn matching_legacy_root_content_lifts_missing_regions_before_retirement() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x6e; 16];
+    let old_body_id = [0x44; 16];
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id: old_body_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "Body".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+    let legacy = "# Heading\n\nLegacy prose\n\n- Body\n";
+    {
+        let doc = engine.doc_for_note_mut(note_id).await;
+        doc.get_map("root").insert("content", legacy).unwrap();
+        doc.commit();
+    }
+
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("legacy-lift".into()),
+            title: "Legacy lift".into(),
+            content: legacy.into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+    let rendered = engine.render_note_full(note_id).await.unwrap();
+    assert!(tesela_core::note_tree::canonicalization_preserves_structure(legacy, &rendered));
+    let blocks = tesela_core::note_tree::parse_note(&rendered).blocks;
+    assert_eq!(
+        blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["# Heading", "Legacy prose", "Body"]
+    );
+    assert_eq!(blocks[2].id.as_bytes(), &old_body_id);
+    let docs = engine.inner.docs.read().await;
+    assert!(docs
+        .get(&note_id)
+        .unwrap()
+        .get_map("root")
+        .get("content")
+        .is_none());
+}
+
+#[tokio::test]
+async fn stale_partial_note_upsert_cannot_retire_legacy_root_content() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x6f; 16];
+    let body_id = uuid::Uuid::from_bytes([0x46; 16]);
+    let legacy = format!("# Heading\n\nLegacy prose\n\n- Body <!-- bid:{body_id} -->\n");
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id: *body_id.as_bytes(),
+            note_id,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "Body".into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+    {
+        let doc = engine.doc_for_note_mut(note_id).await;
+        doc.get_map("root")
+            .insert("content", legacy.as_str())
+            .unwrap();
+        doc.commit();
+    }
+
+    let stale = engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("legacy-stale".into()),
+            title: "Legacy stale".into(),
+            content: format!("- Body <!-- bid:{body_id} -->\n"),
+            created_at_millis: 1,
+        })
+        .await;
+    assert!(matches!(stale, Err(SyncError::Protocol(_))));
+    assert_eq!(
+        engine.render_note_full(note_id).await.as_deref(),
+        Some(legacy.as_str())
+    );
+    let docs = engine.inner.docs.read().await;
+    assert!(docs
+        .get(&note_id)
+        .unwrap()
+        .get_map("root")
+        .get("content")
+        .is_some());
 }
 
 #[tokio::test]
@@ -2481,6 +2956,78 @@ async fn index_doc_captures_tags_and_links() {
 }
 
 #[tokio::test]
+async fn index_excludes_fenced_tags_and_links_before_and_after_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("loro");
+    let device = test_device();
+    let engine = LoroEngine::with_snapshot_dir(device, Arc::new(Hlc::new(device)), dir.clone())
+        .await
+        .unwrap();
+    let content = concat!(
+        "---\ntitle: Fence Index\ntags: [front]\n---\n\n",
+        "- outside #real [[outside]] <!-- bid:55555555-5555-5555-5555-555555555555 -->\n",
+        "- Parent <!-- bid:66666666-6666-6666-6666-666666666666 -->\n",
+        "  - Child <!-- bid:77777777-7777-7777-7777-777777777777 -->\n",
+        "    ```text\n    #nested-fake [[nested-secret]]\n    ```\n",
+        "  - ```text <!-- bid:88888888-8888-8888-8888-888888888888 -->\n",
+        "    #same-line-fake [[same-line-secret]]\n    ```\n",
+    );
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id: [8u8; 16],
+            display_alias: Some("fence-index".into()),
+            title: "Fence Index".into(),
+            content: content.into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+    let assert_metadata = |entry: &crate::engine::IndexEntry| {
+        assert!(entry.tags.contains(&"front".to_string()));
+        assert!(entry.tags.contains(&"real".to_string()));
+        assert!(!entry.tags.contains(&"fake".to_string()));
+        assert_eq!(entry.links, vec!["outside".to_string()]);
+    };
+    let entries = engine.index_entries().await;
+    assert_metadata(&entries[0]);
+
+    // Simulate the persisted v3 projection, where fence payload still leaked
+    // into derived metadata. Reopen must notice schema v4 and rebuild from the
+    // note doc rather than trusting these stale values.
+    {
+        let key = hex_id(&[8u8; 16]);
+        let notes = engine.inner.index.get_map("notes");
+        let entry = match notes.get(&key).unwrap() {
+            loro::ValueOrContainer::Container(loro::Container::Map(map)) => map,
+            other => panic!("unexpected index entry: {other:?}"),
+        };
+        entry.insert("tags", "front\nreal\nnested-fake").unwrap();
+        entry.insert("links", "outside\nnested-secret").unwrap();
+        engine
+            .inner
+            .index
+            .get_map("meta")
+            .insert("schema_version", 3i64)
+            .unwrap();
+        engine.inner.index.commit();
+        tokio::fs::write(
+            dir.join("_index.bin"),
+            engine.inner.index.export(ExportMode::Snapshot).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+    drop(engine);
+
+    let reloaded = LoroEngine::with_snapshot_dir(device, Arc::new(Hlc::new(device)), dir)
+        .await
+        .unwrap();
+    let entries = reloaded.index_entries().await;
+    assert_metadata(&entries[0]);
+}
+
+#[tokio::test]
 async fn index_doc_survives_reload() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("loro");
@@ -2772,16 +3319,144 @@ async fn reseed_from_disk_tracks_and_canonicalizes() {
     );
 }
 
+#[tokio::test]
+async fn canonical_lift_reseed_survives_reload_reimport_and_replica_delta() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snap = tmp.path().join("loro-a");
+    let notes = tmp.path().join("notes");
+    tokio::fs::create_dir_all(&notes).await.unwrap();
+    let source = "---\ntitle: Mixed\n---\n\n# Heading\n\nProse one\nprose two\n\n```query\nstatus:: done\n- payload, not a block\n```\n\n- Existing <!-- bid:22222222-2222-2222-2222-222222222222 -->\n";
+    let path = notes.join("mixed.md");
+    tokio::fs::write(&path, source).await.unwrap();
+
+    let device_a = DeviceId::from_bytes([0xa7; 16]);
+    let engine = LoroEngine::with_dirs(
+        device_a,
+        Arc::new(Hlc::new(device_a)),
+        snap.clone(),
+        Some(notes.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(engine.reseed_from_disk(&notes).await.unwrap(), 1);
+
+    let note = blake3_note_id("mixed");
+    let canonical = tokio::fs::read_to_string(&path).await.unwrap();
+    assert_ne!(
+        canonical, source,
+        "explicit reseed canonicalizes raw regions"
+    );
+    assert!(tesela_core::note_tree::canonicalization_preserves_structure(source, &canonical));
+    let parsed = tesela_core::note_tree::parse_note(&canonical);
+    assert_eq!(
+        parsed
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "# Heading",
+            "Prose one\nprose two",
+            "```query\nstatus:: done\n- payload, not a block\n```",
+            "Existing",
+        ]
+    );
+    let ids = parsed
+        .blocks
+        .iter()
+        .map(|block| block.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        engine.render_note_full(note).await.as_deref(),
+        Some(canonical.as_str())
+    );
+    {
+        let docs = engine.inner.docs.read().await;
+        let root = docs.get(&note).unwrap().get_map("root");
+        assert!(
+            root.get("content").is_none(),
+            "lifted body must not be duplicated on root content"
+        );
+    }
+
+    assert_eq!(engine.reseed_from_disk(&notes).await.unwrap(), 1);
+    let after_reimport = engine.render_note_full(note).await.unwrap();
+    assert_eq!(after_reimport, canonical);
+    assert_eq!(
+        tesela_core::note_tree::parse_note(&after_reimport)
+            .blocks
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>(),
+        ids,
+        "unchanged reimport keeps stable block ids"
+    );
+    drop(engine);
+
+    let reloaded = LoroEngine::with_dirs(
+        device_a,
+        Arc::new(Hlc::new(device_a)),
+        snap,
+        Some(notes.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reloaded.render_note_full(note).await.as_deref(),
+        Some(canonical.as_str())
+    );
+
+    let device_b = DeviceId::from_bytes([0xb8; 16]);
+    let peer = LoroEngine::new(device_b, Arc::new(Hlc::new(device_b)));
+    let bootstrap = reloaded.export_doc_update(note, None).await.unwrap();
+    peer.import_doc_update(note, &bootstrap).await.unwrap();
+    assert_eq!(
+        reloaded.render_note(note).await,
+        peer.render_note(note).await
+    );
+
+    let prose_id = *ids[1].as_bytes();
+    let a_version = reloaded.doc_version(note).await;
+    peer.record_local(OpPayload::BlockUpsert {
+        block_id: prose_id,
+        note_id: note,
+        parent_block_id: None,
+        order_key: "b".into(),
+        indent_level: 0,
+        text: "Prose edited on peer".into(),
+        after_block_id: None,
+    })
+    .await
+    .unwrap();
+    let delta = peer
+        .export_doc_update(note, a_version.as_deref())
+        .await
+        .unwrap();
+    reloaded.import_doc_update(note, &delta).await.unwrap();
+
+    let a_rendered = reloaded.render_note(note).await.unwrap();
+    let b_rendered = peer.render_note(note).await.unwrap();
+    assert_eq!(a_rendered, b_rendered);
+    assert!(a_rendered.contains("Prose edited on peer"));
+    assert!(a_rendered.contains("# Heading"));
+    assert!(a_rendered.contains("- payload, not a block"));
+    assert_eq!(
+        tokio::fs::read_to_string(&path).await.unwrap(),
+        reloaded.render_note_full(note).await.unwrap(),
+        "inbound peer delta materializes the converged canonical file"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn reseed_from_disk_skips_lossy_note_and_hydrates_pure_bullets() {
+async fn reseed_from_disk_canonicalizes_heading_and_hydrates_pure_bullets() {
     let tmp = tempfile::tempdir().unwrap();
     let snap = tmp.path().join("loro");
     let notes = tmp.path().join("notes");
     tokio::fs::create_dir_all(&notes).await.unwrap();
 
-    let lossy = "# Heading\n\nA prose paragraph.\n\n- retained on disk\n  - nested bullet\n";
-    let lossy_path = notes.join("heading.md");
-    tokio::fs::write(&lossy_path, lossy).await.unwrap();
+    let source = "# Heading\n\nA prose paragraph.\n\n- retained on disk\n  - nested bullet\n";
+    let source_path = notes.join("heading.md");
+    tokio::fs::write(&source_path, source).await.unwrap();
     tokio::fs::write(
         notes.join("bullets.md"),
         "- pure bullet\n  - nested bullet\n",
@@ -2821,18 +3496,22 @@ async fn reseed_from_disk_skips_lossy_note_and_hydrates_pure_bullets() {
 
     drop(guard);
     let warnings = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
-    assert_eq!(count, 1, "only the content-preserving note is reseeded");
-    assert_eq!(
-        tokio::fs::read_to_string(&lossy_path).await.unwrap(),
-        lossy,
-        "the lossy note must remain byte-identical"
+    assert_eq!(count, 2, "both structurally preserving notes are reseeded");
+    let canonical = tokio::fs::read_to_string(&source_path).await.unwrap();
+    assert_ne!(
+        canonical, source,
+        "explicit reseed canonicalizes source syntax"
+    );
+    assert!(
+        tesela_core::note_tree::canonicalization_preserves_structure(source, &canonical),
+        "canonicalization must preserve the parsed structure"
     );
     assert!(
         engine
             .doc_version(blake3_note_id("heading"))
             .await
-            .is_none(),
-        "the skipped note must not gain a Loro doc"
+            .is_some(),
+        "the lifted note gains a Loro doc"
     );
     assert!(
         engine
@@ -2842,11 +3521,7 @@ async fn reseed_from_disk_skips_lossy_note_and_hydrates_pure_bullets() {
         "the pure-bullet note hydrates normally"
     );
     assert!(
-        warnings.contains("reseed skip heading"),
-        "a per-note warning names the skipped note: {warnings:?}"
-    );
-    assert!(
-        warnings.contains("reseed summary: 1 applied, 1 skipped"),
-        "the reseed summary counts skipped notes: {warnings:?}"
+        !warnings.contains("reseed skip heading"),
+        "a structurally preserving lift must not warn as skipped: {warnings:?}"
     );
 }

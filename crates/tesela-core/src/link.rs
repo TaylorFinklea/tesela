@@ -41,8 +41,28 @@ pub struct GraphEdge {
 
 /// Parse [[wiki-links]] from markdown content
 pub fn extract_wiki_links(content: &str) -> Vec<Link> {
+    let fenced = crate::note_tree::markdown_fence_mask(content);
+    extract_wiki_links_with_mask(content, &fenced)
+}
+
+/// Parse wiki links from an already-extracted note body or block fragment.
+/// Leading `---` thematic rules remain body content rather than being treated
+/// as YAML frontmatter delimiters.
+pub fn extract_wiki_links_from_body(body: &str) -> Vec<Link> {
+    let fenced = crate::note_tree::markdown_body_fence_mask(body);
+    extract_wiki_links_with_mask(body, &fenced)
+}
+
+fn extract_wiki_links_with_mask(
+    content: &str,
+    fenced: &crate::note_tree::MarkdownFenceMask,
+) -> Vec<Link> {
     WIKI_LINK_RE
         .captures_iter(content)
+        .filter(|cap| {
+            let whole = cap.get(0).expect("wiki-link regex has whole match");
+            !fenced.overlaps(whole.start()..whole.end())
+        })
         .map(|cap| {
             let whole_match = cap.get(0).unwrap();
             let target = cap[1].trim().to_string();
@@ -114,5 +134,53 @@ mod tests {
         let content = "ABC [[target]] XYZ";
         let links = extract_wiki_links(content);
         assert_eq!(links[0].position, 4);
+    }
+
+    #[test]
+    fn fenced_wiki_links_are_inert_and_outside_positions_stay_original() {
+        let content = "before [[visible-a]]\n```text\n[[hidden]]\n```\nafter [[visible-b]]";
+        let links = extract_wiki_links(content);
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| link.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["visible-a", "visible-b"]
+        );
+        assert_eq!(
+            links[1].position,
+            content.find("[[visible-b]]").unwrap(),
+            "filtering fenced links must not shift source byte offsets"
+        );
+    }
+
+    #[test]
+    fn nested_and_same_line_fenced_links_are_inert() {
+        let content = concat!(
+            "before [[visible-a]]\n",
+            "- Parent <!-- bid:11111111-1111-1111-1111-111111111111 -->\n",
+            "  - Child <!-- bid:22222222-2222-2222-2222-222222222222 -->\n",
+            "    ```text\n    [[nested-hidden]]\n    ```\n",
+            "  - ```text\n    [[same-line-hidden]]\n    ```\n",
+            "after [[visible-b]]",
+        );
+        let links = extract_wiki_links(content);
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| link.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["visible-a", "visible-b"]
+        );
+        assert_eq!(links[1].position, content.find("[[visible-b]]").unwrap());
+    }
+
+    #[test]
+    fn wiki_link_crossing_a_fence_is_rejected() {
+        let content = "[[broken\n```text\nhidden\n```\n]] then [[visible]]";
+        let links = extract_wiki_links(content);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "visible");
+        assert_eq!(links[0].position, content.find("[[visible]]").unwrap());
     }
 }

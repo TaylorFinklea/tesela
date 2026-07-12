@@ -1,7 +1,7 @@
 //! Markdown frontmatter parsing and filename sanitization
 
 use crate::error::{Result, TeselaError};
-use crate::link::{extract_wiki_links, Link};
+use crate::link::{extract_wiki_links_from_body, Link};
 use crate::note::NoteMetadata;
 use chrono::{DateTime, Utc};
 use gray_matter::engine::YAML;
@@ -19,7 +19,7 @@ pub fn parse_frontmatter(content: &str) -> Result<(NoteMetadata, String)> {
 
 /// Extract wiki links from the body of a note
 pub fn extract_links_from_body(body: &str) -> Vec<Link> {
-    extract_wiki_links(body)
+    extract_wiki_links_from_body(body)
 }
 
 fn extract_metadata(data: &Option<gray_matter::Pod>) -> Result<NoteMetadata> {
@@ -476,6 +476,16 @@ Body content here."#;
         let links = extract_links_from_body(body);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].target, "other-note");
+    }
+
+    #[test]
+    fn body_link_extraction_does_not_treat_thematic_rules_as_frontmatter() {
+        let body = "---\n```text\n[[hidden]]\n```\n---\n[[visible]]";
+        let links = extract_links_from_body(body);
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "visible");
+        assert_eq!(links[0].position, body.find("[[visible]]").unwrap());
     }
 
     // --- add_tag_to_frontmatter ---
