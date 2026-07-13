@@ -16,6 +16,50 @@ const webRoot = path.resolve(here, "../..");
 const repoRoot = path.resolve(webRoot, "..");
 const tempRoot = path.join(tmpdir(), `tesela-e2e-${process.pid}-${Date.now()}`);
 const mosaic = path.join(tempRoot, "mosaic");
+const rawPlaywrightArgs = process.argv.slice(2);
+const playwrightArgs = rawPlaywrightArgs[0] === "--" ? rawPlaywrightArgs.slice(1) : rawPlaywrightArgs;
+
+const BIDS = {
+  sameBeforeTarget: "10000000-0000-4000-8000-000000000001",
+  sameBeforeRoot: "10000000-0000-4000-8000-000000000002",
+  sameInsideTarget: "10000000-0000-4000-8000-000000000003",
+  sameInsideTargetChild: "10000000-0000-4000-8000-000000000004",
+  sameInsideRoot: "10000000-0000-4000-8000-000000000005",
+  sameAfterRoot: "10000000-0000-4000-8000-000000000006",
+  sameAfterRootChild: "10000000-0000-4000-8000-000000000007",
+  sameAfterTarget: "10000000-0000-4000-8000-000000000008",
+  sameAfterTargetChild: "10000000-0000-4000-8000-000000000009",
+  crossRoot: "20000000-0000-4000-8000-000000000001",
+  crossChild: "20000000-0000-4000-8000-000000000002",
+  crossGrandchild: "20000000-0000-4000-8000-000000000003",
+  existingAppendRoot: "20000000-0000-4000-8000-000000000004",
+  existingAppendChild: "20000000-0000-4000-8000-000000000005",
+  absentAppendRoot: "20000000-0000-4000-8000-000000000006",
+  invalidRoot: "20000000-0000-4000-8000-000000000007",
+  invalidChild: "20000000-0000-4000-8000-000000000008",
+  invalidTarget: "20000000-0000-4000-8000-000000000009",
+  keyboardCancelRoot: "20000000-0000-4000-8000-000000000010",
+  keyboardBeforeRoot: "20000000-0000-4000-8000-000000000011",
+  keyboardInsideRoot: "20000000-0000-4000-8000-000000000012",
+  keyboardAfterRoot: "20000000-0000-4000-8000-000000000013",
+  retryRoot: "20000000-0000-4000-8000-000000000014",
+  altParent: "20000000-0000-4000-8000-000000000015",
+  altMover: "20000000-0000-4000-8000-000000000016",
+  altSibling: "20000000-0000-4000-8000-000000000017",
+  racePointerRoot: "20000000-0000-4000-8000-000000000018",
+  raceAltRoot: "20000000-0000-4000-8000-000000000019",
+  raceAltSibling: "20000000-0000-4000-8000-000000000020",
+  crossTarget: "30000000-0000-4000-8000-000000000001",
+  crossTargetChild: "30000000-0000-4000-8000-000000000002",
+  existingEnd: "30000000-0000-4000-8000-000000000003",
+  keyboardBeforeTarget: "30000000-0000-4000-8000-000000000004",
+  keyboardInsideTarget: "30000000-0000-4000-8000-000000000005",
+  keyboardInsideTargetChild: "30000000-0000-4000-8000-000000000006",
+  keyboardAfterTarget: "30000000-0000-4000-8000-000000000007",
+  keyboardAfterTargetChild: "30000000-0000-4000-8000-000000000008",
+  retryTarget: "30000000-0000-4000-8000-000000000009",
+  racePointerTarget: "30000000-0000-4000-8000-000000000010",
+};
 
 const children = new Set();
 
@@ -66,9 +110,28 @@ async function waitFor(url, timeoutMs) {
   throw new Error(`Timed out waiting for ${url}: ${lastError ?? "no response"}`);
 }
 
+function previousIsoDate(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+async function createDaily(apiBase, title, body) {
+  const content = `---\ntitle: "${title}"\ntags: [daily]\ncreated: ${title}T00:00:00Z\n---\n${body}`;
+  const response = await fetch(`${apiBase}/notes`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title, content, tags: ["daily"] }),
+  });
+  if (!response.ok) {
+    throw new Error(`seed daily ${title} failed: ${response.status} ${await response.text()}`);
+  }
+}
+
 function cleanup() {
   for (const child of children) child.kill("SIGTERM");
-  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 process.on("SIGTERM", () => { cleanup(); process.exit(143); });
@@ -85,10 +148,88 @@ try {
       TESELA_DEFAULT_MOSAIC: mosaic,
       TESELA_SERVER_BIND: `127.0.0.1:${apiPort}`,
       TESELA_DISABLE_RELAY: "1",
+      TESELA_DISABLE_MDNS: "1",
+      TESELA_DISABLE_PEER_SYNC: "1",
+      TESELA_GROUP_KEY_FILE_STORE: "1",
+      TESELA_BACKUP_ON_START: "0",
+      TESELA_BACKUP_INTERVAL_SECS: "0",
       RUST_LOG: "error",
     },
   });
-  await waitFor(`http://127.0.0.1:${apiPort}/health`, 60_000);
+  const apiBase = `http://127.0.0.1:${apiPort}`;
+  await waitFor(`${apiBase}/health`, 60_000);
+
+  const dailyResponse = await fetch(`${apiBase}/notes?tag=daily&limit=100`);
+  if (!dailyResponse.ok) throw new Error(`list fixture dailies failed: ${dailyResponse.status}`);
+  const existingDailies = await dailyResponse.json();
+  const oldestDaily = existingDailies
+    .map((note) => note.title)
+    .filter((title) => /^\d{4}-\d{2}-\d{2}$/.test(title))
+    .sort()[0];
+  if (!oldestDaily) throw new Error("tiny fixture did not contain an ISO daily");
+  const SOURCE_DAILY = previousIsoDate(oldestDaily);
+  const DEST_DAILY = previousIsoDate(SOURCE_DAILY);
+  const ABSENT_DAILY = previousIsoDate(DEST_DAILY);
+
+  await createDaily(apiBase, SOURCE_DAILY, [
+    `- SAME_BEFORE_TARGET <!-- bid:${BIDS.sameBeforeTarget} -->`,
+    `- SAME_BEFORE_ROOT <!-- bid:${BIDS.sameBeforeRoot} -->`,
+    `- SAME_INSIDE_TARGET <!-- bid:${BIDS.sameInsideTarget} -->`,
+    `  - SAME_INSIDE_TARGET_CHILD <!-- bid:${BIDS.sameInsideTargetChild} -->`,
+    `- SAME_INSIDE_ROOT <!-- bid:${BIDS.sameInsideRoot} -->`,
+    `- SAME_AFTER_ROOT <!-- bid:${BIDS.sameAfterRoot} -->`,
+    `  - SAME_AFTER_ROOT_CHILD <!-- bid:${BIDS.sameAfterRootChild} -->`,
+    `- SAME_AFTER_TARGET <!-- bid:${BIDS.sameAfterTarget} -->`,
+    `  - SAME_AFTER_TARGET_CHILD <!-- bid:${BIDS.sameAfterTargetChild} -->`,
+    `- CROSS_ROOT <!-- bid:${BIDS.crossRoot} -->`,
+    `  - CROSS_CHILD <!-- bid:${BIDS.crossChild} -->`,
+    `    - CROSS_GRANDCHILD <!-- bid:${BIDS.crossGrandchild} -->`,
+    `- EXISTING_APPEND_ROOT <!-- bid:${BIDS.existingAppendRoot} -->`,
+    `  - EXISTING_APPEND_CHILD <!-- bid:${BIDS.existingAppendChild} -->`,
+    `- ABSENT_APPEND_ROOT <!-- bid:${BIDS.absentAppendRoot} -->`,
+    `- INVALID_ROOT <!-- bid:${BIDS.invalidRoot} -->`,
+    `  - INVALID_CHILD <!-- bid:${BIDS.invalidChild} -->`,
+    `- INVALID_TARGET <!-- bid:${BIDS.invalidTarget} -->`,
+    `- KEYBOARD_CANCEL_ROOT <!-- bid:${BIDS.keyboardCancelRoot} -->`,
+    `- KEYBOARD_BEFORE_ROOT <!-- bid:${BIDS.keyboardBeforeRoot} -->`,
+    `- KEYBOARD_INSIDE_ROOT <!-- bid:${BIDS.keyboardInsideRoot} -->`,
+    `- KEYBOARD_AFTER_ROOT <!-- bid:${BIDS.keyboardAfterRoot} -->`,
+    `- RETRY_ROOT <!-- bid:${BIDS.retryRoot} -->`,
+    `- ALT_PARENT <!-- bid:${BIDS.altParent} -->`,
+    `- ALT_MOVER <!-- bid:${BIDS.altMover} -->`,
+    `- ALT_SIBLING <!-- bid:${BIDS.altSibling} -->`,
+    `- RACE_POINTER_ROOT <!-- bid:${BIDS.racePointerRoot} -->`,
+    `- RACE_ALT_ROOT <!-- bid:${BIDS.raceAltRoot} -->`,
+    `- RACE_ALT_SIBLING <!-- bid:${BIDS.raceAltSibling} -->`,
+    "",
+  ].join("\n"));
+
+  await createDaily(apiBase, DEST_DAILY, [
+    `- CROSS_TARGET <!-- bid:${BIDS.crossTarget} -->`,
+    `  - CROSS_TARGET_CHILD <!-- bid:${BIDS.crossTargetChild} -->`,
+    `- EXISTING_END <!-- bid:${BIDS.existingEnd} -->`,
+    `- KEYBOARD_BEFORE_TARGET <!-- bid:${BIDS.keyboardBeforeTarget} -->`,
+    `- KEYBOARD_INSIDE_TARGET <!-- bid:${BIDS.keyboardInsideTarget} -->`,
+    `  - KEYBOARD_INSIDE_TARGET_CHILD <!-- bid:${BIDS.keyboardInsideTargetChild} -->`,
+    `- KEYBOARD_AFTER_TARGET <!-- bid:${BIDS.keyboardAfterTarget} -->`,
+    `  - KEYBOARD_AFTER_TARGET_CHILD <!-- bid:${BIDS.keyboardAfterTargetChild} -->`,
+    `- RETRY_TARGET <!-- bid:${BIDS.retryTarget} -->`,
+    `- RACE_POINTER_TARGET <!-- bid:${BIDS.racePointerTarget} -->`,
+    "",
+  ].join("\n"));
+
+  const propertyResponse = await fetch(`${apiBase}/blocks/set-property`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      block_id: `${SOURCE_DAILY}:${BIDS.crossRoot}`,
+      key: "status",
+      value: "doing",
+    }),
+  });
+  if (!propertyResponse.ok) {
+    throw new Error(`seed relocation property failed: ${propertyResponse.status} ${await propertyResponse.text()}`);
+  }
 
   // Create a dedicated PAGE note (a single BlockOutliner — the bug lives in
   // BlockOutliner.applyExternalReparse, shared by pages + the journal — and a
@@ -105,13 +246,28 @@ try {
 
   run("pnpm", ["dev", "--host", "127.0.0.1", "--port", String(webPort)], {
     cwd: webRoot,
-    env: { TESELA_API_TARGET: `http://127.0.0.1:${apiPort}` },
+    env: { TESELA_API_TARGET: apiBase },
   });
-  await waitFor(`http://127.0.0.1:${webPort}/g`, 60_000);
+  const webBase = `http://127.0.0.1:${webPort}`;
+  await waitFor(`${webBase}/g`, 60_000);
 
-  await runChecked("pnpm", ["exec", "playwright", "test", "--config", "playwright.e2e.config.ts"], {
+  if (process.env.TESELA_E2E_QA_HOLD === "1") {
+    console.log(`[e2e] QA hold: ${webBase}/g`);
+    console.log(`[e2e] API: ${apiBase}`);
+    console.log(`[e2e] relocation dates: source=${SOURCE_DAILY} destination=${DEST_DAILY} absent=${ABSENT_DAILY}`);
+    console.log("[e2e] press Ctrl-C to clean up");
+    await new Promise(() => {});
+  }
+
+  await runChecked("pnpm", ["exec", "playwright", "test", "--config", "playwright.e2e.config.ts", ...playwrightArgs], {
     cwd: webRoot,
-    env: { TESELA_E2E_BASE_URL: `http://127.0.0.1:${webPort}`, TESELA_E2E_DAILY_SLUG: DAILY },
+    env: {
+      TESELA_E2E_BASE_URL: webBase,
+      TESELA_E2E_DAILY_SLUG: DAILY,
+      TESELA_E2E_SOURCE_DAILY: SOURCE_DAILY,
+      TESELA_E2E_DEST_DAILY: DEST_DAILY,
+      TESELA_E2E_ABSENT_DAILY: ABSENT_DAILY,
+    },
   });
   cleanup();
   process.exit(0);
