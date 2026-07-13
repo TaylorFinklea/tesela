@@ -1307,6 +1307,7 @@ mod tests {
         // ── Client B must receive BOTH a binary delta and a text WsEvent ──
         let mut got_binary_b = false;
         let mut got_text_b = false;
+        let mut got_barrier_ack_b = false;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         while (!got_binary_b || !got_text_b) && tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(std::time::Duration::from_secs(2), client_b.next()).await {
@@ -1319,6 +1320,15 @@ mod tests {
                     got_binary_b = true;
                 }
                 Ok(Some(Ok(TMessage::Text(t)))) => {
+                    if serde_json::from_str::<serde_json::Value>(&t)
+                        .ok()
+                        .and_then(|value| value.get("event")?.as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some("loro_barrier_ack")
+                    {
+                        got_barrier_ack_b = true;
+                        continue;
+                    }
                     assert!(
                         t.contains("note_updated"),
                         "B gets a NoteUpdated event: {t}"
@@ -1335,6 +1345,31 @@ mod tests {
         }
         assert!(got_binary_b, "client B received the binary delta");
         assert!(got_text_b, "client B received the NoteUpdated text event");
+
+        // Both positive and negative barrier acknowledgements above belong to
+        // A's direct lane only. Briefly drain B after its ordinary events so a
+        // mistakenly broadcast acknowledgement cannot hide behind them.
+        let b_ack_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        while tokio::time::Instant::now() < b_ack_deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), client_b.next()).await {
+                Ok(Some(Ok(TMessage::Text(t)))) => {
+                    if serde_json::from_str::<serde_json::Value>(&t)
+                        .ok()
+                        .and_then(|value| value.get("event")?.as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some("loro_barrier_ack")
+                    {
+                        got_barrier_ack_b = true;
+                    }
+                }
+                Ok(Some(Ok(_))) | Err(_) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            !got_barrier_ack_b,
+            "barrier acknowledgements stay connection-local to client A"
+        );
 
         // ── Client A must NOT receive its own binary frame back ───────────
         // (it may receive the text event — that fans out to everyone).

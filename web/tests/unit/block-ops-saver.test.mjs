@@ -417,6 +417,30 @@ test("settle loops through an enqueue that arrives behind the live request", asy
   await completion;
 });
 
+test("a forced flush during settle cannot abort the live predecessor", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "first")]);
+  t.mock.timers.tick(500);
+  const completion = saver.settle("noteA");
+  saver.enqueue("noteA", [upsert("bid-1", "successor")]);
+
+  // A blur/teardown-style forced flush can race the relocation barrier. It
+  // must leave request 1 alive and let settle serialize request 2 behind it.
+  saver.flush("noteA");
+  assert.equal(spy.calls.length, 1, "forced flush leaves the successor queued");
+  assert.equal(spy.calls[0].aborted, false, "the live predecessor is never aborted");
+
+  spy.calls[0].resolve({});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spy.calls.length, 2, "settle starts request 2 only after request 1 resolves");
+  assert.deepEqual(spy.calls[1].ops, [upsert("bid-1", "successor")]);
+  spy.calls[1].resolve({});
+  await completion;
+});
+
 test("settle awaits the Promise-capable whole-body fallback", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const spy = makeUpsertSpy();

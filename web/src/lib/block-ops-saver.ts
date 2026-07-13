@@ -167,8 +167,9 @@ export class BlockOpsSaver {
   /**
    * Flush the coalesced ops for `noteId` now (trailing-edge timer, or a forced
    * immediate flush on blur / note-change / teardown so a debounce that hasn't
-   * fired never loses the last edit). Aborts any superseded in-flight POST and
-   * threads the new controller's signal. No-op when nothing is pending.
+   * fired never loses the last edit). Ordinarily aborts a superseded in-flight
+   * POST, but while `settle` owns the note it leaves a live predecessor intact
+   * and lets the settle loop serialize the queued successor behind it.
    */
   flush(noteId: string): void {
     const s = this.#states.get(noteId);
@@ -177,7 +178,8 @@ export class BlockOpsSaver {
       clearTimeout(s.timer);
       s.timer = null;
     }
-    this.#startFlush(noteId, s, true);
+    if (s.settlers > 0 && s.inFlight) return;
+    this.#startFlush(noteId, s, s.settlers === 0);
   }
 
   #startFlush(noteId: string, s: NoteSaveState, abortPrevious: boolean): Promise<void> | null {
