@@ -917,15 +917,29 @@ test("late move completions cannot publish UI after Journal teardown", () => {
   );
   const cleanup = journalViewSource.slice(journalViewSource.lastIndexOf("onMount(() => {"));
 
-  assert.match(showToast, /if \(moveUiDisposed\) return;/);
-  assert.ok((execute.match(/if \(moveUiDisposed\) return;/g) ?? []).length >= 2);
+  assert.match(showToast, /if \(componentDisposed\) return;/);
+  assert.ok((execute.match(/if \(componentDisposed\) return;/g) ?? []).length >= 2);
   assert.ok(
     execute.indexOf("await settleMoveResponse(request)")
-      < execute.indexOf("if (moveUiDisposed) return;"),
+      < execute.indexOf("if (componentDisposed) return;"),
     "durable response/cache work must finish before the success UI guard",
   );
-  assert.ok((focus.match(/if \(moveUiDisposed\) return;/g) ?? []).length >= 2);
-  assert.match(cleanup, /return \(\) => \{\s*moveUiDisposed = true;[\s\S]*clearMoveToast\(\)/);
+  assert.ok((focus.match(/if \(componentDisposed\) return;/g) ?? []).length >= 2);
+  assert.match(cleanup, /return \(\) => \{\s*componentDisposed = true;[\s\S]*clearMoveToast\(\)/);
+});
+
+test("Journal reports ensure-dailies failures only while the component is mounted", () => {
+  const ensureDailies = sourceBetween(
+    journalViewSource,
+    "let ensuredFor",
+    "/**\n   * Append a bid-stamped empty bullet block",
+  );
+
+  assert.match(
+    ensureDailies,
+    /\.catch\(\(e\) => \{\s*if \(componentDisposed\) return;\s*console\.error\("Failed to ensure dailies:", e\);\s*\}\)/,
+    "teardown failures must be silent, while mounted failures still reach console.error",
+  );
 });
 
 test("Journal focus restoration yields to later pointer and keyboard input", () => {
@@ -961,7 +975,7 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
   assert.ok(keyCancel >= 0 && keyCancel < moveKeyHandler, "keydown revocation must run before move handling");
   assert.match(
     lifecycle,
-    /return \(\) => \{\s*moveUiDisposed = true;\s*focusRestoration\.dispose\(\)/,
+    /return \(\) => \{\s*componentDisposed = true;\s*focusRestoration\.dispose\(\)/,
   );
   assert.match(
     lifecycle,

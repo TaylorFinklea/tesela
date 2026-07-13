@@ -57,11 +57,11 @@
   const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
   const touchedSyntheticNotes = new Set<string>();
   let moveToastId: number | null = null;
-  let moveUiDisposed = false;
+  let componentDisposed = false;
   const focusRestoration = createFocusRestorationController();
 
   function showMoveToast(message: string, tone: "info" | "warn", durationMs: number) {
-    if (moveUiDisposed) return;
+    if (componentDisposed) return;
     toast(message, tone, durationMs);
     moveToastId = getToast()?.id ?? null;
   }
@@ -141,7 +141,10 @@
             scrolledForAnchor = "";
           }
         })
-        .catch((e) => console.error("Failed to ensure dailies:", e));
+        .catch((e) => {
+          if (componentDisposed) return;
+          console.error("Failed to ensure dailies:", e);
+        });
     });
   });
 
@@ -752,12 +755,12 @@
     try {
       if (withPreflight) await prepareMove(request);
       await settleMoveResponse(request);
-      if (moveUiDisposed) return;
+      if (componentDisposed) return;
       dispatchMove({ type: "success" });
       clearMoveToast();
       await focusBlockBid(focusClaim, request.destination_note_id, request.root_bid);
     } catch (error) {
-      if (moveUiDisposed) return;
+      if (componentDisposed) return;
       const detail = apiErrorDetail(error);
       if (
         error instanceof ApiError
@@ -813,7 +816,7 @@
     noteId: string,
     bid: string,
   ): Promise<void> {
-    if (moveUiDisposed) return;
+    if (componentDisposed) return;
     ensureMounted(noteId);
     let firstLookup = true;
     await focusRestoration.restore(focusClaim, {
@@ -823,7 +826,7 @@
           firstLookup = false;
           await tick();
         }
-        if (moveUiDisposed) return null;
+        if (componentDisposed) return null;
         const row = daySection(noteId)?.querySelector<HTMLElement>(
           `[data-block-bid="${selectorValue(bid)}"]`,
         ) ?? null;
@@ -834,7 +837,7 @@
         (resolve) => requestAnimationFrame(() => resolve()),
       ),
       focusTarget: ({ row, editor }) => {
-        if (moveUiDisposed) return;
+        if (componentDisposed) return;
         row.scrollIntoView({ block: "nearest", behavior: "auto" });
         editor.focus();
       },
@@ -943,7 +946,7 @@
   }
 
   onMount(() => {
-    moveUiDisposed = false;
+    componentDisposed = false;
     const commandHandler = () => startCommandMove();
     const revokeFocusRestoration = () => focusRestoration.revoke();
     const keyHandler = (event: KeyboardEvent) => {
@@ -981,7 +984,7 @@
     document.addEventListener("keydown", revokeFocusRestoration, true);
     document.addEventListener("keydown", keyHandler, true);
     return () => {
-      moveUiDisposed = true;
+      componentDisposed = true;
       focusRestoration.dispose();
       window.removeEventListener("tesela:start-block-move", commandHandler);
       document.removeEventListener("pointerdown", revokeFocusRestoration, true);
