@@ -448,6 +448,7 @@
   import * as keybindings from "$lib/stores/keybindings.svelte";
   import type { SlashContext } from "$lib/editor/slash-context";
   import { planEnterSplit } from "$lib/editor/enter-split";
+  import { createDeferredEditorLifecycle, createEditorFocusOwnerId } from "$lib/editor/focus-lifecycle";
   import "$lib/editor/commands/heading";
   import "$lib/editor/commands/date";
   import "$lib/editor/commands/task";
@@ -1607,39 +1608,46 @@
   // focusedIndex — which then triggered its `view.focus()` effect and
   // snapped DOM focus to that day. Wiring vimCtx in the actual DOM focus
   // event ensures it follows the editor the user is really in.
-  function wireVimCtx() {
-    if (!view) return;
-    vimCtx.view = view;
-    vimCtx.navigate = onNavigate ?? null;
-    vimCtx.leader = onLeader ?? null;
-    vimCtx.deleteBlock = onDeleteBlock ?? null;
-    vimCtx.yankBlock = onYankBlock ?? null;
-    vimCtx.pasteBlock = onPasteBlock ?? null;
-    vimCtx.newBlockBelow = onNewBlockBelow ?? null;
-    vimCtx.newBlockAbove = onNewBlockAbove ?? null;
-    vimCtx.indent = onIndent ?? null;
-    vimCtx.drillIn = onDrillIn ?? null;
-    vimCtx.enterVisualMode = onEnterVisualMode ?? null;
-    vimCtx.exitVisualMode = onExitVisualMode ?? null;
-    vimCtx.visualNav = onVisualNav ?? null;
-    vimCtx.visualDelete = onVisualDelete ?? null;
-    vimCtx.visualYank = onVisualYank ?? null;
-    vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
-    vimCtx.bulkIndent = onBulkIndent ?? null;
-    vimCtx.toggleFold = onToggleFold ?? null;
-    vimCtx.toggleProps = onToggleProps ?? null;
-    vimCtx.pageJump = onPageJump ?? null;
-    vimCtx.navigateTopLevel = onNavigateTopLevel ?? null;
-    vimCtx.undoOutliner = onUndoOutliner ?? null;
-    vimCtx.redoOutliner = onRedoOutliner ?? null;
-    vimCtx.beginInsertSession = onBeginInsertSession ?? null;
-    vimCtx.endInsertSession = onEndInsertSession ?? null;
-    // Only expose drawer-tab cycling when inside a pinned-tab editor so that
-    // gt / gT in the main focus-area editor remains a no-op.
-    vimCtx.cycleDrawerTab = isPinnedTab ? cycleBottomDrawerTab : null;
+  function captureVimContext(capturedView: EditorView): typeof vimCtx {
+    return {
+      view: capturedView,
+      navigate: onNavigate ?? null,
+      leader: onLeader ?? null,
+      deleteBlock: onDeleteBlock ?? null,
+      yankBlock: onYankBlock ?? null,
+      pasteBlock: onPasteBlock ?? null,
+      newBlockBelow: onNewBlockBelow ?? null,
+      newBlockAbove: onNewBlockAbove ?? null,
+      indent: onIndent ?? null,
+      drillIn: onDrillIn ?? null,
+      enterVisualMode: onEnterVisualMode ?? null,
+      exitVisualMode: onExitVisualMode ?? null,
+      visualMode: inVisualMode ?? false,
+      visualNav: onVisualNav ?? null,
+      visualDelete: onVisualDelete ?? null,
+      visualYank: onVisualYank ?? null,
+      bulkTagPicker: onBulkTagPicker ?? null,
+      bulkIndent: onBulkIndent ?? null,
+      toggleFold: onToggleFold ?? null,
+      toggleProps: onToggleProps ?? null,
+      pageJump: onPageJump ?? null,
+      navigateTopLevel: onNavigateTopLevel ?? null,
+      undoOutliner: onUndoOutliner ?? null,
+      redoOutliner: onRedoOutliner ?? null,
+      beginInsertSession: onBeginInsertSession ?? null,
+      endInsertSession: onEndInsertSession ?? null,
+      // Only expose drawer-tab cycling when inside a pinned-tab editor so that
+      // gt / gT in the main focus-area editor remains a no-op.
+      cycleDrawerTab: isPinnedTab ? cycleBottomDrawerTab : null,
+    };
   }
-  function clearVimCtxIfMine() {
-    if (vimCtx.view === view) vimCtx.view = null;
+
+  function wireVimCtx(context: typeof vimCtx) {
+    Object.assign(vimCtx, context);
+  }
+
+  function clearVimCtxIfMine(capturedView: EditorView) {
+    if (vimCtx.view === capturedView) vimCtx.view = null;
   }
 
   /** Resolve this block's `text_seq` LoroText handle off ITS OWN note's doc in
@@ -1843,7 +1851,78 @@
     };
   });
 
+  type EditorFocusLifecycleTarget = {
+    view: EditorView;
+    editorKey: string;
+    focusOwnerId: string;
+    noteSlug: string | undefined;
+    vimContext: typeof vimCtx;
+    onFocus: (() => void) | undefined;
+    onBlur: () => void;
+    onSetProperty: ((p: { key: string; value: string }) => void) | undefined;
+    detectConfig: DetectConfig | undefined;
+    slashMenuOpen: boolean;
+    autocompleteOpen: boolean;
+  };
+
   onMount(() => {
+    const focusOwnerId = createEditorFocusOwnerId(editorKey);
+    const captureFocusTarget = (eventView: EditorView): EditorFocusLifecycleTarget => ({
+      view: eventView,
+      editorKey,
+      focusOwnerId,
+      noteSlug,
+      vimContext: captureVimContext(eventView),
+      onFocus,
+      onBlur,
+      onSetProperty,
+      detectConfig,
+      slashMenuOpen: showSlashMenu,
+      autocompleteOpen: showAutocomplete,
+    });
+    const focusLifecycle = createDeferredEditorLifecycle<EditorFocusLifecycleTarget>({
+      queue: queueMicrotask,
+      isCurrent: (target) => view === target.view && target.view.dom.isConnected,
+      isFocused: (target) => target.view.hasFocus,
+      clearOwnership: (target) => {
+        clearFocusedEditor(target.focusOwnerId);
+        clearFocusedNoteDoc(target.focusOwnerId);
+      },
+      applyFocus: (target) => {
+        setFocusedEditor(target.focusOwnerId);
+        // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
+        // block's note doc while the block is focused.
+        setFocusedNoteDoc(target.focusOwnerId, target.noteSlug);
+        target.onFocus?.();
+      },
+      applyBlur: (target) => {
+        // Model B — lift detected tokens when LEAVING the block (commit-time),
+        // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
+        // the line under you. Gated on the block's DIRECT tags via the config
+        // (single lift path → no double-lift). The strip dispatch flows through
+        // the normal persist path; props go via onSetProperty (container op).
+        if (
+          target.onSetProperty && target.detectConfig
+          && !target.slashMenuOpen && !target.autocompleteOpen
+        ) {
+          const doc = target.view.state.doc.toString();
+          const spec = resolveDetectSpec(getBlockTags(doc), target.detectConfig);
+          if (spec) {
+            const det = detectTaskTokens(doc, spec);
+            if (det.props.length > 0) {
+              target.view.dispatch({
+                changes: { from: 0, to: doc.length, insert: det.stripped },
+              });
+              for (const p of det.props) {
+                target.onSetProperty({ key: p.key, value: p.value });
+              }
+            }
+          }
+        }
+        if (!target.slashMenuOpen) target.onBlur();
+      },
+    });
+
     const theme = EditorView.theme({
       "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "var(--theme-font-sans)", lineHeight: "1.7" },
       // cm-vim's status / macro-recording / ex panel (the "recording @a" bar).
@@ -1884,36 +1963,16 @@
     });
 
     const focusBlurHandler = EditorView.domEventHandlers({
-      focus: () => {
-        setFocusedEditor(editorKey);
-        // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
-        // block's note doc while the block is focused.
-        setFocusedNoteDoc(editorKey, noteSlug);
-        wireVimCtx();
-        onFocus?.();
+      focus: (_e, eventView) => {
+        const target = captureFocusTarget(eventView);
+        wireVimCtx(target.vimContext);
+        focusLifecycle.focus(target);
         return false;
       },
-      blur: (_e, v) => {
-        clearFocusedEditor(editorKey);
-        clearFocusedNoteDoc(editorKey);
-        clearVimCtxIfMine();
-        // Model B — lift detected tokens when LEAVING the block (commit-time),
-        // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
-        // the line under you. Gated on the block's DIRECT tags via the config
-        // (single lift path → no double-lift). The strip dispatch flows through
-        // the normal persist path; props go via onSetProperty (container op).
-        if (onSetProperty && detectConfig && !showSlashMenu && !showAutocomplete) {
-          const doc = v.state.doc.toString();
-          const spec = resolveDetectSpec(getBlockTags(doc), detectConfig);
-          if (spec) {
-            const det = detectTaskTokens(doc, spec);
-            if (det.props.length > 0) {
-              v.dispatch({ changes: { from: 0, to: doc.length, insert: det.stripped } });
-              for (const p of det.props) onSetProperty({ key: p.key, value: p.value });
-            }
-          }
-        }
-        if (!showSlashMenu) onBlur();
+      blur: (_e, eventView) => {
+        const target = captureFocusTarget(eventView);
+        clearVimCtxIfMine(target.view);
+        focusLifecycle.blur(target);
         return false;
       },
       paste: (e) => {
@@ -2466,11 +2525,13 @@
 
     return () => {
       if (presenceTimer) clearTimeout(presenceTimer);
-      clearFocusedEditor(editorKey);
-      clearFocusedNoteDoc(editorKey);
+      const mountedView = view;
+      if (!mountedView) return;
+      const target = captureFocusTarget(mountedView);
+      focusLifecycle.teardown(target);
+      clearVimCtxIfMine(mountedView);
       vimModeOff?.();
-      view?.destroy();
-      view = null;
+      mountedView.destroy();
     };
   });
 

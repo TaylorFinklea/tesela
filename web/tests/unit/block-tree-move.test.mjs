@@ -780,7 +780,7 @@ test("focusing a rekeyed row republishes that exact block", () => {
   );
 });
 
-test("focus and Loro undo routing share the row's stable editor key", () => {
+test("focus and Loro undo routing share a per-mount owner derived from the stable row key", () => {
   const editorProps = sourceBetween(
     blockOutlinerSource,
     "<BlockEditor",
@@ -788,15 +788,17 @@ test("focus and Loro undo routing share the row's stable editor key", () => {
   );
   const lifecycle = sourceBetween(
     blockEditorSource,
-    "const focusBlurHandler",
+    "const focusOwnerId = createEditorFocusOwnerId",
     "// Leader → editor bridge",
   );
 
   assert.match(editorProps, /editorKey=\{stableBlockKey\(block\)\}/);
-  assert.match(lifecycle, /setFocusedEditor\(editorKey\)/);
-  assert.match(lifecycle, /setFocusedNoteDoc\(editorKey, noteSlug\)/);
-  assert.equal((lifecycle.match(/clearFocusedEditor\(editorKey\)/g) ?? []).length, 2);
-  assert.equal((lifecycle.match(/clearFocusedNoteDoc\(editorKey\)/g) ?? []).length, 2);
+  assert.match(lifecycle, /createEditorFocusOwnerId\(editorKey\)/);
+  assert.match(lifecycle, /setFocusedEditor\(target\.focusOwnerId\)/);
+  assert.match(lifecycle, /setFocusedNoteDoc\(target\.focusOwnerId, target\.noteSlug\)/);
+  assert.match(lifecycle, /clearFocusedEditor\(target\.focusOwnerId\)/);
+  assert.match(lifecycle, /clearFocusedNoteDoc\(target\.focusOwnerId\)/);
+  assert.match(lifecycle, /focusLifecycle\.teardown\(target\)/);
 });
 
 test("Loro subscription restarts on canonical block identity with owned cleanup", () => {
