@@ -217,6 +217,8 @@ git commit -m "test(web): define block subtree relocation contract"
 
 - Modify: `crates/tesela-sync/src/engine/loro_engine/index.rs`
 - Modify: `crates/tesela-sync/src/engine/loro_engine.rs`
+- Modify: `crates/tesela-sync/src/engine/loro_engine/apply.rs`
+- Modify: `crates/tesela-sync/src/engine/loro_engine/twins.rs`
 - Modify: `crates/tesela-sync/src/engine/loro_engine/tests.rs`
 - Create: `crates/tesela-sync/src/engine/loro_engine/tests/relocation.rs`
 
@@ -282,7 +284,7 @@ Expected: PASS; unique-owner and unknown-block behavior remains green.
 - [ ] **Step 5: Commit Task 2**
 
 ```bash
-git add crates/tesela-sync/src/engine/loro_engine.rs crates/tesela-sync/src/engine/loro_engine/index.rs crates/tesela-sync/src/engine/loro_engine/tests.rs crates/tesela-sync/src/engine/loro_engine/tests/relocation.rs
+git add crates/tesela-sync/src/engine/loro_engine.rs crates/tesela-sync/src/engine/loro_engine/index.rs crates/tesela-sync/src/engine/loro_engine/apply.rs crates/tesela-sync/src/engine/loro_engine/twins.rs crates/tesela-sync/src/engine/loro_engine/tests.rs crates/tesela-sync/src/engine/loro_engine/tests/relocation.rs
 git commit -m "fix(sync): fail closed on ambiguous block ownership"
 ```
 
