@@ -107,6 +107,7 @@
     unregisterPaneOutliner,
   } from "$lib/stores/pane-tree.svelte";
   import { clearContentJump, type ContentJump } from "$lib/stores/content-jump.svelte";
+  import { outlinerOwnsDocumentFocus } from "$lib/editor/outliner-focus-owner";
 
   let {
     noteId,
@@ -967,6 +968,7 @@
   // so the sidebar doesn't lose its context when the user clicks into it.
   $effect(() => {
     if (focusedIndex === null) return;
+    if (!outlinerOwnsDocumentFocus(rootEl)) return;
     onfocusedblockchange?.(visibleBlocks[focusedIndex] ?? null);
   });
 
