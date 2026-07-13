@@ -609,3 +609,30 @@ Fable orchestrated a first full GPT-5.6 fleet (Taylor-directed 5.6-only, all thr
 **Decision:** every non-dry Logseq apply hydrates `NoteUpsert`s through the engine; the importer never writes note Markdown directly. An active-mosaic request reuses the server's resident engine and existing flock. Any other mosaic gets a temporary engine while its own server lock is held. The standalone CLI also acquires that lock, so it fails visibly instead of racing a server.
 
 **Batch durability:** unique-note imports run with bounded concurrency while each note keeps its apply lock through CRDT mutation, checked snapshot persistence, and checked Markdown materialization. Only the rebuildable shared index checkpoint is deferred to the end. Successful notes remain committed on a partial failure; detailed failures are returned, and the CLI exits nonzero. On restart, the loaded index's complete title/slug/tag/link projection is compared with durable note snapshots and rebuilt on any drift, including same-ID overwrites and ghost-only indexes. This removes the O(n²) index rewrite without widening the per-note mutation-to-snapshot crash window.
+
+### 2026-07-12 — Cross-note subtree relocation is a recoverable engine operation
+
+**Decision:** moving a block subtree within or between notes is one first-class
+engine operation behind one server command. It preserves every block's stable
+`bid`, relative hierarchy, text, and typed property values. The engine derives
+the source subtree, locks both addressed notes in deterministic note-id order,
+and records a durable idempotent relocation intent before mutating either doc.
+For a cross-note move, the destination snapshot becomes durable before the
+source snapshot may remove the subtree. Startup and retry finish any surviving
+intent.
+
+**Why:** the existing `BlockMove` has no destination note and does not reorder
+rows. Client-side copy/delete cannot close the failure window: destination-first
+repoints the global block index so a later generic delete can delete the new
+copy, while source-first can lose the subtree if destination creation fails.
+Whole-note PUT deliberately treats absence as non-delete, and fresh destination
+ids would break block identity and references. Cross-document Loro changes are
+two per-note deltas rather than one CRDT transaction, so a small durable intent
+is the crash-consistency boundary.
+
+**Conflict boundary:** edits racing the old source location follow the existing
+delete-wins rule once relocation commits. Concurrent moves of the same source
+subtree to two different destination notes are not automatically resolved in
+this slice; duplicate live ownership must be detected and surfaced rather than
+silently choosing an order-dependent block-index owner. Full contract:
+`phases/2026-07-12-block-subtree-relocation-spec.md`.
