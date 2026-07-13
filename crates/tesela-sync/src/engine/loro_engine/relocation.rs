@@ -454,6 +454,93 @@ struct CurrentDestinationPlacement {
     new_parents: Vec<Option<[u8; 16]>>,
 }
 
+fn unique_live_node_for_recovery_bid(
+    tree: &LoroTree,
+    live_order: &[TreeID],
+    move_id: [u8; 16],
+    bid: [u8; 16],
+    role: &str,
+) -> SyncResult<TreeID> {
+    let mut matching = live_order
+        .iter()
+        .copied()
+        .filter(|node| node_bid(tree, *node) == Some(bid));
+    let Some(node) = matching.next() else {
+        return Err(recovery_required(
+            move_id,
+            format!("{role} {} is missing", hex_id(&bid)),
+        ));
+    };
+    if matching.next().is_some() {
+        return Err(recovery_required(
+            move_id,
+            format!("{role} {} is ambiguous", hex_id(&bid)),
+        ));
+    }
+    Ok(node)
+}
+
+fn validate_recovery_target_ancestry(
+    tree: &LoroTree,
+    prepared: &PreparedRelocation,
+    target_bid: [u8; 16],
+) -> SyncResult<()> {
+    let move_id = prepared.request.move_id;
+    let captured_bids: HashSet<[u8; 16]> = prepared.blocks.iter().map(|block| block.bid).collect();
+    if captured_bids.contains(&target_bid) {
+        return Err(recovery_required(
+            move_id,
+            "destination target belongs to the captured relocation subtree",
+        ));
+    }
+    let live_order = live_root_nodes(tree);
+    let mut current_bid = target_bid;
+    let mut current_node =
+        unique_live_node_for_recovery_bid(tree, &live_order, move_id, current_bid, "target")?;
+    let mut visited = HashSet::from([target_bid]);
+
+    loop {
+        let Some(parent_value) = read_meta_str(tree, current_node, "parent") else {
+            return Ok(());
+        };
+        let parent_bid = parse_note_id_from_hex(&parent_value).ok_or_else(|| {
+            recovery_required(
+                move_id,
+                format!(
+                    "target ancestry for {} contains invalid parent metadata",
+                    hex_id(&current_bid)
+                ),
+            )
+        })?;
+        if captured_bids.contains(&parent_bid) {
+            return Err(recovery_required(
+                move_id,
+                format!(
+                    "target ancestry reaches captured subtree block {}",
+                    hex_id(&parent_bid)
+                ),
+            ));
+        }
+        if !visited.insert(parent_bid) {
+            return Err(recovery_required(
+                move_id,
+                format!(
+                    "target ancestry contains a cycle at {}",
+                    hex_id(&parent_bid)
+                ),
+            ));
+        }
+        current_bid = parent_bid;
+        current_node = unique_live_node_for_recovery_bid(
+            tree,
+            &live_order,
+            move_id,
+            current_bid,
+            "target ancestor",
+        )?;
+    }
+}
+
 fn relocated_snapshot_ancestry(
     blocks: &[RelocatedBlockSnapshot],
     new_root_indent: u16,
@@ -497,18 +584,7 @@ fn current_destination_placement(
                 .request
                 .target_bid
                 .ok_or_else(|| recovery_required(prepared.request.move_id, "target is missing"))?;
-            if !order_without_captured
-                .iter()
-                .any(|node| node_bid(tree, *node) == Some(target_bid))
-            {
-                return Err(recovery_required(
-                    prepared.request.move_id,
-                    format!(
-                        "destination target {} vanished during relocation recovery",
-                        hex_id(&target_bid)
-                    ),
-                ));
-            }
+            validate_recovery_target_ancestry(tree, prepared, target_bid)?;
             target_placement(
                 tree,
                 order_without_captured,
@@ -845,28 +921,38 @@ impl LoroEngine {
         if self.inner.snapshot_dir.is_none() {
             return Ok(());
         }
+        {
+            let mut index = self.inner.relocation_receipts.lock().await;
+            index.insert((receipt.completed_at, receipt.move_id), ());
+        }
+        self.prune_relocation_receipts().await
+    }
+
+    async fn prune_relocation_receipts(&self) -> SyncResult<()> {
+        if self.inner.snapshot_dir.is_none() {
+            return Ok(());
+        }
         let mut index = self.inner.relocation_receipts.lock().await;
-        index.insert((receipt.completed_at, receipt.move_id), ());
-        let mut pruned = Vec::new();
         while index.len() > RECEIPT_LIMIT {
-            let Some(((_, move_id), _)) = index.pop_first() else {
+            let Some((key, _)) = index.first_key_value() else {
                 break;
             };
-            pruned.push(move_id);
-        }
-        drop(index);
-        for move_id in pruned {
-            let Some(path) = self.relocation_record_path(move_id) else {
-                continue;
-            };
-            if let Err(error) = tokio::fs::remove_file(&path).await {
-                if error.kind() != std::io::ErrorKind::NotFound {
+            let key = *key;
+            let move_id = key.1;
+            let path = self
+                .relocation_record_path(move_id)
+                .expect("persistent relocation receipt index has a record path");
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
                     return Err(SyncError::Storage(format!(
                         "prune relocation receipt {}: {error}",
                         path.display()
-                    )));
+                    )))
                 }
             }
+            index.remove(&key);
         }
         Ok(())
     }
@@ -1714,6 +1800,9 @@ impl LoroEngine {
                             "move id was already completed with different arguments".into(),
                         ))
                     } else {
+                        self.prune_relocation_receipts()
+                            .await
+                            .map_err(|error| preserve_recovery_error(request.move_id, error))?;
                         Ok(receipt.replay_outcome())
                     }
                 }
@@ -1861,25 +1950,7 @@ impl LoroEngine {
                 .await
                 .map_err(|error| preserve_recovery_error(move_id, error))?;
         }
-        let mut index = self.inner.relocation_receipts.lock().await;
-        let mut pruned = Vec::new();
-        while index.len() > RECEIPT_LIMIT {
-            if let Some(((_, move_id), _)) = index.pop_first() {
-                pruned.push(move_id);
-            }
-        }
-        drop(index);
-        for move_id in pruned {
-            if let Some(path) = self.relocation_record_path(move_id) {
-                tokio::fs::remove_file(&path).await.map_err(|error| {
-                    SyncError::Storage(format!(
-                        "prune relocation receipt {}: {error}",
-                        path.display()
-                    ))
-                })?;
-            }
-        }
-        Ok(())
+        self.prune_relocation_receipts().await
     }
 
     pub(super) async fn relocate_subtree_in_memory(
