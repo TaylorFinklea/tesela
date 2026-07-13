@@ -76,9 +76,14 @@ impl LoroEngine {
             if changes.is_empty() {
                 continue;
             }
+            let ownership_guard = self.inner.ownership_transition.lock().await;
             tombstone_duplicate_twins(&doc, note_id);
-            self.reassert_prop_heals(note_id, &changes).await.ok();
-            self.refresh_note_derived(note_id, &doc).await;
+            self.reassert_prop_heals_under_ownership(note_id, &changes)
+                .await
+                .ok();
+            self.refresh_note_derived_under_ownership(note_id, &doc)
+                .await;
+            drop(ownership_guard);
             if let Some(dir) = self.inner.snapshot_dir.as_ref() {
                 self.save_snapshot(dir, note_id).await;
             }
@@ -103,21 +108,18 @@ impl LoroEngine {
     ///   current value differs from the target (LWW register — re-asserting an
     ///   equal value is a no-op skipped here to keep the apply idempotent).
     ///
-    /// Reads the survivor's current props with the docs lock, then RELEASES it
-    /// before `record_local_locked` (which re-acquires) — same lock discipline
-    /// as the text heal. Called only from inside the caller's `apply_locks`
-    /// guard for `note_id` (`apply_import`, `heal_disjoint_twins`), so it
-    /// dispatches to `record_local_locked`, not the public `record_local`,
-    /// to avoid re-entering that (non-reentrant) guard. A `BlockPropertySet`
-    /// on a block whose survivor went missing is itself a safe no-op (the
-    /// apply arm guards it).
-    pub(super) async fn reassert_prop_heals(
+    /// Called only while `apply_import` or `heal_disjoint_twins` holds both the
+    /// note's apply guard and the global ownership-transition guard, so writes
+    /// dispatch through `record_local_locked_under_ownership` rather than
+    /// re-entering either non-reentrant mutex. A `BlockPropertySet` on a block
+    /// whose survivor went missing is itself a safe no-op.
+    pub(super) async fn reassert_prop_heals_under_ownership(
         &self,
         note_id: [u8; 16],
         changes: &[PeerBlockChange],
     ) -> SyncResult<()> {
-        // Collect the (block_id, key, op) re-asserts while holding the read
-        // lock, then drop it before `record_local_locked` (which re-acquires).
+        // Collect the (block_id, key, op) re-asserts from the current doc,
+        // then author them through the already-guarded path.
         let mut block_ops: Vec<([u8; 16], String, PropOp)> = Vec::new();
         {
             let Some(doc) = self.lazy_load_doc(note_id).await else {
@@ -175,12 +177,9 @@ impl LoroEngine {
             }
         }
         for (block_id, key, value) in block_ops {
-            // `record_local_locked`, NOT `record_local`: every caller of
-            // `reassert_prop_heals` (`apply_import`, `heal_disjoint_twins`)
-            // already holds this note's `apply_locks` guard, and the guard
-            // is not reentrant — `record_local` would deadlock re-acquiring
-            // it (see `record_local_locked`'s doc comment).
-            self.record_local_locked(OpPayload::BlockPropertySet {
+            // Both callers already hold this note's apply guard and the global
+            // ownership-transition guard; do not re-enter either mutex.
+            self.record_local_locked_under_ownership(OpPayload::BlockPropertySet {
                 note_id,
                 block_id,
                 key,

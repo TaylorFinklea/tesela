@@ -4,6 +4,18 @@ use std::collections::BTreeSet;
 pub(super) type BlockOwners = BTreeSet<[u8; 16]>;
 pub(super) type BlockIndex = HashMap<[u8; 16], BlockOwners>;
 
+/// Every live block id in a Loro tree, including nodes whose structural
+/// parent is another node. Ownership is independent of the flat renderer's
+/// root-child projection, so legacy/non-canonical nesting must remain indexed.
+pub(super) fn live_block_ids(tree: &LoroTree) -> impl Iterator<Item = [u8; 16]> + '_ {
+    tree.nodes().into_iter().filter_map(|node| {
+        if matches!(tree.is_node_deleted(&node), Ok(true)) {
+            return None;
+        }
+        read_meta_str(tree, node, "block_id").and_then(|hex| parse_note_id_from_hex(&hex))
+    })
+}
+
 /// Schema version of the index doc's entry shape. Bump whenever the
 /// per-entry fields OR their encoding change so a stale on-disk index is
 /// rebuilt from the (self-describing) per-note docs on boot — no manual
@@ -30,15 +42,8 @@ pub(super) fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> BlockIndex
     let mut out = BlockIndex::new();
     for (note_id, doc) in docs.iter() {
         let tree = doc.get_tree("blocks");
-        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
-            if matches!(tree.is_node_deleted(&node), Ok(true)) {
-                continue;
-            }
-            if let Some(hex) = read_meta_str(&tree, node, "block_id") {
-                if let Some(bid) = parse_note_id_from_hex(&hex) {
-                    out.entry(bid).or_default().insert(*note_id);
-                }
-            }
+        for bid in live_block_ids(&tree) {
+            out.entry(bid).or_default().insert(*note_id);
         }
     }
     out

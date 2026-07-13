@@ -48,7 +48,8 @@ impl LoroEngine {
     /// poison-probe → import plan ([`peer_import_plan`]: twins props union +
     /// lifecycle status-flip gate) → `doc.import` → max-`TreeID` twin tombstone
     /// ([`tombstone_duplicate_twins`]) → prop re-assert → derived refresh →
-    /// block lifecycle ([`Self::apply_block_lifecycle`], tesela-ows.1 step 2) →
+    /// block lifecycle ([`Self::apply_block_lifecycle_under_ownership`],
+    /// tesela-ows.1 step 2) →
     /// snapshot persist → materialize. `mode` selects ONLY the heal-plan
     /// residency gate + the poison-skip noun; the body is otherwise identical
     /// across the three public wrappers (see each for the per-path rationale).
@@ -151,6 +152,7 @@ impl LoroEngine {
         // disjoint-twin blocks is healed below. Surface Loro's PENDING status (a
         // causal gap) for the `apply_doc_update_status` caller; the other two
         // publics discard it.
+        let ownership_guard = self.inner.ownership_transition.lock().await;
         let status = doc
             .import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
@@ -172,14 +174,16 @@ impl LoroEngine {
         }
         // Props half of the heal: re-assert each tombstoned twin's resolved props
         // onto the surviving winner (per-key, idempotency-guarded). Goes
-        // through `record_local_locked` (this note's `apply_locks` guard is
-        // already held here), which re-acquires the docs lock + re-fetches
-        // the doc.
+        // through `record_local_locked_under_ownership` (both outer guards are
+        // already held here), which re-fetches the doc without re-entering
+        // either lock.
         if let Some(p) = &plan {
-            self.reassert_prop_heals(note_id, &p.twins).await?;
+            self.reassert_prop_heals_under_ownership(note_id, &p.twins)
+                .await?;
         }
 
-        self.refresh_note_derived(note_id, &doc).await;
+        self.refresh_note_derived_under_ownership(note_id, &doc)
+            .await;
 
         // ── Engine-side block lifecycle (tesela-ows.1 step 2) ────────────────
         // A `done` flip reaching the engine over ANY writer that IMPORTS (WS
@@ -203,9 +207,12 @@ impl LoroEngine {
         // imports it (matches the acceptance test's "author does not self-roll").
         if !is_views {
             if let Some(prev_md) = plan.as_ref().and_then(|p| p.lifecycle_prev.as_deref()) {
-                self.apply_block_lifecycle(note_id, prev_md, &doc).await?;
+                self.apply_block_lifecycle_under_ownership(note_id, prev_md, &doc)
+                    .await?;
             }
         }
+
+        drop(ownership_guard);
 
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
@@ -342,7 +349,8 @@ impl LoroEngine {
     ///
     /// ## Constraint (a): lifecycle props STAY in the typed props container
     /// The roll is authored as CONTAINER [`OpPayload::BlockPropertySet`] sets —
-    /// the SAME mechanism [`Self::reassert_prop_heals`] uses — NOT as an in-text
+    /// the SAME mechanism [`Self::reassert_prop_heals_under_ownership`] uses —
+    /// NOT as an in-text
     /// markdown rewrite, and the container is NEVER cleared. Lifecycle state
     /// (`last_completed`, `recurrence_done`, the rolled dates, `status`) lives in
     /// the container where disjoint-twin heal's per-key union
@@ -363,11 +371,10 @@ impl LoroEngine {
     ///
     /// ## Lock discipline (tesela-4ju)
     /// Called from inside `apply_import`, which already holds this note's
-    /// `apply_locks` guard for its whole body. Authoring goes through
-    /// `record_local_locked` (NOT the public `record_local`, which would deadlock
-    /// re-acquiring the non-reentrant guard) — the same discipline as
-    /// `reassert_prop_heals`.
-    async fn apply_block_lifecycle(
+    /// `apply_locks` guard and the global ownership-transition guard. Authoring
+    /// goes through `record_local_locked_under_ownership` so neither
+    /// non-reentrant lock is reacquired.
+    async fn apply_block_lifecycle_under_ownership(
         &self,
         note_id: [u8; 16],
         prev_md: &str,
@@ -412,7 +419,7 @@ impl LoroEngine {
                 } else {
                     PropOp::SetScalar(PropScalar::Text(value))
                 };
-                self.record_local_locked(OpPayload::BlockPropertySet {
+                self.record_local_locked_under_ownership(OpPayload::BlockPropertySet {
                     note_id,
                     block_id,
                     key,
@@ -518,7 +525,8 @@ struct ImportPlan {
     twins: Vec<PeerBlockChange>,
     /// `Some(prev_markdown)` when this frame flips at least one block's status
     /// from non-`done` → `done`: the note's full markdown BEFORE the import, so
-    /// [`LoroEngine::apply_block_lifecycle`] can diff prev→post. `None` in the
+    /// [`LoroEngine::apply_block_lifecycle_under_ownership`] can diff prev→post.
+    /// `None` in the
     /// common case (no such flip), letting the caller skip the lifecycle and pay
     /// no markdown render.
     lifecycle_prev: Option<String>,
