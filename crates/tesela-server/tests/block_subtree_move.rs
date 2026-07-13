@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -169,14 +170,22 @@ async fn settle_ws(ws: &mut TestWs) {
 }
 
 async fn collect_tail(ws: &mut TestWs, expected_slugs: &[&str]) {
-    let mut note_events = Vec::new();
+    let mut note_events = BTreeSet::new();
     let mut delta_docs = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 
-    while (note_events.len() < expected_slugs.len() || delta_docs.len() < expected_slugs.len())
-        && tokio::time::Instant::now() < deadline
-    {
-        match tokio::time::timeout(Duration::from_millis(750), ws.next()).await {
+    loop {
+        let minimum_received =
+            note_events.len() >= expected_slugs.len() && delta_docs.len() >= expected_slugs.len();
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let quiet_window = if minimum_received {
+            Duration::from_millis(300)
+        } else {
+            Duration::from_millis(750)
+        };
+        match tokio::time::timeout(quiet_window, ws.next()).await {
             Ok(Some(Ok(TMessage::Text(text)))) => {
                 let body: Value = serde_json::from_str(&text).expect("WS text JSON");
                 if body["event"] == "note_updated" {
@@ -184,9 +193,10 @@ async fn collect_tail(ws: &mut TestWs, expected_slugs: &[&str]) {
                         .as_str()
                         .expect("note_updated carries note id")
                         .to_string();
-                    if expected_slugs.contains(&note_id.as_str()) && !note_events.contains(&note_id)
-                    {
-                        note_events.push(note_id);
+                    if expected_slugs.contains(&note_id.as_str()) {
+                        // The filesystem watcher can legitimately duplicate
+                        // route text events, so assert their distinct note ids.
+                        note_events.insert(note_id);
                     }
                 }
             }
@@ -201,19 +211,18 @@ async fn collect_tail(ws: &mut TestWs, expected_slugs: &[&str]) {
             Ok(Some(Ok(_))) => {}
             Ok(Some(Err(error))) => panic!("WebSocket error: {error}"),
             Ok(None) => panic!("WebSocket closed before relocation tail"),
+            Err(_) if minimum_received => break,
             Err(_) => {}
         }
     }
 
-    let mut expected_events: Vec<String> = expected_slugs
+    let expected_events: BTreeSet<String> = expected_slugs
         .iter()
         .map(|slug| (*slug).to_string())
         .collect();
-    expected_events.sort();
-    note_events.sort();
     assert_eq!(
         note_events, expected_events,
-        "one distinct note_updated event per affected note"
+        "each affected note emits note_updated; filesystem duplicates are coalesced"
     );
     let expected_docs: Vec<[u8; 16]> = expected_slugs
         .iter()
@@ -363,16 +372,17 @@ async fn absent_daily_append_is_created_inside_move_without_blank_seed_sibling()
     .await;
     let source_id = source["id"].as_str().unwrap();
     let destination = "2026-07-11";
+    let request = move_json(
+        "21212121-2121-4121-8121-212121212121",
+        source_id,
+        destination,
+        None,
+        "append",
+    );
 
     let response = client
         .post(format!("{}/blocks/move-subtree", h.base))
-        .json(&move_json(
-            "21212121-2121-4121-8121-212121212121",
-            source_id,
-            destination,
-            None,
-            "append",
-        ))
+        .json(&request)
         .send()
         .await
         .unwrap();
@@ -414,6 +424,31 @@ async fn absent_daily_append_is_created_inside_move_without_blank_seed_sibling()
         version_count(&client, &h.base, destination).await,
         0,
         "a newly created destination has no synthetic history row"
+    );
+
+    let source_versions = version_count(&client, &h.base, source_id).await;
+    let destination_versions = version_count(&client, &h.base, destination).await;
+    let replay = client
+        .post(format!("{}/blocks/move-subtree", h.base))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), reqwest::StatusCode::OK);
+    let replay_body: Value = replay.json().await.unwrap();
+    assert_eq!(
+        replay_body, body,
+        "identical absent-daily retry must return the same two-note response"
+    );
+    assert_eq!(
+        version_count(&client, &h.base, source_id).await,
+        source_versions,
+        "daily-create replay must not duplicate source history"
+    );
+    assert_eq!(
+        version_count(&client, &h.base, destination).await,
+        destination_versions,
+        "daily-create replay must not synthesize destination history"
     );
 }
 

@@ -795,28 +795,42 @@ pub async fn move_block_subtree(
         s.store.get(&destination_id).await?
     };
 
-    let destination_seed = if destination_before.is_none() {
-        let date = chrono::NaiveDate::parse_from_str(&req.destination_note_id, "%Y-%m-%d")
-            .ok()
-            .filter(|date| date.format("%Y-%m-%d").to_string() == req.destination_note_id)
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Note not found: {}", req.destination_note_id))
-            })?;
-        if req.placement != MovePlacement::Append || req.target_bid.is_some() {
-            return Err(AppError::Validation(
+    let destination_date = chrono::NaiveDate::parse_from_str(&req.destination_note_id, "%Y-%m-%d")
+        .ok()
+        .filter(|date| date.format("%Y-%m-%d").to_string() == req.destination_note_id);
+    if destination_before.is_none()
+        && (destination_date.is_none()
+            || req.placement != MovePlacement::Append
+            || req.target_bid.is_some())
+    {
+        return if destination_date.is_some() {
+            Err(AppError::Validation(
                 "a missing daily destination requires append placement with null target".into(),
-            ));
-        }
-        let config = DailyNoteConfig::default();
-        Some(RelocationNoteSeed {
-            display_alias: Some(req.destination_note_id.clone()),
-            title: tesela_core::daily::daily_note_title(date, &config),
-            content: tesela_core::daily::daily_note_content(date, &config),
-            created_at_millis: date
-                .and_hms_opt(0, 0, 0)
-                .expect("midnight is a valid time")
-                .and_utc()
-                .timestamp_millis(),
+            ))
+        } else {
+            Err(AppError::NotFound(format!(
+                "Note not found: {}",
+                req.destination_note_id
+            )))
+        };
+    }
+
+    // Derive the fallback solely from immutable request fields. An existing
+    // cross-note daily ignores it during preparation, but retaining the same
+    // serialized seed keeps intent and receipt hashes stable on HTTP retries.
+    let destination_seed = if !same_note && req.placement == MovePlacement::Append {
+        destination_date.map(|date| {
+            let config = DailyNoteConfig::default();
+            RelocationNoteSeed {
+                display_alias: Some(req.destination_note_id.clone()),
+                title: tesela_core::daily::daily_note_title(date, &config),
+                content: tesela_core::daily::daily_note_content(date, &config),
+                created_at_millis: date
+                    .and_hms_opt(0, 0, 0)
+                    .expect("midnight is a valid time")
+                    .and_utc()
+                    .timestamp_millis(),
+            }
         })
     } else {
         None
@@ -3031,7 +3045,10 @@ mod tests {
                 .await
                 .expect("peer register");
             peer_client
-                .put_snapshots(0, vec![(destination_note_id.to_vec(), destination_snapshot)])
+                .put_snapshots(
+                    0,
+                    vec![(destination_note_id.to_vec(), destination_snapshot)],
+                )
                 .await
                 .expect("peer deposit snapshot");
 
@@ -3113,10 +3130,7 @@ mod tests {
             let result = move_block_subtree(
                 State(state),
                 Json(MoveBlockSubtreeReq {
-                    move_id: uuid::Uuid::parse_str(
-                        "44444444-4444-4444-8444-444444444444",
-                    )
-                    .unwrap(),
+                    move_id: uuid::Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
                     source_note_id: source_slug.into(),
                     root_bid: uuid::Uuid::parse_str(moved_bid).unwrap(),
                     destination_note_id: destination_slug.into(),

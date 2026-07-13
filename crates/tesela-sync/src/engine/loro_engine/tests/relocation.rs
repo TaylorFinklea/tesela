@@ -49,6 +49,15 @@ fn relocation_request(
     }
 }
 
+fn deterministic_daily_seed(slug: &str) -> crate::engine::RelocationNoteSeed {
+    crate::engine::RelocationNoteSeed {
+        display_alias: Some(slug.into()),
+        title: slug.into(),
+        content: format!("---\ntitle: {slug}\ncreated: {slug}T00:00:00Z\n---\n"),
+        created_at_millis: 1_720_656_000_000,
+    }
+}
+
 async fn block_structure(
     engine: &LoroEngine,
     note_id: [u8; 16],
@@ -993,6 +1002,60 @@ async fn trusted_daily_seed_uses_frontmatter_without_placeholder_block() {
     assert!(full.starts_with("---\ntitle: 2026-07-11\ncreated: 2026-07-11T00:00:00Z\n---\n"));
     assert!(!full.contains(&hex_id(&placeholder)));
     assert!(full.contains(&uuid::Uuid::from_bytes(root).to_string()));
+}
+
+#[tokio::test]
+async fn deterministic_seed_is_ignored_for_an_existing_cross_note_destination() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xc5; 16];
+    let destination = [0xc6; 16];
+    let root = [0xc7; 16];
+    let existing = [0xc8; 16];
+    seed_note(
+        &engine,
+        source,
+        "2026-07-12",
+        stamped_line(0, "moved", root),
+    )
+    .await;
+    seed_note(
+        &engine,
+        destination,
+        "2026-07-11",
+        stamped_line(0, "existing", existing),
+    )
+    .await;
+    let mut request = relocation_request(source, root, destination, None, MovePlacement::Append);
+    request.destination_seed = Some(deterministic_daily_seed("2026-07-11"));
+
+    let outcome = engine.relocate_subtree(request).await.unwrap();
+
+    assert_eq!(outcome.status, BlockRelocationStatus::Applied);
+    assert_eq!(
+        block_texts(&engine, destination).await,
+        vec!["existing", "moved"]
+    );
+}
+
+#[tokio::test]
+async fn deterministic_seed_remains_invalid_for_a_same_note_move() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note = [0xc9; 16];
+    let root = [0xca; 16];
+    seed_note(&engine, note, "2026-07-12", stamped_line(0, "root", root)).await;
+    let mut request = relocation_request(note, root, note, None, MovePlacement::Append);
+    request.destination_seed = Some(deterministic_daily_seed("2026-07-12"));
+
+    let error = engine.relocate_subtree(request).await.unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::RelocationRejected(message)
+            if message.contains("existing destination cannot include a note seed")
+    ));
+    assert_eq!(block_texts(&engine, note).await, vec!["root"]);
 }
 
 async fn snapshot_has_live_bid(

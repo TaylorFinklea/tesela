@@ -1262,11 +1262,10 @@ impl LoroEngine {
         };
         if let Some(doc) = destination_doc.as_ref() {
             validate_slug(doc, &request.destination_slug, "destination")?;
-            if !same_note && request.destination_seed.is_some() {
-                return Err(rejected(
-                    "an existing destination cannot include a note seed",
-                ));
-            }
+            // A cross-note daily append carries its deterministic fallback
+            // seed even after the destination exists so the canonical request
+            // hash stays stable across first apply and replay. Preparation
+            // ignores the seed because this existing doc is authoritative.
         } else if request.destination_seed.is_none() {
             return Err(rejected(
                 "destination note is missing and no seed was supplied",
