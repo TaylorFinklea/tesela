@@ -569,16 +569,8 @@ async fn same_note_existing_placement_is_a_no_op() {
     let version_before = engine.doc_version(note_id).await.unwrap();
     let rendered_before = engine.render_note_full(note_id).await.unwrap();
 
-    let outcome = engine
-        .relocate_subtree(relocation_request(
-            note_id,
-            root,
-            note_id,
-            Some(target),
-            MovePlacement::Before,
-        ))
-        .await
-        .unwrap();
+    let request = relocation_request(note_id, root, note_id, Some(target), MovePlacement::Before);
+    let outcome = engine.relocate_subtree(request.clone()).await.unwrap();
 
     assert_eq!(outcome.status, BlockRelocationStatus::NoOp);
     assert_eq!(outcome.notes.len(), 1);
@@ -589,6 +581,63 @@ async fn same_note_existing_placement_is_a_no_op() {
         engine.render_note_full(note_id).await.unwrap(),
         rendered_before
     );
+    assert_eq!(
+        engine.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+}
+
+#[tokio::test]
+async fn in_memory_relocation_receipts_replay_and_prune_at_the_durable_limit() {
+    const LIMIT: usize = 4_096;
+    let device = DeviceId::from_bytes([0x95; 16]);
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x96; 16];
+    let root = [0x97; 16];
+    let target = [0x98; 16];
+    seed_note(
+        &engine,
+        note_id,
+        "2026-07-12",
+        [
+            stamped_line(0, "root", root),
+            stamped_line(0, "target", target),
+        ]
+        .concat(),
+    )
+    .await;
+
+    let mut oldest = None;
+    let mut newest = None;
+    for sequence in 0u128..=LIMIT as u128 {
+        let mut request =
+            relocation_request(note_id, root, note_id, Some(target), MovePlacement::Before);
+        request.move_id = sequence.to_be_bytes();
+        assert_eq!(
+            engine
+                .relocate_subtree(request.clone())
+                .await
+                .unwrap()
+                .status,
+            BlockRelocationStatus::NoOp
+        );
+        oldest.get_or_insert_with(|| request.clone());
+        newest = Some(request);
+    }
+
+    assert_eq!(
+        engine.inner.volatile_relocation_records.lock().await.len(),
+        LIMIT
+    );
+    assert_eq!(
+        engine
+            .relocate_subtree(newest.unwrap())
+            .await
+            .unwrap()
+            .status,
+        BlockRelocationStatus::Replayed
+    );
+    assert_stale_relocation(engine.relocate_subtree(oldest.unwrap()).await.unwrap_err());
 }
 
 #[tokio::test]
@@ -2656,6 +2705,70 @@ async fn seed_relocation_peer_from(
 }
 
 #[tokio::test]
+async fn destination_only_peer_retry_finishes_source_deletion_durably() {
+    let origin_device = DeviceId::from_bytes([0xa0; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xa1; 16]);
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let source = [0xa2; 16];
+    let destination = [0xa3; 16];
+    let root = [0xa4; 16];
+    let child = [0xa5; 16];
+    let target = [0xa6; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    let peer =
+        open_persistent_relocation_engine(peer_device, &snapshot_dir, &materialize_dir).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xa7; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    let destination_delta = origin
+        .export_doc_update(destination, Some(&destination_before))
+        .await
+        .unwrap();
+    peer.import_doc_update(destination, &destination_delta)
+        .await
+        .unwrap();
+    assert!(nested_block_is_live(&peer, source, root).await);
+    assert!(nested_block_is_live(&peer, destination, root).await);
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&root),
+        Some(&BTreeSet::from([source, destination]))
+    );
+
+    assert_eq!(
+        peer.relocate_subtree(request.clone()).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert!(!nested_block_is_live(&peer, source, root).await);
+    assert!(nested_block_is_live(&peer, destination, root).await);
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&root),
+        Some(&BTreeSet::from([destination]))
+    );
+    drop(peer);
+
+    let reopened =
+        open_persistent_relocation_engine(peer_device, &snapshot_dir, &materialize_dir).await;
+    assert!(!nested_block_is_live(&reopened, source, root).await);
+    assert!(nested_block_is_live(&reopened, destination, root).await);
+    assert_eq!(
+        reopened.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+}
+
+#[tokio::test]
 async fn source_and_destination_deltas_converge_in_both_arrival_orders() {
     let origin_device = DeviceId::from_bytes([0x51; 16]);
     let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
@@ -2771,6 +2884,69 @@ async fn concurrent_edit_at_old_source_does_not_resurrect_after_relocation() {
             Some(&BTreeSet::from([destination]))
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_splice_waits_for_cross_note_relocation_to_release_its_apply_lock() {
+    let device = DeviceId::from_bytes([0xb0; 16]);
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xb1; 16];
+    let destination = [0xb2; 16];
+    let root = [0xb3; 16];
+    let child = [0xb4; 16];
+    let target = [0xb5; 16];
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let destination_lock = engine.apply_lock_for_note(destination).await;
+    let destination_guard = destination_lock.lock().await;
+    let source_lock = engine.apply_lock_for_note(source).await;
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+
+    let relocation_engine = engine.clone();
+    let relocation =
+        tokio::spawn(async move { relocation_engine.relocate_subtree(request).await.unwrap() });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if source_lock.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("relocation should acquire the source lock before waiting on destination");
+
+    let splice_engine = engine.clone();
+    let mut splice = tokio::spawn(async move {
+        splice_engine
+            .splice_block_text(source, root, 10, 0, "-late")
+            .await
+            .unwrap()
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut splice)
+            .await
+            .is_err(),
+        "splice must wait while relocation owns the source note"
+    );
+
+    drop(destination_guard);
+    assert_eq!(
+        relocation.await.unwrap().status,
+        BlockRelocationStatus::Applied
+    );
+    assert_eq!(splice.await.unwrap(), 0);
+    assert!(!nested_block_is_live(&engine, source, root).await);
+    assert!(nested_block_is_live(&engine, destination, root).await);
+    assert_eq!(
+        block_texts(&engine, destination).await,
+        vec!["target", "moved-root", "moved-child"]
+    );
 }
 
 #[tokio::test]

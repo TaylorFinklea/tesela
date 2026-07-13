@@ -267,6 +267,9 @@ struct Inner {
     /// `_relocations/` remain authoritative; this resident projection makes
     /// the 4,096-receipt pruning boundary O(log n) per completed move.
     relocation_receipts: tokio::sync::Mutex<relocation::ReceiptIndex>,
+    /// Intent/receipt records for engines without a snapshot directory.
+    /// Mirrors `_relocations/*.bin` for lifetime-local retry semantics.
+    volatile_relocation_records: tokio::sync::Mutex<relocation::VolatileRelocationRecords>,
     /// Permanent exact move-id → request-hash tombstones. Rich receipts are
     /// pruned, but these compact entries preserve replay/conflict semantics
     /// for every completed relocation across process restarts.
@@ -402,6 +405,7 @@ impl LoroEngine {
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
                 relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
                 active_relocations: tokio::sync::Mutex::new(Default::default()),
                 #[cfg(test)]
@@ -436,6 +440,7 @@ impl LoroEngine {
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
                 relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
                 active_relocations: tokio::sync::Mutex::new(Default::default()),
                 #[cfg(test)]
@@ -541,6 +546,7 @@ impl LoroEngine {
                 block_index: RwLock::new(block_index),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
                 relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
                 active_relocations: tokio::sync::Mutex::new(Default::default()),
                 #[cfg(test)]
@@ -679,6 +685,8 @@ impl LoroEngine {
         utf16_delete_len: u32,
         insert: &str,
     ) -> SyncResult<u32> {
+        let apply_lock = self.apply_lock_for_note(note_id).await;
+        let _apply_guard = apply_lock.lock().await;
         let doc = self.doc_for_note_mut(note_id).await;
         let tree = doc.get_tree("blocks");
         let block_hex = hex_id(&block_id);
