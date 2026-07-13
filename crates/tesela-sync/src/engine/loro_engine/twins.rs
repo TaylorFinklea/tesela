@@ -1,3 +1,4 @@
+use super::prop_containers::ResolvedValue;
 use super::*;
 
 impl LoroEngine {
@@ -315,16 +316,6 @@ pub(super) struct PeerBlockChange {
     /// idempotency-guarded), so a tombstoned twin's props are never lost. See
     /// [`reconcile_orphaned_prop_containers`].
     props: Vec<(String, ResolvedValue)>,
-}
-
-/// A property value resolved from a Loro `props` container into plain Rust —
-/// the typed analog the disjoint-twin heal merges + re-asserts. Decoupled from
-/// `loro::LoroValue` (same discipline as [`PropScalar`] on the wire).
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum ResolvedValue {
-    Scalar(PropScalar),
-    Text(String),
-    List(Vec<PropScalar>),
 }
 
 /// Read + merge the props of EVERY live twin node for `owner` (a block_id hex)

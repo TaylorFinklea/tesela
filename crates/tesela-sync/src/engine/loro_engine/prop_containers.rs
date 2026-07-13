@@ -15,6 +15,17 @@
 use super::*;
 use tesela_core::property::PropScalar;
 
+/// A property value resolved from a Loro container without flattening its type.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ResolvedValue {
+    /// Primitive scalar register.
+    Scalar(PropScalar),
+    /// Mergeable text container.
+    Text(String),
+    /// Ordered, stable-deduplicated list members.
+    List(Vec<PropScalar>),
+}
+
 /// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
 pub(super) fn node_prop_containers(
     meta: &loro::LoroMap,
@@ -416,15 +427,15 @@ pub(super) fn materialize_props(
 pub(super) fn read_props_typed(
     props: &loro::LoroMap,
     prop_keys: &loro::LoroList,
-) -> Vec<(String, super::ResolvedValue)> {
-    let mut out: Vec<(String, super::ResolvedValue)> = Vec::new();
+) -> Vec<(String, ResolvedValue)> {
+    let mut out: Vec<(String, ResolvedValue)> = Vec::new();
     for key in prop_keys_resolved(props, prop_keys) {
         let value = if let Some(scalar) = prop_get_scalar(props, &key) {
-            super::ResolvedValue::Scalar(scalar)
+            ResolvedValue::Scalar(scalar)
         } else if get_list_container(props, &key).is_some() {
-            super::ResolvedValue::List(prop_get_list_dedup(props, &key))
+            ResolvedValue::List(prop_get_list_dedup(props, &key))
         } else if let Some(text) = prop_get_text(props, &key) {
-            super::ResolvedValue::Text(text)
+            ResolvedValue::Text(text)
         } else {
             continue;
         };

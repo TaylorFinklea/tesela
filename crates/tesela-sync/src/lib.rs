@@ -62,8 +62,10 @@ pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::loro_engine::{LoroEngine, INBOX_DEFAULT_DSL, INBOX_VIEW_ID, VIEWS_DOC_ID};
 pub use engine::{
-    hydrate_note, AppliedChanges, EngineImportNoteWriter, LocalCursor, PeerCursor, PendingImport,
-    RelayApplyReport, SyncEngine, TableColumnConfig, ViewRecord,
+    hydrate_note, AppliedChanges, BlockRelocationOutcome, BlockRelocationRequest,
+    BlockRelocationStatus, EngineImportNoteWriter, LocalCursor, MovePlacement, PeerCursor,
+    PendingImport, RelayApplyReport, RelocatedNoteVersion, RelocationNoteSeed, SyncEngine,
+    TableColumnConfig, ViewRecord,
 };
 pub use error::{SyncError, SyncResult};
 pub use group::{GroupId, GroupMember};

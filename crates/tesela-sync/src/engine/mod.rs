@@ -16,6 +16,93 @@ use crate::oplog::op::{ContentHash, OpPayload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Placement of a relocated block subtree relative to its destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MovePlacement {
+    /// Insert immediately before the target and adopt its ancestry.
+    Before,
+    /// Append as the target's final child.
+    Inside,
+    /// Insert after the target's complete subtree and adopt its ancestry.
+    After,
+    /// Append to the note as a top-level subtree.
+    Append,
+}
+
+/// Trusted metadata used when relocation creates a missing destination note.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RelocationNoteSeed {
+    /// Optional display slug/alias stored with the note.
+    pub display_alias: Option<String>,
+    /// Note title.
+    pub title: String,
+    /// Canonical seed Markdown whose frontmatter and page properties are kept.
+    pub content: String,
+    /// Note creation time in Unix milliseconds.
+    pub created_at_millis: i64,
+}
+
+/// Complete request for one stable-id block subtree relocation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BlockRelocationRequest {
+    /// Idempotency key for the relocation.
+    pub move_id: [u8; 16],
+    /// Current owning note of the subtree root.
+    pub source_note_id: [u8; 16],
+    /// Stable source note slug.
+    pub source_slug: String,
+    /// Stable block id at the root of the moved subtree.
+    pub root_bid: [u8; 16],
+    /// Destination note id.
+    pub destination_note_id: [u8; 16],
+    /// Stable destination note slug.
+    pub destination_slug: String,
+    /// Destination block id for target-relative placements.
+    pub target_bid: Option<[u8; 16]>,
+    /// Requested placement relative to `target_bid` or the destination note.
+    pub placement: MovePlacement,
+    /// Trusted seed used only when the destination note does not yet exist.
+    pub destination_seed: Option<RelocationNoteSeed>,
+}
+
+/// Result class for a completed relocation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockRelocationStatus {
+    /// The engine changed one or both addressed notes.
+    Applied,
+    /// A durable idempotent receipt answered a retry.
+    Replayed,
+    /// The requested same-note placement already matched authoritative state.
+    NoOp,
+}
+
+/// Per-note version and change information captured by relocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelocatedNoteVersion {
+    /// Stable note id.
+    pub note_id: [u8; 16],
+    /// Stable note slug.
+    pub slug: String,
+    /// Encoded version vector before relocation changed the note.
+    pub pre_version: Vec<u8>,
+    /// Whether this request changed the note.
+    pub changed: bool,
+    /// Whether this request created the note.
+    pub created: bool,
+}
+
+/// Authoritative engine outcome for one subtree relocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockRelocationOutcome {
+    /// Idempotency key echoed from the request.
+    pub move_id: [u8; 16],
+    /// How the engine satisfied the request.
+    pub status: BlockRelocationStatus,
+    /// Source first, then destination for cross-note moves; one entry for same-note moves.
+    pub notes: Vec<RelocatedNoteVersion>,
+}
+
 /// Per-note outcome of one inbound relay batch apply
 /// ([`SyncEngine::apply_relay_updates`]). Replaces the old bare `usize`
 /// count, which silently swallowed per-note failures while the callers
@@ -119,6 +206,16 @@ pub trait SyncEngine: Send + Sync {
     /// here when sync is enabled. The engine appends an oplog row and
     /// returns the resulting content hash.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash>;
+
+    /// Relocate one complete stable-id block subtree within or across notes.
+    async fn relocate_subtree(
+        &self,
+        _request: BlockRelocationRequest,
+    ) -> SyncResult<BlockRelocationOutcome> {
+        Err(crate::error::SyncError::Other(
+            "block subtree relocation is unsupported".into(),
+        ))
+    }
 
     /// Record a bounded group of independent local mutations. The default is
     /// deliberately sequential; `LoroEngine` specializes unique NoteUpserts

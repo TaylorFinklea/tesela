@@ -31,7 +31,8 @@
 
 use crate::device::DeviceId;
 use crate::engine::{
-    cursor::PeerCursor, LocalCursor, PendingImport, RelayApplyReport, SyncEngine,
+    cursor::PeerCursor, BlockRelocationOutcome, BlockRelocationRequest, BlockRelocationStatus,
+    LocalCursor, MovePlacement, PendingImport, RelayApplyReport, RelocatedNoteVersion, SyncEngine,
     CATCHUP_BACKOFF_SHIFT_CAP, MAX_CATCHUP_ATTEMPTS,
 };
 use crate::error::{SyncError, SyncResult};
@@ -2226,6 +2227,8 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
 }
 
 mod prop_containers;
+use prop_containers::ResolvedValue;
+mod relocation;
 mod render;
 use render::{
     classify_block_prose_and_props, dedup_intext_props_against_container, doc_full_markdown,
@@ -2239,12 +2242,11 @@ mod apply;
 #[cfg(test)]
 use apply::probe_import_poison;
 mod twins;
-use twins::{
-    dedup_twins_by_block_id, tombstone_duplicate_twins, twin_winners_for, PeerBlockChange,
-    ResolvedValue,
-};
 #[cfg(test)]
 use twins::duplicate_block_ids;
+use twins::{
+    dedup_twins_by_block_id, tombstone_duplicate_twins, twin_winners_for, PeerBlockChange,
+};
 
 /// True if the tree's live blocks (in render order) match `blocks` by
 /// id + STRIPPED prose + indent. Props are deliberately NOT part of the
@@ -2682,6 +2684,13 @@ fn create_block_node_positioned(
 impl SyncEngine for LoroEngine {
     fn device(&self) -> DeviceId {
         self.inner.device
+    }
+
+    async fn relocate_subtree(
+        &self,
+        request: BlockRelocationRequest,
+    ) -> SyncResult<BlockRelocationOutcome> {
+        self.relocate_subtree_in_memory(request).await
     }
 
     /// Local-side mutation. Stamps a fresh HLC + content hash, then
