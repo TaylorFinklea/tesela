@@ -592,7 +592,7 @@ test("manifest exposes Move block subtree on the free a m chord", () => {
   assert.ok(entry);
   assert.equal(entry.label, "Move block subtree");
   assert.deepEqual(entry.chord, ["a", "m"]);
-  assert.ok(entry.surfaces.includes("editor"));
+  assert.deepEqual(entry.surfaces, ["leader", "palette"]);
 });
 ```
 
@@ -612,11 +612,14 @@ Expected: FAIL because the API method and manifest entry are absent.
   category: "tile",
   chord: ["a", "m"],
   surface: "editor",
+  surfaces: new Set(["palette", "leader"]),
   keywords: ["move", "block", "subtree", "drag", "daily"],
   when: (ctx) => !!ctx.focusedBlock,
   run: () => window.dispatchEvent(new CustomEvent("tesela:start-block-move")),
 }
 ```
+
+Keep `surface: "editor"` as the runtime focused-editor context gate, and add `surfaces?: RegistryCommand["surfaces"]` to `BuiltinCommand` so the explicit palette/leader visibility set is typed. `editor` is not a manifest surface; the registry's valid surfaces are slash, colon, leader, and palette.
 
 Add `api.relocateBlockSubtree(req: BlockMoveRequest, signal?: AbortSignal)` returning `Promise<{ move_id: string; notes: Note[] }>` and posting to `/blocks/move-subtree`. Call `recordLocalSave` for source/destination before POST and each returned id after. Add the command to the canonical registry, then generate the manifest; never hand-edit JSON.
 
