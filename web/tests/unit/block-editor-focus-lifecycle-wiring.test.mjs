@@ -30,7 +30,8 @@ test("CodeMirror focus lifecycle captures one mounted view and defers Svelte mut
   assert.match(lifecycle, /onFocus,[\s\S]*onBlur,[\s\S]*onSetProperty,[\s\S]*detectConfig/);
   assert.match(lifecycle, /slashMenuOpen: showSlashMenu/);
   assert.match(lifecycle, /autocompleteOpen: showAutocomplete/);
-  assert.match(lifecycle, /queue: queueMicrotask/);
+  assert.match(lifecycle, /queue: \(task\) => queueMicrotask\(task\)/);
+  assert.doesNotMatch(lifecycle, /queue: queueMicrotask/);
   assert.match(
     lifecycle,
     /isCurrent: \(target\) => view === target\.view && target\.view\.dom\.isConnected/,

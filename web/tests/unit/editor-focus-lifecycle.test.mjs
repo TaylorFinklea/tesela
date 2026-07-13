@@ -73,6 +73,33 @@ test("focus and blur callbacks never run in the current stack", async () => {
   assert.deepEqual(h.events, ["focus:a", "clear:a", "blur:a"]);
 });
 
+test("a queue adapter preserves a receiver-sensitive scheduler", async () => {
+  const createDeferredEditorLifecycle = await loadFactory();
+  const editor = target("a");
+  editor.focused = true;
+  const events = [];
+  const receiver = {
+    tasks: [],
+    queueMicrotask(task) {
+      assert.equal(this, receiver);
+      this.tasks.push(task);
+    },
+  };
+  const lifecycle = createDeferredEditorLifecycle({
+    queue: (task) => receiver.queueMicrotask(task),
+    isCurrent: (candidate) => candidate === editor && candidate.connected,
+    isFocused: (candidate) => candidate.focused,
+    clearOwnership: () => {},
+    applyFocus: (candidate) => events.push(`focus:${candidate.name}`),
+    applyBlur: () => {},
+  });
+
+  lifecycle.focus(editor);
+  assert.deepEqual(events, []);
+  receiver.tasks.shift()();
+  assert.deepEqual(events, ["focus:a"]);
+});
+
 test("a queued blur is superseded by refocus before the microtask runs", async () => {
   const editor = target("a");
   const h = await harness(editor);

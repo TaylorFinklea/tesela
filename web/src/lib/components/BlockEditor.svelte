@@ -1881,7 +1881,7 @@
       autocompleteOpen: showAutocomplete,
     });
     const focusLifecycle = createDeferredEditorLifecycle<EditorFocusLifecycleTarget>({
-      queue: queueMicrotask,
+      queue: (task) => queueMicrotask(task),
       isCurrent: (target) => view === target.view && target.view.dom.isConnected,
       isFocused: (target) => target.view.hasFocus,
       clearOwnership: (target) => {
