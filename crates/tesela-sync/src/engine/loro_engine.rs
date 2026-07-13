@@ -263,6 +263,20 @@ struct Inner {
     /// unique ownership after both outer locks are held and keep this guard
     /// through their mutation plus owner-index update.
     ownership_transition: tokio::sync::Mutex<()>,
+    /// Completion receipts ordered by durable HLC timestamp. The files under
+    /// `_relocations/` remain authoritative; this resident projection makes
+    /// the 4,096-receipt pruning boundary O(log n) per completed move.
+    relocation_receipts: tokio::sync::Mutex<relocation::ReceiptIndex>,
+    /// Permanent exact move-id → request-hash tombstones. Rich receipts are
+    /// pruned, but these compact entries preserve replay/conflict semantics
+    /// for every completed relocation across process restarts.
+    relocation_tombstones: tokio::sync::Mutex<relocation::RelocationTombstones>,
+    /// Runtime reservations rebuilt from durable intents at boot. A failed
+    /// relocation keeps its source/destination notes reserved until recovery,
+    /// preventing a second move from invalidating the captured snapshot.
+    active_relocations: tokio::sync::Mutex<relocation::ActiveRelocations>,
+    #[cfg(test)]
+    relocation_failpoint: tokio::sync::Mutex<Option<relocation::RelocationFailpoint>>,
     #[cfg(test)]
     ownership_mutation_pause:
         RwLock<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
@@ -387,6 +401,11 @@ impl LoroEngine {
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(HashMap::new()),
@@ -416,6 +435,11 @@ impl LoroEngine {
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(HashMap::new()),
@@ -516,6 +540,11 @@ impl LoroEngine {
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(block_index),
                 ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(broadcast_cursor),
@@ -548,6 +577,7 @@ impl LoroEngine {
             }
         }
         engine.set_doc_peer(&engine.inner.index);
+        engine.recover_persisted_relocations().await?;
         Ok(engine)
     }
 

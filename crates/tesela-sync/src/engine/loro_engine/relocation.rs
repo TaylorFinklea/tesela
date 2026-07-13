@@ -1,13 +1,160 @@
 use super::*;
+use crate::hlc::HlcTimestamp;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-#[derive(Clone)]
+const RELOCATION_DIR: &str = "_relocations";
+const RELOCATION_TOMBSTONES_FILE: &str = "_relocation_tombstones.bin";
+const RECEIPT_LIMIT: usize = 4_096;
+const RELOCATION_MOVE_ID_META: &str = "relocation_move_id";
+const RELOCATION_REQUEST_HASH_META: &str = "relocation_request_hash";
+
+pub(super) type ReceiptIndex = BTreeMap<(HlcTimestamp, [u8; 16]), ()>;
+pub(super) type RelocationTombstones = BTreeMap<[u8; 16], [u8; 32]>;
+pub(super) type ActiveRelocations = BTreeMap<[u8; 16], RelocationReservation>;
+
+#[derive(Clone, Debug)]
+pub(super) struct RelocationReservation {
+    source_note_id: [u8; 16],
+    destination_note_id: [u8; 16],
+    block_bids: Vec<[u8; 16]>,
+}
+
+impl RelocationReservation {
+    fn from_intent(intent: &RelocationIntent) -> Self {
+        Self {
+            source_note_id: intent.request.source_note_id,
+            destination_note_id: intent.request.destination_note_id,
+            block_bids: intent.blocks.iter().map(|block| block.bid).collect(),
+        }
+    }
+
+    fn overlaps(&self, request: &BlockRelocationRequest) -> bool {
+        let notes = [request.source_note_id, request.destination_note_id];
+        notes.contains(&self.source_note_id)
+            || notes.contains(&self.destination_note_id)
+            || self.block_bids.contains(&request.root_bid)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RelocationFailpoint {
+    AfterPrepared,
+    AfterDestinationDurable,
+    AfterSourceDurable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+enum RelocationPhase {
+    Prepared,
+    DestinationDurable,
+    SourceDurable,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum PersistedPropertyValue {
+    Scalar(PropScalar),
+    Text(String),
+    List(Vec<PropScalar>),
+}
+
+impl From<ResolvedValue> for PersistedPropertyValue {
+    fn from(value: ResolvedValue) -> Self {
+        match value {
+            ResolvedValue::Scalar(value) => Self::Scalar(value),
+            ResolvedValue::Text(value) => Self::Text(value),
+            ResolvedValue::List(values) => Self::List(values),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedRelocatedNoteVersion {
+    note_id: [u8; 16],
+    slug: String,
+    pre_version: Vec<u8>,
+    changed: bool,
+    created: bool,
+}
+
+impl From<&RelocatedNoteVersion> for PersistedRelocatedNoteVersion {
+    fn from(value: &RelocatedNoteVersion) -> Self {
+        Self {
+            note_id: value.note_id,
+            slug: value.slug.clone(),
+            pre_version: value.pre_version.clone(),
+            changed: value.changed,
+            created: value.created,
+        }
+    }
+}
+
+impl From<&PersistedRelocatedNoteVersion> for RelocatedNoteVersion {
+    fn from(value: &PersistedRelocatedNoteVersion) -> Self {
+        Self {
+            note_id: value.note_id,
+            slug: value.slug.clone(),
+            pre_version: value.pre_version.clone(),
+            changed: value.changed,
+            created: value.created,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+enum PersistedRelocationStatus {
+    Applied,
+    NoOp,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DestinationRootProof {
+    move_id: [u8; 16],
+    request_hash: [u8; 32],
+    root_bid: [u8; 16],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RelocationIntent {
+    request_hash: [u8; 32],
+    request: BlockRelocationRequest,
+    blocks: Vec<RelocatedBlockSnapshot>,
+    destination_order_without_source: Vec<TreeID>,
+    insertion_index: usize,
+    new_indents: Vec<u16>,
+    new_parents: Vec<Option<[u8; 16]>>,
+    source_pre_version: Vec<u8>,
+    destination_pre_version: Vec<u8>,
+    destination_created: bool,
+    no_op: bool,
+    phase: RelocationPhase,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RelocationReceipt {
+    move_id: [u8; 16],
+    request_hash: [u8; 32],
+    status: PersistedRelocationStatus,
+    notes: Vec<PersistedRelocatedNoteVersion>,
+    destination_root_proof: Option<DestinationRootProof>,
+    completed_at: HlcTimestamp,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum RelocationRecord {
+    Intent(RelocationIntent),
+    Receipt(RelocationReceipt),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RelocatedBlockSnapshot {
     source_node: TreeID,
     bid: [u8; 16],
     text: String,
     indent: u16,
     parent: Option<[u8; 16]>,
-    props: Vec<(String, ResolvedValue)>,
+    props: Vec<(String, PersistedPropertyValue)>,
 }
 
 struct PreparedRelocation {
@@ -27,6 +174,92 @@ struct PreparedRelocation {
 
 fn rejected(message: impl Into<String>) -> SyncError {
     SyncError::RelocationRejected(message.into())
+}
+
+fn request_hash(request: &BlockRelocationRequest) -> SyncResult<[u8; 32]> {
+    let bytes = postcard::to_allocvec(request)
+        .map_err(|error| SyncError::Storage(format!("encode relocation request: {error}")))?;
+    Ok(*blake3::hash(&bytes).as_bytes())
+}
+
+fn decode_fixed_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
+    let bytes = hex::decode(value).ok()?;
+    bytes.try_into().ok()
+}
+
+fn recovery_required(move_id: [u8; 16], error: impl std::fmt::Display) -> SyncError {
+    SyncError::RelocationRecoveryRequired {
+        move_id,
+        message: error.to_string(),
+    }
+}
+
+fn preserve_recovery_error(move_id: [u8; 16], error: SyncError) -> SyncError {
+    match error {
+        SyncError::RelocationRecoveryRequired { .. } => error,
+        other => recovery_required(move_id, other),
+    }
+}
+
+impl RelocationIntent {
+    fn from_prepared(prepared: &PreparedRelocation, request_hash: [u8; 32]) -> Self {
+        Self {
+            request_hash,
+            request: prepared.request.clone(),
+            blocks: prepared.blocks.clone(),
+            destination_order_without_source: prepared.destination_order_without_source.clone(),
+            insertion_index: prepared.insertion_index,
+            new_indents: prepared.new_indents.clone(),
+            new_parents: prepared.new_parents.clone(),
+            source_pre_version: prepared.source_pre_version.clone(),
+            destination_pre_version: prepared.destination_pre_version.clone(),
+            destination_created: prepared.destination_created,
+            no_op: prepared.no_op,
+            phase: RelocationPhase::Prepared,
+        }
+    }
+
+    fn outcome(&self, replayed: bool) -> BlockRelocationOutcome {
+        let status = if replayed {
+            BlockRelocationStatus::Replayed
+        } else if self.no_op {
+            BlockRelocationStatus::NoOp
+        } else {
+            BlockRelocationStatus::Applied
+        };
+        let same_note = self.request.source_note_id == self.request.destination_note_id;
+        let mut notes = vec![RelocatedNoteVersion {
+            note_id: self.request.source_note_id,
+            slug: self.request.source_slug.clone(),
+            pre_version: self.source_pre_version.clone(),
+            changed: !self.no_op,
+            created: false,
+        }];
+        if !same_note {
+            notes.push(RelocatedNoteVersion {
+                note_id: self.request.destination_note_id,
+                slug: self.request.destination_slug.clone(),
+                pre_version: self.destination_pre_version.clone(),
+                changed: true,
+                created: self.destination_created,
+            });
+        }
+        BlockRelocationOutcome {
+            move_id: self.request.move_id,
+            status,
+            notes,
+        }
+    }
+}
+
+impl RelocationReceipt {
+    fn replay_outcome(&self) -> BlockRelocationOutcome {
+        BlockRelocationOutcome {
+            move_id: self.move_id,
+            status: BlockRelocationStatus::Replayed,
+            notes: self.notes.iter().map(Into::into).collect(),
+        }
+    }
 }
 
 fn live_root_nodes(tree: &LoroTree) -> Vec<TreeID> {
@@ -100,7 +333,12 @@ fn capture_subtree(
             None => None,
         };
         let props = prop_containers::read_node_prop_containers(&meta)
-            .map(|(props, prop_keys)| prop_containers::read_props_typed(&props, &prop_keys))
+            .map(|(props, prop_keys)| {
+                prop_containers::read_props_typed(&props, &prop_keys)
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into()))
+                    .collect()
+            })
             .unwrap_or_default();
         blocks.push(RelocatedBlockSnapshot {
             source_node: *node,
@@ -217,13 +455,13 @@ fn author_snapshot_block(
     let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
     for (key, value) in &block.props {
         match value {
-            ResolvedValue::Scalar(value) => {
+            PersistedPropertyValue::Scalar(value) => {
                 prop_containers::prop_set_scalar(&props, &prop_keys, key, value)?;
             }
-            ResolvedValue::Text(value) => {
+            PersistedPropertyValue::Text(value) => {
                 prop_containers::prop_set_text(&props, &prop_keys, key, value)?;
             }
-            ResolvedValue::List(values) => {
+            PersistedPropertyValue::List(values) => {
                 let _ = prop_containers::prop_ensure_list(&props, &prop_keys, key)?;
                 for value in values {
                     prop_containers::prop_add_to_list(&props, &prop_keys, key, value)?;
@@ -235,6 +473,487 @@ fn author_snapshot_block(
 }
 
 impl LoroEngine {
+    fn relocation_tombstones_path(&self) -> Option<PathBuf> {
+        Some(
+            self.inner
+                .snapshot_dir
+                .as_ref()?
+                .join(RELOCATION_TOMBSTONES_FILE),
+        )
+    }
+
+    fn relocation_record_path(&self, move_id: [u8; 16]) -> Option<PathBuf> {
+        Some(
+            self.inner
+                .snapshot_dir
+                .as_ref()?
+                .join(RELOCATION_DIR)
+                .join(format!("{}.bin", hex_id(&move_id))),
+        )
+    }
+
+    async fn persist_relocation_record(
+        &self,
+        move_id: [u8; 16],
+        record: &RelocationRecord,
+    ) -> SyncResult<()> {
+        let Some(path) = self.relocation_record_path(move_id) else {
+            return Ok(());
+        };
+        let parent = path
+            .parent()
+            .expect("relocation record path always has a parent");
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            SyncError::Storage(format!(
+                "create relocation directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+        let bytes = postcard::to_allocvec(record)
+            .map_err(|error| SyncError::Storage(format!("encode relocation record: {error}")))?;
+        let tmp = unique_tmp(&path);
+        tokio::fs::write(&tmp, bytes).await.map_err(|error| {
+            SyncError::Storage(format!(
+                "write relocation record {}: {error}",
+                tmp.display()
+            ))
+        })?;
+        if let Err(error) = tokio::fs::rename(&tmp, &path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(SyncError::Storage(format!(
+                "publish relocation record {}: {error}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    async fn read_relocation_record(
+        &self,
+        move_id: [u8; 16],
+    ) -> SyncResult<Option<RelocationRecord>> {
+        let Some(path) = self.relocation_record_path(move_id) else {
+            return Ok(None);
+        };
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(SyncError::Storage(format!(
+                    "read relocation record {}: {error}",
+                    path.display()
+                )))
+            }
+        };
+        postcard::from_bytes(&bytes).map(Some).map_err(|error| {
+            recovery_required(move_id, format!("decode relocation record: {error}"))
+        })
+    }
+
+    async fn scan_relocation_records(&self) -> SyncResult<Vec<RelocationRecord>> {
+        let Some(snapshot_dir) = self.inner.snapshot_dir.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let dir = snapshot_dir.join(RELOCATION_DIR);
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(SyncError::Storage(format!(
+                    "read relocation directory {}: {error}",
+                    dir.display()
+                )))
+            }
+        };
+        let mut records = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(|error| {
+            SyncError::Storage(format!(
+                "scan relocation directory {}: {error}",
+                dir.display()
+            ))
+        })? {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("bin") {
+                continue;
+            }
+            let move_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .and_then(decode_fixed_hex::<16>)
+                .unwrap_or([0; 16]);
+            let bytes = tokio::fs::read(&path).await.map_err(|error| {
+                recovery_required(
+                    move_id,
+                    format!("read relocation record {}: {error}", path.display()),
+                )
+            })?;
+            let record: RelocationRecord = postcard::from_bytes(&bytes).map_err(|error| {
+                recovery_required(
+                    move_id,
+                    format!("decode relocation record {}: {error}", path.display()),
+                )
+            })?;
+            let recorded_move_id = match &record {
+                RelocationRecord::Intent(intent) => intent.request.move_id,
+                RelocationRecord::Receipt(receipt) => receipt.move_id,
+            };
+            if recorded_move_id != move_id {
+                return Err(recovery_required(
+                    move_id,
+                    "relocation filename does not match record move id",
+                ));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    async fn load_relocation_tombstones(&self) -> SyncResult<RelocationTombstones> {
+        let Some(path) = self.relocation_tombstones_path() else {
+            return Ok(Default::default());
+        };
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default())
+            }
+            Err(error) => {
+                return Err(SyncError::Storage(format!(
+                    "read relocation tombstones {}: {error}",
+                    path.display()
+                )))
+            }
+        };
+        postcard::from_bytes(&bytes).map_err(|error| {
+            SyncError::Storage(format!(
+                "decode relocation tombstones {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
+    async fn publish_relocation_tombstones(
+        &self,
+        tombstones: &RelocationTombstones,
+    ) -> SyncResult<()> {
+        let Some(path) = self.relocation_tombstones_path() else {
+            return Ok(());
+        };
+        let bytes = postcard::to_allocvec(tombstones).map_err(|error| {
+            SyncError::Storage(format!("encode relocation tombstones: {error}"))
+        })?;
+        let tmp = unique_tmp(&path);
+        tokio::fs::write(&tmp, bytes).await.map_err(|error| {
+            SyncError::Storage(format!(
+                "write relocation tombstones {}: {error}",
+                tmp.display()
+            ))
+        })?;
+        if let Err(error) = tokio::fs::rename(&tmp, &path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(SyncError::Storage(format!(
+                "publish relocation tombstones {}: {error}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    async fn persist_relocation_tombstone(
+        &self,
+        move_id: [u8; 16],
+        hash: [u8; 32],
+    ) -> SyncResult<()> {
+        let mut tombstones = self.inner.relocation_tombstones.lock().await;
+        if let Some(existing) = tombstones.get(&move_id) {
+            return if *existing == hash {
+                Ok(())
+            } else {
+                Err(SyncError::RelocationConflict(
+                    "move id was already completed with different arguments".into(),
+                ))
+            };
+        }
+        let mut updated = tombstones.clone();
+        updated.insert(move_id, hash);
+        self.publish_relocation_tombstones(&updated).await?;
+        *tombstones = updated;
+        Ok(())
+    }
+
+    async fn persist_receipt(&self, receipt: RelocationReceipt) -> SyncResult<()> {
+        self.persist_relocation_record(
+            receipt.move_id,
+            &RelocationRecord::Receipt(receipt.clone()),
+        )
+        .await?;
+        self.inner
+            .active_relocations
+            .lock()
+            .await
+            .remove(&receipt.move_id);
+        if self.inner.snapshot_dir.is_none() {
+            return Ok(());
+        }
+        let mut index = self.inner.relocation_receipts.lock().await;
+        index.insert((receipt.completed_at, receipt.move_id), ());
+        let mut pruned = Vec::new();
+        while index.len() > RECEIPT_LIMIT {
+            let Some(((_, move_id), _)) = index.pop_first() else {
+                break;
+            };
+            pruned.push(move_id);
+        }
+        drop(index);
+        for move_id in pruned {
+            let Some(path) = self.relocation_record_path(move_id) else {
+                continue;
+            };
+            if let Err(error) = tokio::fs::remove_file(&path).await {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(SyncError::Storage(format!(
+                        "prune relocation receipt {}: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn persist_prepared_intent(&self, intent: &RelocationIntent) -> SyncResult<()> {
+        let move_id = intent.request.move_id;
+        let mut active = self.inner.active_relocations.lock().await;
+        active.insert(move_id, RelocationReservation::from_intent(intent));
+        if let Err(error) = self
+            .persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
+            .await
+        {
+            active.remove(&move_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn overlapping_pending_move(&self, request: &BlockRelocationRequest) -> Option<[u8; 16]> {
+        self.inner
+            .active_relocations
+            .lock()
+            .await
+            .iter()
+            .find_map(|(move_id, reservation)| {
+                (*move_id != request.move_id && reservation.overlaps(request)).then_some(*move_id)
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn inject_relocation_failure_once(&self, failpoint: RelocationFailpoint) {
+        *self.inner.relocation_failpoint.lock().await = Some(failpoint);
+    }
+
+    #[cfg(test)]
+    async fn fail_relocation_at(
+        &self,
+        expected: RelocationFailpoint,
+        move_id: [u8; 16],
+    ) -> SyncResult<()> {
+        let mut failpoint = self.inner.relocation_failpoint.lock().await;
+        if *failpoint == Some(expected) {
+            *failpoint = None;
+            return Err(recovery_required(
+                move_id,
+                format!("injected failure at {expected:?}"),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn checkpoint_after_prepared(&self, _move_id: [u8; 16]) -> SyncResult<()> {
+        #[cfg(test)]
+        self.fail_relocation_at(RelocationFailpoint::AfterPrepared, _move_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn checkpoint_after_destination_durable(&self, _move_id: [u8; 16]) -> SyncResult<()> {
+        #[cfg(test)]
+        self.fail_relocation_at(RelocationFailpoint::AfterDestinationDurable, _move_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn checkpoint_after_source_durable(&self, _move_id: [u8; 16]) -> SyncResult<()> {
+        #[cfg(test)]
+        self.fail_relocation_at(RelocationFailpoint::AfterSourceDurable, _move_id)
+            .await?;
+        Ok(())
+    }
+
+    fn read_destination_proof_at(tree: &LoroTree, node: TreeID) -> Option<DestinationRootProof> {
+        Some(DestinationRootProof {
+            move_id: decode_fixed_hex(&read_meta_str(tree, node, RELOCATION_MOVE_ID_META)?)?,
+            request_hash: decode_fixed_hex(&read_meta_str(
+                tree,
+                node,
+                RELOCATION_REQUEST_HASH_META,
+            )?)?,
+            root_bid: node_bid(tree, node)?,
+        })
+    }
+
+    fn write_destination_proof(
+        tree: &LoroTree,
+        node: TreeID,
+        move_id: [u8; 16],
+        request_hash: [u8; 32],
+    ) -> SyncResult<()> {
+        let meta = tree.get_meta(node).map_err(|error| {
+            SyncError::Storage(format!("loro relocation proof metadata: {error}"))
+        })?;
+        meta.insert(RELOCATION_MOVE_ID_META, hex_id(&move_id))
+            .map_err(|error| SyncError::Storage(format!("loro relocation move proof: {error}")))?;
+        meta.insert(RELOCATION_REQUEST_HASH_META, hex::encode(request_hash))
+            .map_err(|error| SyncError::Storage(format!("loro relocation hash proof: {error}")))?;
+        Ok(())
+    }
+
+    async fn completed_proof_for_move(&self, move_id: [u8; 16]) -> Option<DestinationRootProof> {
+        let docs = self.inner.docs.read().await;
+        for doc in docs.values() {
+            let tree = doc.get_tree("blocks");
+            for node in live_root_nodes(&tree) {
+                let Some(proof) = Self::read_destination_proof_at(&tree, node) else {
+                    continue;
+                };
+                if proof.move_id == move_id {
+                    return Some(proof);
+                }
+            }
+        }
+        None
+    }
+
+    async fn metadata_replay_outcome(
+        &self,
+        request: &BlockRelocationRequest,
+    ) -> BlockRelocationOutcome {
+        let same_note = request.source_note_id == request.destination_note_id;
+        let mut notes = vec![RelocatedNoteVersion {
+            note_id: request.source_note_id,
+            slug: request.source_slug.clone(),
+            pre_version: self
+                .doc_version(request.source_note_id)
+                .await
+                .unwrap_or_default(),
+            changed: false,
+            created: false,
+        }];
+        if !same_note {
+            notes.push(RelocatedNoteVersion {
+                note_id: request.destination_note_id,
+                slug: request.destination_slug.clone(),
+                pre_version: self
+                    .doc_version(request.destination_note_id)
+                    .await
+                    .unwrap_or_default(),
+                changed: false,
+                created: false,
+            });
+        }
+        BlockRelocationOutcome {
+            move_id: request.move_id,
+            status: BlockRelocationStatus::Replayed,
+            notes,
+        }
+    }
+
+    fn destination_snapshot_complete(
+        &self,
+        prepared: &PreparedRelocation,
+        request_hash: [u8; 32],
+    ) -> SyncResult<bool> {
+        let same_note = prepared.request.source_note_id == prepared.request.destination_note_id;
+        let Some(doc) = prepared.destination_doc.as_ref() else {
+            return Ok(false);
+        };
+        let tree = doc.get_tree("blocks");
+        let Some(root_node) = find_node_by_block_id(&tree, &hex_id(&prepared.request.root_bid))
+        else {
+            return Ok(false);
+        };
+        let Some(proof) = Self::read_destination_proof_at(&tree, root_node) else {
+            return Ok(false);
+        };
+        if proof.move_id != prepared.request.move_id || proof.request_hash != request_hash {
+            return Err(SyncError::RelocationConflict(
+                "destination root carries different relocation metadata".into(),
+            ));
+        }
+        let order = live_root_nodes(&tree);
+        let actual_start = order
+            .iter()
+            .position(|node| *node == root_node)
+            .ok_or_else(|| {
+                recovery_required(
+                    prepared.request.move_id,
+                    "destination proof root is not in live order",
+                )
+            })?;
+        if actual_start + prepared.blocks.len() > order.len() {
+            return Err(recovery_required(
+                prepared.request.move_id,
+                "destination proof exists but subtree is incomplete",
+            ));
+        }
+        for (offset, block) in prepared.blocks.iter().enumerate() {
+            let node = order[actual_start + offset];
+            if node_bid(&tree, node) != Some(block.bid)
+                || read_block_text(&tree, node).as_deref() != Some(block.text.as_str())
+                || read_indent_level(&tree, node) != Some(prepared.new_indents[offset])
+                || read_meta_str(&tree, node, "parent")
+                    .and_then(|value| parse_note_id_from_hex(&value))
+                    != prepared.new_parents[offset]
+            {
+                return Err(recovery_required(
+                    prepared.request.move_id,
+                    "destination proof exists but subtree semantics differ",
+                ));
+            }
+            let meta = tree.get_meta(node).map_err(|error| {
+                recovery_required(
+                    prepared.request.move_id,
+                    format!("read destination block metadata: {error}"),
+                )
+            })?;
+            let props: Vec<(String, PersistedPropertyValue)> =
+                prop_containers::read_node_prop_containers(&meta)
+                    .map(|(props, prop_keys)| {
+                        prop_containers::read_props_typed(&props, &prop_keys)
+                            .into_iter()
+                            .map(|(key, value)| (key, value.into()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            if props != block.props {
+                return Err(recovery_required(
+                    prepared.request.move_id,
+                    "destination proof exists but typed properties differ",
+                ));
+            }
+        }
+        if same_note && node_bid(&tree, root_node) != Some(prepared.request.root_bid) {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn persist_note_boundary(&self, note_id: [u8; 16]) -> SyncResult<()> {
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot_checked(dir, note_id).await?;
+        }
+        self.materialize_note_checked(note_id).await
+    }
+
     async fn relocation_owner(&self, bid: &[u8; 16]) -> SyncResult<Option<[u8; 16]>> {
         self.unique_note_for_block(bid)
             .await
@@ -441,7 +1160,11 @@ impl LoroEngine {
         Ok(doc)
     }
 
-    fn apply_same_note_relocation(&self, prepared: &PreparedRelocation) -> SyncResult<()> {
+    fn apply_same_note_relocation(
+        &self,
+        prepared: &PreparedRelocation,
+        request_hash: [u8; 32],
+    ) -> SyncResult<()> {
         let tree = prepared.source_doc.get_tree("blocks");
         if prepared.insertion_index < prepared.destination_order_without_source.len() {
             let anchor = prepared.destination_order_without_source[prepared.insertion_index];
@@ -468,13 +1191,20 @@ impl LoroEngine {
                 prepared.new_parents[index],
             )?;
         }
+        Self::write_destination_proof(
+            &tree,
+            prepared.blocks[0].source_node,
+            prepared.request.move_id,
+            request_hash,
+        )?;
         prepared.source_doc.commit();
         Ok(())
     }
 
-    async fn apply_cross_note_relocation(
+    async fn apply_cross_note_destination(
         &self,
         prepared: &PreparedRelocation,
+        request_hash: [u8; 32],
     ) -> SyncResult<LoroDoc> {
         let destination_doc = match prepared.destination_doc.as_ref() {
             Some(doc) => doc.clone(),
@@ -495,6 +1225,17 @@ impl LoroEngine {
                 prepared.new_parents[offset],
             )?;
         }
+        let destination_root =
+            find_node_by_block_id(&destination_tree, &hex_id(&prepared.request.root_bid))
+                .ok_or_else(|| {
+                    SyncError::Storage("relocation destination root was not authored".into())
+                })?;
+        Self::write_destination_proof(
+            &destination_tree,
+            destination_root,
+            prepared.request.move_id,
+            request_hash,
+        )?;
         destination_doc.commit();
         if prepared.destination_created {
             self.inner.docs.write().await.insert(
@@ -502,87 +1243,353 @@ impl LoroEngine {
                 destination_doc.clone(),
             );
         }
+        Ok(destination_doc)
+    }
 
+    fn delete_captured_source(&self, prepared: &PreparedRelocation) -> SyncResult<()> {
         let source_tree = prepared.source_doc.get_tree("blocks");
         for block in &prepared.blocks {
+            if matches!(source_tree.is_node_deleted(&block.source_node), Ok(true)) {
+                continue;
+            }
             source_tree.delete(block.source_node).map_err(|error| {
                 SyncError::Storage(format!("loro relocation source delete: {error}"))
             })?;
         }
         prepared.source_doc.commit();
-        Ok(destination_doc)
+        Ok(())
     }
 
-    async fn apply_prepared_relocation_under_locks(
+    async fn prepared_from_intent(
         &self,
-        prepared: PreparedRelocation,
+        intent: &RelocationIntent,
+    ) -> SyncResult<PreparedRelocation> {
+        let source_doc = self
+            .lazy_load_doc(intent.request.source_note_id)
+            .await
+            .ok_or_else(|| {
+                recovery_required(intent.request.move_id, "source note snapshot is missing")
+            })?;
+        let same_note = intent.request.source_note_id == intent.request.destination_note_id;
+        let destination_doc = if same_note {
+            Some(source_doc.clone())
+        } else {
+            self.lazy_load_doc(intent.request.destination_note_id).await
+        };
+        if intent.phase != RelocationPhase::Prepared && destination_doc.is_none() {
+            return Err(recovery_required(
+                intent.request.move_id,
+                "durable destination snapshot is missing",
+            ));
+        }
+        Ok(PreparedRelocation {
+            request: intent.request.clone(),
+            source_doc,
+            destination_doc,
+            destination_order_without_source: intent.destination_order_without_source.clone(),
+            blocks: intent.blocks.clone(),
+            insertion_index: intent.insertion_index,
+            new_indents: intent.new_indents.clone(),
+            new_parents: intent.new_parents.clone(),
+            source_pre_version: intent.source_pre_version.clone(),
+            destination_pre_version: intent.destination_pre_version.clone(),
+            destination_created: intent.destination_created,
+            no_op: intent.no_op,
+        })
+    }
+
+    async fn complete_intent_under_locks(
+        &self,
+        mut intent: RelocationIntent,
+        replayed: bool,
     ) -> SyncResult<BlockRelocationOutcome> {
-        if prepared.no_op {
-            return Ok(BlockRelocationOutcome {
-                move_id: prepared.request.move_id,
-                status: BlockRelocationStatus::NoOp,
-                notes: vec![RelocatedNoteVersion {
-                    note_id: prepared.request.source_note_id,
-                    slug: prepared.request.source_slug,
-                    pre_version: prepared.source_pre_version,
-                    changed: false,
-                    created: false,
-                }],
-            });
+        let move_id = intent.request.move_id;
+        if intent.no_op {
+            let outcome = intent.outcome(replayed);
+            let receipt = RelocationReceipt {
+                move_id,
+                request_hash: intent.request_hash,
+                status: PersistedRelocationStatus::NoOp,
+                notes: outcome
+                    .notes
+                    .iter()
+                    .map(PersistedRelocatedNoteVersion::from)
+                    .collect(),
+                destination_root_proof: None,
+                completed_at: self.inner.hlc.now(),
+            };
+            self.persist_relocation_tombstone(move_id, intent.request_hash)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            self.persist_receipt(receipt)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            return Ok(outcome);
         }
 
-        let same_note = prepared.request.source_note_id == prepared.request.destination_note_id;
-        if same_note {
-            self.apply_same_note_relocation(&prepared)?;
-            self.refresh_note_derived_under_ownership(
-                prepared.request.source_note_id,
-                &prepared.source_doc,
-            )
-            .await;
-            return Ok(BlockRelocationOutcome {
-                move_id: prepared.request.move_id,
-                status: BlockRelocationStatus::Applied,
-                notes: vec![RelocatedNoteVersion {
-                    note_id: prepared.request.source_note_id,
-                    slug: prepared.request.source_slug,
-                    pre_version: prepared.source_pre_version,
-                    changed: true,
-                    created: false,
-                }],
-            });
+        let mut prepared = self.prepared_from_intent(&intent).await?;
+        let same_note = intent.request.source_note_id == intent.request.destination_note_id;
+        if intent.phase == RelocationPhase::Prepared {
+            if !self.destination_snapshot_complete(&prepared, intent.request_hash)? {
+                if same_note {
+                    self.apply_same_note_relocation(&prepared, intent.request_hash)
+                        .map_err(|error| preserve_recovery_error(move_id, error))?;
+                    prepared.destination_doc = Some(prepared.source_doc.clone());
+                } else {
+                    let destination_doc = self
+                        .apply_cross_note_destination(&prepared, intent.request_hash)
+                        .await
+                        .map_err(|error| preserve_recovery_error(move_id, error))?;
+                    prepared.destination_doc = Some(destination_doc);
+                }
+            }
+            self.persist_note_boundary(intent.request.destination_note_id)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            intent.phase = RelocationPhase::DestinationDurable;
+            self.persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            self.checkpoint_after_destination_durable(move_id).await?;
         }
 
-        let destination_doc = self.apply_cross_note_relocation(&prepared).await?;
+        if intent.phase == RelocationPhase::DestinationDurable {
+            if !same_note {
+                self.delete_captured_source(&prepared)
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+                self.persist_note_boundary(intent.request.source_note_id)
+                    .await
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+            }
+            intent.phase = RelocationPhase::SourceDurable;
+            self.persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            self.checkpoint_after_source_durable(move_id).await?;
+        }
+
         self.refresh_note_derived_under_ownership(
-            prepared.request.source_note_id,
+            intent.request.source_note_id,
             &prepared.source_doc,
         )
         .await;
-        self.refresh_note_derived_under_ownership(
-            prepared.request.destination_note_id,
-            &destination_doc,
-        )
-        .await;
-        Ok(BlockRelocationOutcome {
-            move_id: prepared.request.move_id,
-            status: BlockRelocationStatus::Applied,
-            notes: vec![
-                RelocatedNoteVersion {
-                    note_id: prepared.request.source_note_id,
-                    slug: prepared.request.source_slug,
-                    pre_version: prepared.source_pre_version,
-                    changed: true,
-                    created: false,
-                },
-                RelocatedNoteVersion {
-                    note_id: prepared.request.destination_note_id,
-                    slug: prepared.request.destination_slug,
-                    pre_version: prepared.destination_pre_version,
-                    changed: true,
-                    created: prepared.destination_created,
-                },
-            ],
-        })
+        let destination_doc = if same_note {
+            prepared.source_doc.clone()
+        } else {
+            prepared.destination_doc.clone().ok_or_else(|| {
+                recovery_required(move_id, "destination doc vanished during completion")
+            })?
+        };
+        if !same_note {
+            self.refresh_note_derived_under_ownership(
+                intent.request.destination_note_id,
+                &destination_doc,
+            )
+            .await;
+        }
+        let outcome = intent.outcome(replayed);
+        let receipt = RelocationReceipt {
+            move_id,
+            request_hash: intent.request_hash,
+            status: PersistedRelocationStatus::Applied,
+            notes: outcome
+                .notes
+                .iter()
+                .map(PersistedRelocatedNoteVersion::from)
+                .collect(),
+            destination_root_proof: Some(DestinationRootProof {
+                move_id,
+                request_hash: intent.request_hash,
+                root_bid: intent.request.root_bid,
+            }),
+            completed_at: self.inner.hlc.now(),
+        };
+        self.persist_relocation_tombstone(move_id, intent.request_hash)
+            .await
+            .map_err(|error| preserve_recovery_error(move_id, error))?;
+        self.persist_receipt(receipt)
+            .await
+            .map_err(|error| preserve_recovery_error(move_id, error))?;
+        Ok(outcome)
+    }
+
+    async fn relocate_under_locks(
+        &self,
+        request: BlockRelocationRequest,
+    ) -> SyncResult<BlockRelocationOutcome> {
+        let hash = request_hash(&request)?;
+        if let Some(record) = self.read_relocation_record(request.move_id).await? {
+            return match record {
+                RelocationRecord::Receipt(receipt) => {
+                    if receipt.request_hash != hash {
+                        Err(SyncError::RelocationConflict(
+                            "move id was already completed with different arguments".into(),
+                        ))
+                    } else {
+                        Ok(receipt.replay_outcome())
+                    }
+                }
+                RelocationRecord::Intent(intent) => {
+                    if intent.request_hash != hash {
+                        Err(SyncError::RelocationConflict(
+                            "move id has a pending relocation with different arguments".into(),
+                        ))
+                    } else {
+                        self.complete_intent_under_locks(intent, true).await
+                    }
+                }
+            };
+        }
+        if let Some(completed_hash) = self
+            .inner
+            .relocation_tombstones
+            .lock()
+            .await
+            .get(&request.move_id)
+            .copied()
+        {
+            if completed_hash != hash {
+                return Err(SyncError::RelocationConflict(
+                    "move id was already completed with different arguments".into(),
+                ));
+            }
+            return Ok(self.metadata_replay_outcome(&request).await);
+        }
+        if let Some(pending_move_id) = self.overlapping_pending_move(&request).await {
+            return Err(recovery_required(
+                pending_move_id,
+                "another relocation touching these notes requires recovery first",
+            ));
+        }
+        if let Some(proof) = self.completed_proof_for_move(request.move_id).await {
+            if proof.request_hash != hash || proof.root_bid != request.root_bid {
+                return Err(SyncError::RelocationConflict(
+                    "move id metadata belongs to different relocation arguments".into(),
+                ));
+            }
+            return Ok(self.metadata_replay_outcome(&request).await);
+        }
+
+        let prepared = self.prepare_relocation_under_locks(request).await?;
+        let intent = RelocationIntent::from_prepared(&prepared, hash);
+        self.persist_prepared_intent(&intent).await?;
+        self.checkpoint_after_prepared(intent.request.move_id)
+            .await?;
+        self.complete_intent_under_locks(intent, false).await
+    }
+
+    async fn recover_intent_with_locks(&self, intent: RelocationIntent) -> SyncResult<()> {
+        let request = &intent.request;
+        let source_lock = self.apply_lock_for_note(request.source_note_id).await;
+        let destination_lock = if request.destination_note_id == request.source_note_id {
+            None
+        } else {
+            Some(self.apply_lock_for_note(request.destination_note_id).await)
+        };
+        let source_first = request.source_note_id <= request.destination_note_id;
+
+        if source_first {
+            let _source_guard = source_lock.lock().await;
+            let _destination_guard = match destination_lock.as_ref() {
+                Some(lock) => Some(lock.lock().await),
+                None => None,
+            };
+            let _ownership_guard = self.inner.ownership_transition.lock().await;
+            self.complete_intent_under_locks(intent, true).await?;
+        } else {
+            let destination_lock = destination_lock
+                .as_ref()
+                .expect("different note ids always have a destination lock");
+            let _destination_guard = destination_lock.lock().await;
+            let _source_guard = source_lock.lock().await;
+            let _ownership_guard = self.inner.ownership_transition.lock().await;
+            self.complete_intent_under_locks(intent, true).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn recover_persisted_relocations(&self) -> SyncResult<()> {
+        let records = self.scan_relocation_records().await?;
+        let mut tombstones = self.load_relocation_tombstones().await?;
+        let mut tombstones_changed = false;
+        for record in &records {
+            let (move_id, hash, completed) = match record {
+                RelocationRecord::Intent(intent) => {
+                    (intent.request.move_id, intent.request_hash, false)
+                }
+                RelocationRecord::Receipt(receipt) => (receipt.move_id, receipt.request_hash, true),
+            };
+            match tombstones.get(&move_id) {
+                Some(existing) if *existing != hash => {
+                    return Err(recovery_required(
+                        move_id,
+                        "relocation tombstone hash differs from durable record",
+                    ));
+                }
+                Some(_) => {}
+                None if completed => {
+                    tombstones.insert(move_id, hash);
+                    tombstones_changed = true;
+                }
+                None => {}
+            }
+        }
+        if tombstones_changed {
+            self.publish_relocation_tombstones(&tombstones).await?;
+        }
+        *self.inner.relocation_tombstones.lock().await = tombstones;
+        {
+            let mut receipts = self.inner.relocation_receipts.lock().await;
+            let mut active = self.inner.active_relocations.lock().await;
+            receipts.clear();
+            active.clear();
+            for record in &records {
+                match record {
+                    RelocationRecord::Receipt(receipt) => {
+                        receipts.insert((receipt.completed_at, receipt.move_id), ());
+                    }
+                    RelocationRecord::Intent(intent) => {
+                        active.insert(
+                            intent.request.move_id,
+                            RelocationReservation::from_intent(intent),
+                        );
+                    }
+                }
+            }
+        }
+        let mut intents: Vec<RelocationIntent> = records
+            .into_iter()
+            .filter_map(|record| match record {
+                RelocationRecord::Intent(intent) => Some(intent),
+                RelocationRecord::Receipt(_) => None,
+            })
+            .collect();
+        intents.sort_by_key(|intent| intent.request.move_id);
+        for intent in intents {
+            let move_id = intent.request.move_id;
+            self.recover_intent_with_locks(intent)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
+        }
+        let mut index = self.inner.relocation_receipts.lock().await;
+        let mut pruned = Vec::new();
+        while index.len() > RECEIPT_LIMIT {
+            if let Some(((_, move_id), _)) = index.pop_first() {
+                pruned.push(move_id);
+            }
+        }
+        drop(index);
+        for move_id in pruned {
+            if let Some(path) = self.relocation_record_path(move_id) {
+                tokio::fs::remove_file(&path).await.map_err(|error| {
+                    SyncError::Storage(format!(
+                        "prune relocation receipt {}: {error}",
+                        path.display()
+                    ))
+                })?;
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn relocate_subtree_in_memory(
@@ -604,8 +1611,7 @@ impl LoroEngine {
                 None => None,
             };
             let _ownership_guard = self.inner.ownership_transition.lock().await;
-            let prepared = self.prepare_relocation_under_locks(request).await?;
-            self.apply_prepared_relocation_under_locks(prepared).await
+            self.relocate_under_locks(request).await
         } else {
             let destination_lock = destination_lock
                 .as_ref()
@@ -613,8 +1619,7 @@ impl LoroEngine {
             let _destination_guard = destination_lock.lock().await;
             let _source_guard = source_lock.lock().await;
             let _ownership_guard = self.inner.ownership_transition.lock().await;
-            let prepared = self.prepare_relocation_under_locks(request).await?;
-            self.apply_prepared_relocation_under_locks(prepared).await
+            self.relocate_under_locks(request).await
         }
     }
 }

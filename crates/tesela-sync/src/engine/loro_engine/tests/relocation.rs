@@ -1,3 +1,4 @@
+use super::super::relocation::RelocationFailpoint;
 use super::*;
 use std::collections::BTreeSet;
 
@@ -912,4 +913,824 @@ async fn trusted_daily_seed_uses_frontmatter_without_placeholder_block() {
     assert!(full.starts_with("---\ntitle: 2026-07-11\ncreated: 2026-07-11T00:00:00Z\n---\n"));
     assert!(!full.contains(&hex_id(&placeholder)));
     assert!(full.contains(&uuid::Uuid::from_bytes(root).to_string()));
+}
+
+async fn snapshot_has_live_bid(
+    snapshot_dir: &std::path::Path,
+    note_id: [u8; 16],
+    bid: [u8; 16],
+) -> bool {
+    let path = snapshot_dir.join(format!("{}.bin", hex_id(&note_id)));
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return false;
+    };
+    let doc = LoroDoc::new();
+    if doc.import(&bytes).is_err() {
+        return false;
+    }
+    let tree = doc.get_tree("blocks");
+    let Some(node) = find_node_by_block_id(&tree, &hex_id(&bid)) else {
+        return false;
+    };
+    !matches!(tree.is_node_deleted(&node), Ok(true))
+}
+
+async fn open_persistent_relocation_engine(
+    device: DeviceId,
+    snapshot_dir: &std::path::Path,
+    materialize_dir: &std::path::Path,
+) -> LoroEngine {
+    LoroEngine::with_dirs(
+        device,
+        Arc::new(Hlc::new(device)),
+        snapshot_dir.to_path_buf(),
+        Some(materialize_dir.to_path_buf()),
+    )
+    .await
+    .unwrap()
+}
+
+async fn seed_recovery_pair(
+    engine: &LoroEngine,
+    source: [u8; 16],
+    destination: [u8; 16],
+    root: [u8; 16],
+    child: [u8; 16],
+    target: [u8; 16],
+) {
+    seed_note(
+        engine,
+        source,
+        "2026-07-12",
+        [
+            stamped_line(0, "moved-root", root),
+            stamped_line(1, "moved-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    seed_note(
+        engine,
+        destination,
+        "2026-07-11",
+        stamped_line(0, "target", target),
+    )
+    .await;
+}
+
+fn assert_recovery_required(error: SyncError, move_id: [u8; 16]) {
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired {
+            move_id: actual,
+            ..
+        } if actual == move_id
+    ));
+}
+
+#[tokio::test]
+async fn boot_recovery_completes_every_persisted_relocation_phase_in_snapshot_order() {
+    let cases = [
+        (RelocationFailpoint::AfterPrepared, true, false),
+        (RelocationFailpoint::AfterDestinationDurable, true, true),
+        (RelocationFailpoint::AfterSourceDurable, false, true),
+    ];
+
+    for (failpoint, source_is_durable, destination_is_durable) in cases {
+        let root_dir = tempfile::tempdir().unwrap();
+        let snapshot_dir = root_dir.path().join("snapshots");
+        let materialize_dir = root_dir.path().join("notes");
+        let device = DeviceId::from_bytes([failpoint as u8 + 0x31; 16]);
+        let source = [0xd1; 16];
+        let destination = [0xd2; 16];
+        let root = [0xd3; 16];
+        let child = [0xd4; 16];
+        let target = [0xd5; 16];
+        let request = relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::Inside,
+        );
+        let engine =
+            open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+        seed_recovery_pair(&engine, source, destination, root, child, target).await;
+        engine.inject_relocation_failure_once(failpoint).await;
+
+        let error = engine
+            .relocate_subtree(request.clone())
+            .await
+            .expect_err("the injected checkpoint must interrupt the move");
+        assert_recovery_required(error, request.move_id);
+        assert_eq!(
+            snapshot_has_live_bid(&snapshot_dir, source, root).await,
+            source_is_durable,
+            "source snapshot at {failpoint:?}"
+        );
+        assert_eq!(
+            snapshot_has_live_bid(&snapshot_dir, destination, root).await,
+            destination_is_durable,
+            "destination snapshot at {failpoint:?}"
+        );
+        drop(engine);
+
+        let recovered =
+            open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+        assert!(!nested_block_is_live(&recovered, source, root).await);
+        assert!(!nested_block_is_live(&recovered, source, child).await);
+        assert!(nested_block_is_live(&recovered, destination, root).await);
+        assert!(nested_block_is_live(&recovered, destination, child).await);
+        assert_eq!(
+            recovered.inner.block_index.read().await.get(&root),
+            Some(&BTreeSet::from([destination]))
+        );
+        assert!(
+            tokio::fs::read_to_string(materialize_dir.join("2026-07-11.md"))
+                .await
+                .unwrap()
+                .contains("moved-root")
+        );
+        assert!(
+            !tokio::fs::read_to_string(materialize_dir.join("2026-07-12.md"))
+                .await
+                .unwrap()
+                .contains("moved-root")
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_boot_recovery_is_a_no_op_and_receipt_replays() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x41; 16]);
+    let source = [0xe1; 16];
+    let destination = [0xe2; 16];
+    let root = [0xe3; 16];
+    let child = [0xe4; 16];
+    let target = [0xe5; 16];
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterPrepared)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    drop(engine);
+
+    let recovered =
+        open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let source_version = recovered.doc_version(source).await.unwrap();
+    let destination_version = recovered.doc_version(destination).await.unwrap();
+    drop(recovered);
+
+    let recovered_again =
+        open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert_eq!(
+        recovered_again.doc_version(source).await.unwrap(),
+        source_version
+    );
+    assert_eq!(
+        recovered_again.doc_version(destination).await.unwrap(),
+        destination_version
+    );
+    let replay = recovered_again.relocate_subtree(request).await.unwrap();
+    assert_eq!(replay.status, BlockRelocationStatus::Replayed);
+    assert_eq!(
+        recovered_again.doc_version(source).await.unwrap(),
+        source_version
+    );
+    assert_eq!(
+        recovered_again.doc_version(destination).await.unwrap(),
+        destination_version
+    );
+}
+
+#[tokio::test]
+async fn receipt_replay_and_conflict_survive_reload() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x42; 16]);
+    let source = [0xf1; 16];
+    let destination = [0xf2; 16];
+    let root = [0xf3; 16];
+    let child = [0xf4; 16];
+    let target = [0xf5; 16];
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::Before,
+    );
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let applied = engine.relocate_subtree(request.clone()).await.unwrap();
+    assert_eq!(applied.status, BlockRelocationStatus::Applied);
+    let replay = engine.relocate_subtree(request.clone()).await.unwrap();
+    assert_eq!(replay.status, BlockRelocationStatus::Replayed);
+    assert_eq!(replay.notes, applied.notes);
+
+    let mut conflicting = request.clone();
+    conflicting.placement = MovePlacement::After;
+    assert!(matches!(
+        engine.relocate_subtree(conflicting.clone()).await,
+        Err(SyncError::RelocationConflict(_))
+    ));
+    drop(engine);
+
+    let reopened = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert_eq!(
+        reopened.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert!(matches!(
+        reopened.relocate_subtree(conflicting).await,
+        Err(SyncError::RelocationConflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn checked_materialization_failure_keeps_preceding_phase() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x43; 16]);
+    let source = [0x11; 16];
+    let destination = [0x12; 16];
+    let root = [0x13; 16];
+    let child = [0x14; 16];
+    let target = [0x15; 16];
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::Inside,
+    );
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let destination_md = materialize_dir.join("2026-07-11.md");
+    tokio::fs::remove_file(&destination_md).await.unwrap();
+    tokio::fs::create_dir(&destination_md).await.unwrap();
+
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    tokio::fs::remove_dir(&destination_md).await.unwrap();
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterDestinationDurable)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    drop(engine);
+
+    let recovered =
+        open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert!(!nested_block_is_live(&recovered, source, root).await);
+    assert!(nested_block_is_live(&recovered, destination, root).await);
+}
+
+#[tokio::test]
+async fn checked_source_snapshot_failure_keeps_destination_durable_phase() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x44; 16]);
+    let source = [0x21; 16];
+    let destination = [0x22; 16];
+    let root = [0x23; 16];
+    let child = [0x24; 16];
+    let target = [0x25; 16];
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::Inside,
+    );
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let source_snapshot = snapshot_dir.join(format!("{}.bin", hex_id(&source)));
+    tokio::fs::remove_file(&source_snapshot).await.unwrap();
+    tokio::fs::create_dir(&source_snapshot).await.unwrap();
+
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    tokio::fs::remove_dir(&source_snapshot).await.unwrap();
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterSourceDurable)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    drop(engine);
+
+    let recovered =
+        open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert!(!nested_block_is_live(&recovered, source, root).await);
+    assert!(nested_block_is_live(&recovered, destination, root).await);
+}
+
+#[tokio::test]
+async fn pending_intent_rejects_an_overlapping_move_with_another_id() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x46; 16]);
+    let source = [0x26; 16];
+    let first_destination = [0x27; 16];
+    let second_destination = [0x28; 16];
+    let root = [0x29; 16];
+    let child = [0x2a; 16];
+    let first_target = [0x2b; 16];
+    let second_target = [0x2c; 16];
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(
+        &engine,
+        source,
+        first_destination,
+        root,
+        child,
+        first_target,
+    )
+    .await;
+    seed_note(
+        &engine,
+        second_destination,
+        "2026-07-10",
+        stamped_line(0, "second-target", second_target),
+    )
+    .await;
+    let first = relocation_request(
+        source,
+        root,
+        first_destination,
+        Some(first_target),
+        MovePlacement::After,
+    );
+    let mut second = relocation_request(
+        source,
+        root,
+        second_destination,
+        Some(second_target),
+        MovePlacement::After,
+    );
+    second.move_id = [0x7a; 16];
+    second.destination_slug = "2026-07-10".into();
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterPrepared)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(first.clone()).await.unwrap_err(),
+        first.move_id,
+    );
+
+    assert_recovery_required(
+        engine.relocate_subtree(second).await.unwrap_err(),
+        first.move_id,
+    );
+    drop(engine);
+
+    let recovered =
+        open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert!(!nested_block_is_live(&recovered, source, root).await);
+    assert!(nested_block_is_live(&recovered, first_destination, root).await);
+    assert!(!nested_block_is_live(&recovered, second_destination, root).await);
+}
+
+#[tokio::test]
+async fn recovery_finds_a_proof_bearing_subtree_after_destination_reorder() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x47; 16]);
+    let source = [0x2d; 16];
+    let destination = [0x2e; 16];
+    let root = [0x2f; 16];
+    let child = [0x30; 16];
+    let target = [0x31; 16];
+    let tail = [0x32; 16];
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_note(
+        &engine,
+        source,
+        "2026-07-12",
+        [
+            stamped_line(0, "moved-root", root),
+            stamped_line(1, "moved-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    seed_note(
+        &engine,
+        destination,
+        "2026-07-11",
+        [
+            stamped_line(0, "target", target),
+            stamped_line(0, "tail", tail),
+        ]
+        .concat(),
+    )
+    .await;
+    let request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    let destination_md = materialize_dir.join("2026-07-11.md");
+    tokio::fs::remove_file(&destination_md).await.unwrap();
+    tokio::fs::create_dir(&destination_md).await.unwrap();
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    tokio::fs::remove_dir(&destination_md).await.unwrap();
+
+    let destination_doc = engine.doc_for_note_mut(destination).await;
+    let destination_tree = destination_doc.get_tree("blocks");
+    let target_node = find_node_by_block_id(&destination_tree, &hex_id(&target)).unwrap();
+    let tail_node = find_node_by_block_id(&destination_tree, &hex_id(&tail)).unwrap();
+    destination_tree.mov_before(tail_node, target_node).unwrap();
+    destination_doc.commit();
+    engine
+        .save_snapshot_checked(&snapshot_dir, destination)
+        .await
+        .unwrap();
+    engine.materialize_note_checked(destination).await.unwrap();
+
+    assert_eq!(
+        engine.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert_eq!(
+        block_texts(&engine, destination).await,
+        vec!["tail", "target", "moved-root", "moved-child"]
+    );
+    assert!(!nested_block_is_live(&engine, source, root).await);
+}
+
+async fn seed_relocation_peer_from(
+    origin: &LoroEngine,
+    peer: &LoroEngine,
+    source: [u8; 16],
+    destination: [u8; 16],
+) {
+    for note_id in [source, destination] {
+        let snapshot = origin.export_doc_update(note_id, None).await.unwrap();
+        peer.import_doc_update(note_id, &snapshot).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn source_and_destination_deltas_converge_in_both_arrival_orders() {
+    let origin_device = DeviceId::from_bytes([0x51; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let source = [0x31; 16];
+    let destination = [0x32; 16];
+    let root = [0x33; 16];
+    let child = [0x34; 16];
+    let target = [0x35; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+
+    let mut peers = Vec::new();
+    for byte in [0x52, 0x53] {
+        let device = DeviceId::from_bytes([byte; 16]);
+        let peer = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+        seed_relocation_peer_from(&origin, &peer, source, destination).await;
+        peers.push(peer);
+    }
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    origin
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::After,
+        ))
+        .await
+        .unwrap();
+    let source_delta = origin
+        .export_doc_update(source, Some(&source_before))
+        .await
+        .unwrap();
+    let destination_delta = origin
+        .export_doc_update(destination, Some(&destination_before))
+        .await
+        .unwrap();
+
+    for (peer, order) in peers.into_iter().zip([
+        [(&source, &source_delta), (&destination, &destination_delta)],
+        [(&destination, &destination_delta), (&source, &source_delta)],
+    ]) {
+        for (note_id, delta) in order {
+            peer.import_doc_update(*note_id, delta).await.unwrap();
+        }
+        assert!(!nested_block_is_live(&peer, source, root).await);
+        assert!(nested_block_is_live(&peer, destination, root).await);
+        assert_eq!(
+            peer.inner.block_index.read().await.get(&root),
+            Some(&BTreeSet::from([destination]))
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrent_edit_at_old_source_does_not_resurrect_after_relocation() {
+    let origin_device = DeviceId::from_bytes([0x61; 16]);
+    let peer_device = DeviceId::from_bytes([0x62; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0x41; 16];
+    let destination = [0x42; 16];
+    let root = [0x43; 16];
+    let child = [0x44; 16];
+    let target = [0x45; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+
+    peer.splice_block_text(source, root, 10, 0, "-remote")
+        .await
+        .unwrap();
+    let old_source_edit = peer
+        .export_doc_update(source, Some(&source_before))
+        .await
+        .unwrap();
+    origin
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::After,
+        ))
+        .await
+        .unwrap();
+    let source_delete = origin
+        .export_doc_update(source, Some(&source_before))
+        .await
+        .unwrap();
+    let destination_insert = origin
+        .export_doc_update(destination, Some(&destination_before))
+        .await
+        .unwrap();
+
+    origin
+        .import_doc_update(source, &old_source_edit)
+        .await
+        .unwrap();
+    peer.import_doc_update(destination, &destination_insert)
+        .await
+        .unwrap();
+    peer.import_doc_update(source, &source_delete)
+        .await
+        .unwrap();
+
+    for engine in [&origin, &peer] {
+        assert!(!nested_block_is_live(engine, source, root).await);
+        assert!(nested_block_is_live(engine, destination, root).await);
+        assert_eq!(
+            engine.inner.block_index.read().await.get(&root),
+            Some(&BTreeSet::from([destination]))
+        );
+    }
+}
+
+#[tokio::test]
+async fn pruned_applied_receipt_replays_after_subtree_moves_away_and_back() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x71; 16]);
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let source = [0x51; 16];
+    let destination = [0x52; 16];
+    let root = [0x53; 16];
+    let child = [0x54; 16];
+    let target = [0x55; 16];
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let mut first = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    first.move_id = [0; 16];
+    engine.relocate_subtree(first.clone()).await.unwrap();
+
+    let cap_note = [0x56; 16];
+    let cap_root = [0x57; 16];
+    let cap_target = [0x58; 16];
+    seed_note(
+        &engine,
+        cap_note,
+        "2026-07-12",
+        [
+            stamped_line(0, "cap-root", cap_root),
+            stamped_line(0, "cap-target", cap_target),
+        ]
+        .concat(),
+    )
+    .await;
+    for sequence in 1u128..=4096 {
+        let mut no_op = relocation_request(
+            cap_note,
+            cap_root,
+            cap_note,
+            Some(cap_target),
+            MovePlacement::Before,
+        );
+        no_op.move_id = sequence.to_be_bytes();
+        let outcome = engine.relocate_subtree(no_op).await.unwrap();
+        assert_eq!(outcome.status, BlockRelocationStatus::NoOp);
+    }
+
+    let mut records = tokio::fs::read_dir(snapshot_dir.join("_relocations"))
+        .await
+        .unwrap();
+    let mut record_count = 0;
+    while records.next_entry().await.unwrap().is_some() {
+        record_count += 1;
+    }
+    assert_eq!(record_count, 4096);
+    let holding = [0x59; 16];
+    let holding_target = [0x5a; 16];
+    seed_note(
+        &engine,
+        holding,
+        "2026-07-10",
+        stamped_line(0, "holding-target", holding_target),
+    )
+    .await;
+    let mut move_away = relocation_request(
+        destination,
+        root,
+        holding,
+        Some(holding_target),
+        MovePlacement::After,
+    );
+    move_away.move_id = [0x91; 16];
+    move_away.source_slug = "2026-07-11".into();
+    move_away.destination_slug = "2026-07-10".into();
+    engine.relocate_subtree(move_away).await.unwrap();
+
+    let mut move_back = relocation_request(holding, root, source, None, MovePlacement::Append);
+    move_back.move_id = [0x92; 16];
+    move_back.source_slug = "2026-07-10".into();
+    move_back.destination_slug = "2026-07-12".into();
+    engine.relocate_subtree(move_back).await.unwrap();
+    assert!(nested_block_is_live(&engine, source, root).await);
+    assert!(!nested_block_is_live(&engine, destination, root).await);
+    drop(engine);
+
+    let reopened = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let mut conflicting = first.clone();
+    conflicting.destination_slug = "different-destination".into();
+    assert!(matches!(
+        reopened.relocate_subtree(conflicting).await,
+        Err(SyncError::RelocationConflict(_))
+    ));
+    assert_eq!(
+        reopened
+            .relocate_subtree(first.clone())
+            .await
+            .unwrap()
+            .status,
+        BlockRelocationStatus::Replayed
+    );
+    assert!(nested_block_is_live(&reopened, source, root).await);
+    assert!(!nested_block_is_live(&reopened, destination, root).await);
+}
+
+#[tokio::test]
+async fn pruned_no_op_receipt_replays_without_reapplying_stale_placement() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x72; 16]);
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let note = [0x61; 16];
+    let root = [0x62; 16];
+    let target = [0x63; 16];
+    seed_note(
+        &engine,
+        note,
+        "2026-07-12",
+        [
+            stamped_line(0, "root", root),
+            stamped_line(0, "target", target),
+        ]
+        .concat(),
+    )
+    .await;
+    let mut first = relocation_request(note, root, note, Some(target), MovePlacement::Before);
+    first.move_id = [0; 16];
+    assert_eq!(
+        engine.relocate_subtree(first.clone()).await.unwrap().status,
+        BlockRelocationStatus::NoOp
+    );
+
+    for sequence in 1u128..=4096 {
+        let mut no_op = relocation_request(note, root, note, Some(target), MovePlacement::Before);
+        no_op.move_id = sequence.to_be_bytes();
+        engine.relocate_subtree(no_op).await.unwrap();
+    }
+    let mut reorder = relocation_request(note, root, note, Some(target), MovePlacement::After);
+    reorder.move_id = [0x93; 16];
+    engine.relocate_subtree(reorder).await.unwrap();
+    assert_eq!(block_texts(&engine, note).await, vec!["target", "root"]);
+    drop(engine);
+
+    let reopened = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let mut conflicting = first.clone();
+    conflicting.placement = MovePlacement::After;
+    assert!(matches!(
+        reopened.relocate_subtree(conflicting).await,
+        Err(SyncError::RelocationConflict(_))
+    ));
+    assert_eq!(
+        reopened.relocate_subtree(first).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert_eq!(block_texts(&reopened, note).await, vec!["target", "root"]);
+}
+
+#[tokio::test]
+async fn failed_tombstone_publish_is_retried_before_intent_becomes_a_receipt() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x73; 16]);
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    let note = [0x64; 16];
+    let root = [0x65; 16];
+    let target = [0x66; 16];
+    seed_note(
+        &engine,
+        note,
+        "2026-07-12",
+        [
+            stamped_line(0, "root", root),
+            stamped_line(0, "target", target),
+        ]
+        .concat(),
+    )
+    .await;
+    let request = relocation_request(note, root, note, Some(target), MovePlacement::Before);
+    let tombstones_path = snapshot_dir.join("_relocation_tombstones.bin");
+    tokio::fs::create_dir(&tombstones_path).await.unwrap();
+
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    tokio::fs::remove_dir(&tombstones_path).await.unwrap();
+    assert_eq!(
+        engine
+            .relocate_subtree(request.clone())
+            .await
+            .unwrap()
+            .status,
+        BlockRelocationStatus::Replayed
+    );
+    tokio::fs::remove_file(
+        snapshot_dir
+            .join("_relocations")
+            .join(format!("{}.bin", hex_id(&request.move_id))),
+    )
+    .await
+    .unwrap();
+    drop(engine);
+
+    let reopened = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert_eq!(
+        reopened.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
 }
