@@ -636,3 +636,11 @@ subtree to two different destination notes are not automatically resolved in
 this slice; duplicate live ownership must be detected and surfaced rather than
 silently choosing an order-dependent block-index owner. Full contract:
 `phases/2026-07-12-block-subtree-relocation-spec.md`.
+
+**Replay-history trade-off:** full relocation receipts are capped at the newest
+4,096, but exact `move_id → request_hash` tombstones are retained permanently
+(about 48 bytes per move). A strictly bounded store cannot distinguish an old
+random move UUID after the same root moves away and back; forgetting it could
+execute the move twice. Reliability wins over bounded metadata growth. Pruned
+matching requests fail closed as stale, while mismatched reuse conflicts
+forever. Active intents also reserve their source root until recovery/completion.

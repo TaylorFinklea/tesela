@@ -107,14 +107,21 @@ The intent lives beside the engine's durable state and contains:
 - phase: `prepared`, `destination_durable`, or `source_durable`.
 
 Write and phase transitions use the existing unique-temp + rename discipline.
-The destination root also records the `move_id` as non-materialized relocation
-metadata, allowing a completed request to be recognized after the intent file
-has been compacted. Completion replaces the full subtree-bearing intent with a
-small receipt keyed by `move_id` and request hash; retain the newest 4,096
-receipts so ordinary network retries return the stored outcome and mismatched
-reuse fails. A pruned receipt never permits a second move when the source root is
-already absent; destination relocation metadata makes that retry recognizable
-or the request fails closed as stale.
+The destination root also records the `move_id` and request hash as
+non-materialized relocation metadata so recovery can identify its proof-bearing
+subtree independent of absolute row position. Completion replaces the full
+subtree-bearing intent with a small receipt keyed by `move_id` and request hash;
+retain the newest 4,096 full receipts so ordinary network retries return the
+stored outcome. Separately retain a permanent compact tombstone of only
+`move_id → request_hash` (about 48 bytes per completed request). A matching
+retry whose full receipt was pruned fails closed as stale without mutation; a
+mismatched reuse remains a conflict forever. This exact tombstone ledger is the
+durability trade-off approved on 2026-07-12: replay safety is more important
+than strictly bounded idempotence metadata.
+
+An active intent reserves its source root. A different `move_id` cannot prepare
+an overlapping move until the first intent recovers or completes; this prevents
+two recovery snapshots from later authoring duplicate destination owners.
 
 ### Apply order
 
@@ -130,8 +137,9 @@ For a cross-note move:
 4. Commit, save the source snapshot with a checked result, materialize it, and
    advance the intent to `source_durable`.
 5. Make the destination the final global block-index owner, refresh the shared
-   derived index, replace the intent with its compact completion receipt, then
-   prune receipts beyond the newest 4,096.
+   derived index, persist the permanent move-id/request-hash tombstone, replace
+   the intent with its compact completion receipt, then prune full receipts
+   beyond the newest 4,096. Tombstones are never pruned.
 
 The source snapshot must never become durable without a durable destination
 snapshot containing the entire subtree. A same-note relocation uses the same

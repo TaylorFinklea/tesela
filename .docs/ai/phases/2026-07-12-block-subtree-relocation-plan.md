@@ -418,7 +418,7 @@ impl LoroEngine {
 }
 ```
 
-Each checkpoint consumes the one-shot failpoint immediately after atomically persisting that named phase and returns `RelocationRecoveryRequired` before the next phase. Tests open a tempfile engine, inject each failpoint, assert the error, drop it, reopen with `with_dirs`, and assert one destination copy/no source copy. Also test snapshot order, repeated recovery, replay/conflict, reload, 4,096 receipt cap, both delta arrival orders, and deleted-wins old-source edits.
+Each checkpoint consumes the one-shot failpoint immediately after atomically persisting that named phase and returns `RelocationRecoveryRequired` before the next phase. Tests open a tempfile engine, inject each failpoint, assert the error, drop it, reopen with `with_dirs`, and assert one destination copy/no source copy. Also test snapshot order, repeated recovery, replay/conflict, active-intent overlap rejection, position-independent destination proof, reload, the 4,096 full-receipt cap plus permanent compact tombstones, both delta arrival orders, and deleted-wins old-source edits.
 
 - [ ] **Step 2: Run the focused tests and observe red**
 
@@ -434,7 +434,7 @@ enum RelocationPhase { Prepared, DestinationDurable, SourceDurable }
 enum RelocationRecord { Intent(RelocationIntent), Receipt(RelocationReceipt) }
 ```
 
-Intent fields: canonical request hash, ids/slugs, semantic subtree, exact captured source nodes/bids, computed destination ancestry/order, optional seed, pre-move encoded version vectors, and phase. Receipt fields: move id, request hash, status, affected notes/pre-versions, destination-root metadata proof, and pruning `HlcTimestamp`.
+Intent fields: canonical request hash, ids/slugs, semantic subtree, exact captured source nodes/bids, computed destination ancestry/order, optional seed, pre-move encoded version vectors, and phase. Receipt fields: move id, request hash, status, affected notes/pre-versions, destination-root metadata proof, and pruning `HlcTimestamp`. Persist a separate exact compact tombstone containing only move id and request hash for every completed request; full receipts cap at 4,096 while tombstones are retained permanently.
 
 Implement `LoroEngine::relocate_subtree` boundaries:
 
@@ -442,9 +442,9 @@ Implement `LoroEngine::relocate_subtree` boundaries:
 2. Validate and persist `Prepared` before mutation.
 3. Apply destination, commit, checked-save/materialize, persist `DestinationDurable`.
 4. Cross-note only: delete captured source nodes, commit, checked-save/materialize, persist `SourceDurable`.
-5. Refresh ownership/derived state, replace intent with receipt, prune old receipts only.
+5. Refresh ownership/derived state, persist the permanent tombstone, replace intent with receipt, and prune old full receipts only.
 
-Write non-materialized move-id + request-hash metadata on the destination root. A retry after receipt pruning recognizes matching metadata or rejects stale; it never performs a second move.
+Reject preparation when another active intent reserves the same source root. Write non-materialized move-id + request-hash metadata on the destination root and locate that proof-bearing subtree independent of absolute position during recovery. After full-receipt pruning, a matching tombstone returns a stale/replayed-safe result without mutation and a mismatched hash conflicts; an old move id never executes twice.
 
 Run recovery in `with_dirs` after loaded docs receive the local peer id and before return. Recovery inspects state and idempotently completes active records. Checked persistence/materialization failure returns `RelocationRecoveryRequired` and keeps the record.
 
