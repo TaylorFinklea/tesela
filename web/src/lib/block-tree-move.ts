@@ -11,6 +11,74 @@ export type BlockMoveRequest = {
   placement: MovePlacement;
 };
 
+export type BlockMoveSession = {
+  phase: "idle" | "selecting" | "pending" | "retryable";
+  request: BlockMoveRequest | null;
+  targetBid: string | null;
+  targetNoteId: string | null;
+  placement: MovePlacement | null;
+};
+
+export type BlockMoveSessionAction =
+  | { type: "start"; request: BlockMoveRequest }
+  | { type: "target"; noteId: string; bid: string | null; placement: MovePlacement }
+  | { type: "submit" }
+  | { type: "success" | "cancel" | "ordinary-error" }
+  | { type: "recoverable-error" };
+
+export const IDLE_BLOCK_MOVE_SESSION: BlockMoveSession = {
+  phase: "idle",
+  request: null,
+  targetBid: null,
+  targetNoteId: null,
+  placement: null,
+};
+
+export function reduceBlockMoveSession(
+  state: BlockMoveSession,
+  action: BlockMoveSessionAction,
+): BlockMoveSession {
+  switch (action.type) {
+    case "start":
+      if (state.phase !== "idle") return state;
+      return {
+        phase: "selecting",
+        request: action.request,
+        targetBid: null,
+        targetNoteId: null,
+        placement: null,
+      };
+    case "target":
+      if (state.phase !== "selecting" || !state.request) return state;
+      return {
+        phase: "selecting",
+        request: {
+          ...state.request,
+          destination_note_id: action.noteId,
+          target_bid: action.bid,
+          placement: action.placement,
+        },
+        targetBid: action.bid,
+        targetNoteId: action.noteId,
+        placement: action.placement,
+      };
+    case "submit":
+      if ((state.phase !== "selecting" && state.phase !== "retryable") || !state.request) {
+        return state;
+      }
+      return { ...state, phase: "pending" };
+    case "recoverable-error":
+      return state.phase === "pending" && state.request
+        ? { ...state, phase: "retryable" }
+        : state;
+    case "cancel":
+      return state.phase === "selecting" ? IDLE_BLOCK_MOVE_SESSION : state;
+    case "success":
+    case "ordinary-error":
+      return IDLE_BLOCK_MOVE_SESSION;
+  }
+}
+
 export type BlockMoveResponse<TNote extends { id: string }> = {
   move_id: string;
   notes: TNote[];
@@ -254,6 +322,59 @@ function nextSiblingStart(blocks: ParsedBlock[], start: number): number {
   const next = blocks[end];
   if (!next || next.indent_level !== block.indent_level) return -1;
   return end;
+}
+
+export function sameNoteMoveRequestForAction(
+  blocks: ParsedBlock[],
+  focusedBid: string,
+  noteId: string,
+  action: "up" | "down" | "indent",
+  moveId: string,
+  previousVisibleBid?: string,
+): BlockMoveRequest | null {
+  const sourceStart = blocks.findIndex((block) => block.bid === focusedBid);
+  if (sourceStart < 0 || !focusedBid || !noteId || !moveId) return null;
+
+  let targetIndex: number;
+  let placement: Exclude<MovePlacement, "append">;
+  if (action === "up") {
+    targetIndex = previousSiblingStart(blocks, sourceStart);
+    placement = "before";
+  } else if (action === "down") {
+    targetIndex = nextSiblingStart(blocks, sourceStart);
+    placement = "after";
+  } else {
+    targetIndex = previousVisibleBid
+      ? blocks.findIndex((block) => block.bid === previousVisibleBid)
+      : sourceStart - 1;
+    placement = "inside";
+  }
+  if (targetIndex < 0) return null;
+  const targetBid = blocks[targetIndex]?.bid;
+  if (typeof targetBid !== "string" || targetBid.length === 0) return null;
+
+  try {
+    const plan = planBlockMove({
+      sourceBlocks: blocks,
+      rootBid: focusedBid,
+      destinationBlocks: blocks,
+      targetBid,
+      placement,
+      sameNote: true,
+    });
+    if (plan.noOp) return null;
+  } catch {
+    return null;
+  }
+
+  return {
+    move_id: moveId,
+    source_note_id: noteId,
+    root_bid: focusedBid,
+    destination_note_id: noteId,
+    target_bid: targetBid,
+    placement,
+  };
 }
 
 function rebaseSubtree(subtree: ParsedBlock[], delta: number): ParsedBlock[] {

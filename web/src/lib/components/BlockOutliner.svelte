@@ -1,4 +1,6 @@
 <script module lang="ts">
+  import type { MovePlacement } from "$lib/block-tree-move";
+
   // Phase 12.X — singleton "last-active outliner" so the journal view can
   // dispatch a single `tesela:restore-focus` and have only the outliner
   // the user was actually editing in respond. Without this, every
@@ -10,6 +12,10 @@
   }
   export function isLastActiveOutliner(el: HTMLElement | null): boolean {
     return !!el && el === lastActiveOutliner;
+  }
+
+  export function lastActiveOutlinerIsWithin(container: HTMLElement | null): boolean {
+    return !!container && !!lastActiveOutliner && container.contains(lastActiveOutliner);
   }
 
   // Phase 12.X — one-shot flag so cross-day j/k navigation in the journal
@@ -25,10 +31,23 @@
     nextFocusIsCrossNav = false;
     return true;
   }
+
+  export type RelocationBindings = {
+    sourceBid: string | null;
+    targetBid: string | null;
+    placement: MovePlacement | null;
+    pending: boolean;
+    onDragStart: (event: DragEvent, sourceBid: string) => void;
+    onDragOver: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
+    onDrop: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
+    onCancel: () => void;
+  };
+
+  export const BLOCK_MOVE_PREPARE_EVENT = "tesela:prepare-block-relocation";
 </script>
 
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks, renderBlockBody } from "$lib/block-parser";
   import { findContentBlockId } from "$lib/content-search";
@@ -50,10 +69,16 @@
   import { BlockOpsSaver } from "$lib/block-ops-saver";
   import { spliceNoteBlock, acquireNoteDoc, releaseNoteDoc } from "$lib/loro/note-doc-registry.svelte";
   import {
+    BLOCK_MOVE_MIME,
+    classifyDropPlacement,
+    decodeBlockMoveDragPayload,
+    extractSubtree,
     moveSubtreeDown,
     moveSubtreeUnder,
     moveSubtreeUp,
     outdentSubtreeToRoot,
+    sameNoteMoveRequestForAction,
+    type BlockMoveRequest,
   } from "$lib/block-tree-move";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
@@ -95,6 +120,8 @@
     isPinnedTab = false,
     paneId,
     contentJump = null,
+    relocation,
+    onsamenotemove,
   }: {
     noteId: string;
     body: string;
@@ -124,6 +151,8 @@
      *  pane X". Unset for the legacy chrome (column-view, journal, etc). */
     paneId?: string;
     contentJump?: ContentJump | null;
+    relocation?: RelocationBindings;
+    onsamenotemove?: (request: BlockMoveRequest) => void;
   } = $props();
 
   // Fetch notes list for autocomplete + tag-property visibility resolution.
@@ -673,6 +702,25 @@
     return out;
   });
 
+  const relocationSourceBids = $derived.by(() => {
+    const sourceBid = relocation?.sourceBid;
+    if (!sourceBid) return new Set<string>();
+    return new Set(
+      extractSubtree(blocks, sourceBid)
+        .map((block) => block.bid)
+        .filter((bid): bid is string => typeof bid === "string" && bid.length > 0),
+    );
+  });
+
+  const invalidRelocationTargetBids = $derived.by(() => {
+    if (!relocation?.sourceBid) return new Set<string>();
+    return new Set(
+      extractSubtree(blocks, relocation.sourceBid)
+        .map((block) => block.bid)
+        .filter((bid): bid is string => typeof bid === "string" && bid.length > 0),
+    );
+  });
+
   /** Whether the visible block at index `vi` has any children — used to
    *  conditionally render the fold-toggle chevron. A block has children when
    *  the next *non-collapsed* block in `blocks` (not visibleBlocks) sits at a
@@ -1083,6 +1131,33 @@
       saveBlocks(blocks);
     },
   );
+
+  async function prepareOutlinerForRelocation(
+    addressedBids: readonly string[],
+    expandInsideBid?: string | null,
+  ): Promise<boolean> {
+    for (const bid of addressedBids) {
+      const addressed = blocks.find((block) => block.bid === bid);
+      if (!addressed || isClientMintedId(addressed.id)) return false;
+    }
+    if (expandInsideBid) {
+      const target = blocks.find((block) => block.bid === expandInsideBid);
+      if (!target || isClientMintedId(target.id)) return false;
+      if (collapsedBlocks.has(target.id)) {
+        const expanded = new Set(collapsedBlocks);
+        expanded.delete(target.id);
+        collapsedBlocks = expanded;
+        persistFold();
+        await tick();
+      }
+    }
+    try {
+      await blockOpsSaver.settle(noteId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   // Flush any pending coalesced block-ops immediately when the user leaves
   // this outliner (focus moves out) — a save MUST land when the user leaves
@@ -1574,13 +1649,33 @@
   }
 
   function handleMoveBlock(vi: number, direction: "up" | "down") {
-    lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block) return;
+    if (relocation) {
+      if (
+        relocation.pending
+        || relocation.sourceBid
+        || !onsamenotemove
+        || !block.bid
+        || isClientMintedId(block.id)
+      ) return;
+      const request = sameNoteMoveRequestForAction(
+        blocks,
+        block.bid,
+        noteId,
+        direction,
+        crypto.randomUUID(),
+      );
+      if (request && sameNoteRelocationHasStableEndpoints(block, request)) {
+        onsamenotemove(request);
+      }
+      return;
+    }
     const result = direction === "up"
       ? moveSubtreeUp(blocks, block.id)
       : moveSubtreeDown(blocks, block.id);
     if (!result.changed) return;
+    lastLocalEditAt = Date.now();
     pushUndo();
     blocks = result.blocks;
     // Sibling reorders are order changes. The current block-granular `move`
@@ -1591,12 +1686,35 @@
   }
 
   function handleMoveUnderPrevious(vi: number) {
-    lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     const prev = visibleBlocks[vi - 1];
     if (!block || !prev) return;
+    if (relocation) {
+      if (
+        relocation.pending
+        || relocation.sourceBid
+        || !onsamenotemove
+        || !block.bid
+        || !prev.bid
+        || isClientMintedId(block.id)
+        || isClientMintedId(prev.id)
+      ) return;
+      const request = sameNoteMoveRequestForAction(
+        blocks,
+        block.bid,
+        noteId,
+        "indent",
+        crypto.randomUUID(),
+        prev.bid ?? undefined,
+      );
+      if (request && sameNoteRelocationHasStableEndpoints(block, request)) {
+        onsamenotemove(request);
+      }
+      return;
+    }
     const result = moveSubtreeUnder(blocks, block.id, prev.id);
     if (!result.changed) return;
+    lastLocalEditAt = Date.now();
     pushUndo();
     blocks = result.blocks;
     // This operation both reparents and reorders under the target parent; use
@@ -1616,6 +1734,117 @@
     blocks = result.blocks;
     saveBlocksViaOps(blocks, moveOpsForIds(blocks, ids));
     refocusBlock(block.id);
+  }
+
+  function carriesInternalBlockMove(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes(BLOCK_MOVE_MIME);
+  }
+
+  function invalidRelocationTarget(block: ParsedBlock): boolean {
+    return (
+      typeof block.bid !== "string"
+      || block.bid.length === 0
+      || isClientMintedId(block.id)
+      || invalidRelocationTargetBids.has(block.bid)
+    );
+  }
+
+  function sameNoteRelocationHasStableEndpoints(
+    source: ParsedBlock,
+    request: BlockMoveRequest,
+  ): boolean {
+    if (isClientMintedId(source.id) || !request.target_bid) return false;
+    const target = blocks.find((block) => block.bid === request.target_bid);
+    return !!target && !isClientMintedId(target.id);
+  }
+
+  function isUntouchedEmptySeed(block: ParsedBlock): boolean {
+    return blocks.length === 1
+      && block.id === `${noteId}:new-seed`
+      && block.text === ""
+      && block.raw_text === "";
+  }
+
+  function handleRelocationDragStart(event: DragEvent, block: ParsedBlock) {
+    const bid = block.bid;
+    if (
+      !relocation
+      || relocation.pending
+      || typeof bid !== "string"
+      || bid.length === 0
+      || isClientMintedId(block.id)
+      || !event.dataTransfer
+    ) {
+      event.preventDefault();
+      return;
+    }
+    relocation.onDragStart(event, bid);
+    if (!carriesInternalBlockMove(event)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+
+    const moved = extractSubtree(blocks, bid);
+    const preview = document.createElement("div");
+    const rootText = block.text.trim() || "(empty block)";
+    preview.textContent = `${rootText} · ${moved.length} block${moved.length === 1 ? "" : "s"}`;
+    preview.style.cssText = "position:fixed;left:-10000px;top:-10000px;padding:6px 10px;border-radius:6px;background:#20242b;color:#fff;font:12px system-ui;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    document.body.appendChild(preview);
+    try {
+      event.dataTransfer.setDragImage(preview, 12, 12);
+    } catch {
+      // Some embedded WebViews do not support custom drag images.
+    }
+    requestAnimationFrame(() => preview.remove());
+  }
+
+  function handleRelocationDragOver(event: DragEvent, block: ParsedBlock) {
+    if (!relocation || relocation.pending || !carriesInternalBlockMove(event)) return;
+    if (invalidRelocationTarget(block)) {
+      if (isUntouchedEmptySeed(block)) return;
+      // Do not let a self/descendant custom drop bubble to the day-level
+      // append target. Ordinary text/image drops still bypass this handler.
+      event.stopPropagation();
+      return;
+    }
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement) || !block.bid) return;
+    const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    relocation.onDragOver(event, block.bid, placement);
+  }
+
+  function handleRelocationDrop(event: DragEvent, block: ParsedBlock) {
+    if (!relocation || !carriesInternalBlockMove(event)) return;
+    if (invalidRelocationTarget(block)) {
+      if (isUntouchedEmptySeed(block)) return;
+      event.stopPropagation();
+      return;
+    }
+    const transfer = event.dataTransfer;
+    const target = event.currentTarget;
+    if (!transfer || !(target instanceof HTMLElement) || !block.bid) return;
+    const payload = decodeBlockMoveDragPayload(
+      Array.from(transfer.types),
+      transfer.getData(BLOCK_MOVE_MIME),
+    );
+    if (!payload) {
+      event.stopPropagation();
+      return;
+    }
+    const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
+    event.preventDefault();
+    event.stopPropagation();
+    if (placement === "inside" && collapsedBlocks.has(block.id)) {
+      const expanded = new Set(collapsedBlocks);
+      expanded.delete(block.id);
+      collapsedBlocks = expanded;
+      persistFold();
+    }
+    relocation.onDrop(event, block.bid, placement);
   }
 
   function handleBackspace(vi: number) {
@@ -2023,6 +2252,25 @@
   });
 
   let rootEl = $state<HTMLDivElement | undefined>();
+
+  function relocationPrepare(node: HTMLElement) {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        noteId?: string;
+        addressedBids?: string[];
+        expandInsideBid?: string | null;
+        respond?: (promise: Promise<boolean>) => void;
+      }>).detail;
+      if (detail?.noteId !== noteId || typeof detail.respond !== "function") return;
+      detail.respond(prepareOutlinerForRelocation(
+        detail.addressedBids ?? [],
+        detail.expandInsideBid,
+      ));
+    };
+    node.addEventListener(BLOCK_MOVE_PREPARE_EVENT, handler);
+    return { destroy: () => node.removeEventListener(BLOCK_MOVE_PREPARE_EVENT, handler) };
+  }
+
   let appliedContentJumpId = 0;
   $effect(() => {
     const jump = contentJump;
@@ -2195,14 +2443,35 @@
     <span class="ml-1.5 text-muted-foreground/40">to insert</span>
   </div>
 {:else}
-  <div class="space-y-0" bind:this={rootEl}>
+  <div
+    class="space-y-0"
+    bind:this={rootEl}
+    use:relocationPrepare
+    data-block-outliner
+    data-note-id={noteId}
+    inert={relocation?.pending ? true : undefined}
+    aria-busy={relocation?.pending ? "true" : undefined}
+  >
     {#each visibleBlocks as block, vi (block.id)}
       {@const displayIndent = block.indent_level - drillRootIndent}
       <div
         data-block-vi={vi}
+        data-note-id={noteId}
+        data-block-bid={block.bid ?? undefined}
+        data-move-key-target
+        data-move-invalid={invalidRelocationTarget(block) ? "true" : undefined}
+        data-drop-placement={relocation && relocation.targetBid === block.bid ? relocation.placement ?? undefined : undefined}
+        data-move-source={block.bid && relocationSourceBids.has(block.bid) ? "true" : undefined}
+        ondragover={(event) => handleRelocationDragOver(event, block)}
+        ondrop={(event) => handleRelocationDrop(event, block)}
         class="group flex items-start transition-all relative
           {outlinerHasFocus && focusedIndex === vi ? 'bg-accent/40' : ''}
-          {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}"
+          {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}
+          {block.bid && relocationSourceBids.has(block.bid) ? (relocation?.pending ? 'opacity-60 bg-primary/10' : 'bg-primary/10 ring-1 ring-primary/20 rounded-md') : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'inside' ? 'bg-primary/15 ring-1 ring-primary/50 rounded-md' : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement !== 'inside' ? `after:content-[''] after:absolute after:left-0 after:right-0 after:h-0.5 after:bg-primary after:z-10` : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'before' ? 'after:top-0' : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'after' ? 'after:bottom-0' : ''}"
         style="padding-left: {displayIndent * 24}px;"
       >
         <!-- Threading lines -->
@@ -2232,6 +2501,20 @@
           </button>
         {:else}
           <span class="shrink-0 pl-1 w-[15px]"></span>
+        {/if}
+
+        {#if relocation}
+          <button
+            type="button"
+            data-move-handle
+            draggable={!relocation.pending && !!block.bid && !isClientMintedId(block.id)}
+            class="shrink-0 w-4 pt-[10px] cursor-grab active:cursor-grabbing text-muted-foreground/25 hover:text-muted-foreground/70 transition-colors"
+            aria-label="Move block subtree"
+            title={isClientMintedId(block.id) ? "Wait for this block to save before moving" : "Move block subtree"}
+            onclick={(event) => event.stopPropagation()}
+            ondragstart={(event) => handleRelocationDragStart(event, block)}
+            ondragend={() => relocation.onCancel()}
+          >⠿</button>
         {/if}
 
         <!-- Bullet — click to drill in. Two styles via prefs.bulletStyle:

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 
 import {
   BLOCK_MOVE_MIME,
@@ -13,6 +14,16 @@ import {
   outdentSubtreeToRoot,
   planBlockMove,
 } from "../../src/lib/block-tree-move.ts";
+import * as blockTreeMove from "../../src/lib/block-tree-move.ts";
+
+const blockOutlinerSource = readFileSync(
+  new URL("../../src/lib/components/BlockOutliner.svelte", import.meta.url),
+  "utf8",
+);
+const journalViewSource = readFileSync(
+  new URL("../../src/lib/components/JournalView.svelte", import.meta.url),
+  "utf8",
+);
 
 function blk(id, indent_level) {
   return {
@@ -366,5 +377,357 @@ test("encodeBlockMoveDragPayload serializes only a valid internal locator", () =
   assert.throws(
     () => encodeBlockMoveDragPayload({ ...payload, move_id: "not-a-uuid" }),
     /valid block move drag payload/,
+  );
+});
+
+const MOVE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SOURCE_BID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+function requestForSession() {
+  return {
+    move_id: MOVE_ID,
+    source_note_id: "2026-07-12",
+    root_bid: SOURCE_BID,
+    destination_note_id: "2026-07-12",
+    target_bid: null,
+    placement: "append",
+  };
+}
+
+test("block move session covers start, target, submit, and success transitions", () => {
+  assert.equal(typeof blockTreeMove.reduceBlockMoveSession, "function");
+  assert.ok(blockTreeMove.IDLE_BLOCK_MOVE_SESSION);
+  const request = requestForSession();
+
+  const selecting = blockTreeMove.reduceBlockMoveSession(
+    blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+    { type: "start", request },
+  );
+  assert.deepEqual(selecting, {
+    phase: "selecting",
+    request,
+    targetBid: null,
+    targetNoteId: null,
+    placement: null,
+  });
+
+  const targeted = blockTreeMove.reduceBlockMoveSession(selecting, {
+    type: "target",
+    noteId: "2026-07-11",
+    bid: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    placement: "inside",
+  });
+  assert.equal(targeted.phase, "selecting");
+  assert.equal(targeted.targetNoteId, "2026-07-11");
+  assert.equal(targeted.targetBid, "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+  assert.equal(targeted.placement, "inside");
+  assert.deepEqual(targeted.request, {
+    ...request,
+    destination_note_id: "2026-07-11",
+    target_bid: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    placement: "inside",
+  });
+
+  const pending = blockTreeMove.reduceBlockMoveSession(targeted, { type: "submit" });
+  assert.equal(pending.phase, "pending");
+  assert.strictEqual(pending.request, targeted.request);
+  assert.deepEqual(
+    blockTreeMove.reduceBlockMoveSession(pending, { type: "success" }),
+    blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+  );
+});
+
+test("cancel clears only selection while ordinary error clears submitted state", () => {
+  const request = requestForSession();
+  const selecting = blockTreeMove.reduceBlockMoveSession(
+    blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+    { type: "start", request },
+  );
+  const pending = blockTreeMove.reduceBlockMoveSession(selecting, { type: "submit" });
+
+  assert.deepEqual(
+    blockTreeMove.reduceBlockMoveSession(selecting, { type: "cancel" }),
+    blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(pending, { type: "cancel" }),
+    pending,
+  );
+  for (const state of [selecting, pending]) {
+    assert.deepEqual(
+      blockTreeMove.reduceBlockMoveSession(state, { type: "ordinary-error" }),
+      blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+      state.phase,
+    );
+  }
+});
+
+test("recoverable error retains the exact move id for retry", () => {
+  const request = requestForSession();
+  const selecting = blockTreeMove.reduceBlockMoveSession(
+    blockTreeMove.IDLE_BLOCK_MOVE_SESSION,
+    { type: "start", request },
+  );
+  const pending = blockTreeMove.reduceBlockMoveSession(selecting, { type: "submit" });
+  const retryable = blockTreeMove.reduceBlockMoveSession(pending, { type: "recoverable-error" });
+  assert.equal(retryable.phase, "retryable");
+  assert.equal(retryable.request.move_id, request.move_id);
+  assert.strictEqual(retryable.request, request);
+
+  const retried = blockTreeMove.reduceBlockMoveSession(retryable, { type: "submit" });
+  assert.equal(retried.phase, "pending");
+  assert.strictEqual(retried.request, request);
+});
+
+test("block move session ignores transitions that are invalid for its phase", () => {
+  const request = requestForSession();
+  const idle = blockTreeMove.IDLE_BLOCK_MOVE_SESSION;
+  const selecting = blockTreeMove.reduceBlockMoveSession(idle, { type: "start", request });
+  const targeted = blockTreeMove.reduceBlockMoveSession(selecting, {
+    type: "target",
+    noteId: "2026-07-11",
+    bid: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    placement: "before",
+  });
+  const pending = blockTreeMove.reduceBlockMoveSession(targeted, { type: "submit" });
+  const retryable = blockTreeMove.reduceBlockMoveSession(pending, { type: "recoverable-error" });
+
+  assert.strictEqual(blockTreeMove.reduceBlockMoveSession(idle, { type: "submit" }), idle);
+  assert.strictEqual(blockTreeMove.reduceBlockMoveSession(idle, { type: "recoverable-error" }), idle);
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(idle, {
+      type: "target",
+      noteId: "2026-07-11",
+      bid: null,
+      placement: "append",
+    }),
+    idle,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(pending, {
+      type: "target",
+      noteId: "2026-07-10",
+      bid: null,
+      placement: "append",
+    }),
+    pending,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(retryable, {
+      type: "target",
+      noteId: "2026-07-10",
+      bid: null,
+      placement: "append",
+    }),
+    retryable,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(retryable, { type: "cancel" }),
+    retryable,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(retryable, { type: "ordinary-error" }),
+    idle,
+  );
+  const replacement = { ...request, move_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" };
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(pending, { type: "start", request: replacement }),
+    pending,
+  );
+  assert.strictEqual(
+    blockTreeMove.reduceBlockMoveSession(retryable, { type: "start", request: replacement }),
+    retryable,
+  );
+});
+
+test("relocation preparation follows an outliner that becomes nonempty after mount", () => {
+  assert.match(blockOutlinerSource, /use:relocationPrepare/);
+});
+
+test("inside preparation reveals a folded keyboard target before transport", () => {
+  assert.match(journalViewSource, /expandInsideBid\s*=\s*request\.placement === "inside"/);
+  assert.match(blockOutlinerSource, /prepareOutlinerForRelocation\(\s*addressedBids[^)]*expandInsideBid/s);
+});
+
+test("same-note Alt routes before marking the outliner locally dirty", () => {
+  for (const [start, end] of [
+    ["function handleMoveBlock", "function handleMoveUnderPrevious"],
+    ["function handleMoveUnderPrevious", "function handleOutdentToRoot"],
+  ]) {
+    const body = blockOutlinerSource.slice(
+      blockOutlinerSource.indexOf(start),
+      blockOutlinerSource.indexOf(end),
+    );
+    assert.ok(body.indexOf("if (relocation)") < body.indexOf("lastLocalEditAt = Date.now()"));
+  }
+});
+
+test("same-note Alt keeps client-minted endpoints inert", () => {
+  assert.match(blockOutlinerSource, /sameNoteRelocationHasStableEndpoints/);
+  assert.match(blockOutlinerSource, /\|\| !prev\.bid/);
+});
+
+test("an untouched empty seed lets an internal drop bubble to day append", () => {
+  assert.match(blockOutlinerSource, /isUntouchedEmptySeed/);
+  assert.match(blockOutlinerSource, /if \(isUntouchedEmptySeed\(block\)\) return;/);
+});
+
+test("sameNoteMoveRequestForAction derives subtree-aware Alt-arrow requests", () => {
+  assert.equal(typeof blockTreeMove.sameNoteMoveRequestForAction, "function");
+  const bids = {
+    a: "11111111-1111-4111-8111-111111111111",
+    a1: "22222222-2222-4222-8222-222222222222",
+    b: SOURCE_BID,
+    b1: "33333333-3333-4333-8333-333333333333",
+    c: "44444444-4444-4444-8444-444444444444",
+    c1: "55555555-5555-4555-8555-555555555555",
+  };
+  const blocks = [
+    { ...blk("a", 0), bid: bids.a },
+    { ...blk("a1", 1), bid: bids.a1 },
+    { ...blk("b", 0), bid: bids.b },
+    { ...blk("b1", 1), bid: bids.b1 },
+    { ...blk("c", 0), bid: bids.c },
+    { ...blk("c1", 1), bid: bids.c1 },
+  ];
+  const noteId = "2026-07-12";
+
+  assert.deepEqual(
+    blockTreeMove.sameNoteMoveRequestForAction(blocks, bids.b, noteId, "up", MOVE_ID),
+    {
+      move_id: MOVE_ID,
+      source_note_id: noteId,
+      root_bid: bids.b,
+      destination_note_id: noteId,
+      target_bid: bids.a,
+      placement: "before",
+    },
+  );
+  assert.deepEqual(
+    blockTreeMove.sameNoteMoveRequestForAction(blocks, bids.b, noteId, "down", MOVE_ID),
+    {
+      move_id: MOVE_ID,
+      source_note_id: noteId,
+      root_bid: bids.b,
+      destination_note_id: noteId,
+      target_bid: bids.c,
+      placement: "after",
+    },
+  );
+  assert.deepEqual(
+    blockTreeMove.sameNoteMoveRequestForAction(blocks, bids.b, noteId, "indent", MOVE_ID),
+    {
+      move_id: MOVE_ID,
+      source_note_id: noteId,
+      root_bid: bids.b,
+      destination_note_id: noteId,
+      target_bid: bids.a1,
+      placement: "inside",
+    },
+  );
+});
+
+test("sameNoteMoveRequestForAction rejects unavailable and unstable moves", () => {
+  const only = { ...blk("only", 0), bid: SOURCE_BID };
+  const noteId = "2026-07-12";
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction([only], SOURCE_BID, noteId, "up", MOVE_ID),
+    null,
+  );
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction([only], SOURCE_BID, noteId, "down", MOVE_ID),
+    null,
+  );
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction([only], SOURCE_BID, noteId, "indent", MOVE_ID),
+    null,
+  );
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction([{ ...only, bid: null }], SOURCE_BID, noteId, "up", MOVE_ID),
+    null,
+  );
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction([only], "missing", noteId, "down", MOVE_ID),
+    null,
+  );
+});
+
+test("Alt-Right derives its target from the caller's visible block order", () => {
+  const parentBid = "11111111-1111-4111-8111-111111111111";
+  const hiddenChildBid = "22222222-2222-4222-8222-222222222222";
+  const source = { ...blk("source", 0), bid: SOURCE_BID };
+  const fullBlocks = [
+    { ...blk("parent", 0), bid: parentBid },
+    { ...blk("hidden-child", 1), bid: hiddenChildBid },
+    source,
+  ];
+  const visibleBlocks = [fullBlocks[0], source];
+
+  const request = blockTreeMove.sameNoteMoveRequestForAction(
+    fullBlocks,
+    SOURCE_BID,
+    "2026-07-12",
+    "indent",
+    MOVE_ID,
+    visibleBlocks[0].bid,
+  );
+
+  assert.equal(request.target_bid, parentBid);
+  assert.equal(request.placement, "inside");
+});
+
+test("Alt-Right validates a collapsed source subtree against the full tree", () => {
+  const parentBid = "11111111-1111-4111-8111-111111111111";
+  const childBid = "22222222-2222-4222-8222-222222222222";
+  const blocks = [
+    { ...blk("parent", 0), bid: parentBid },
+    { ...blk("source", 0), bid: SOURCE_BID },
+    { ...blk("collapsed-child", 1), bid: childBid },
+    { ...blk("tail", 0), bid: "33333333-3333-4333-8333-333333333333" },
+  ];
+
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction(
+      blocks,
+      SOURCE_BID,
+      "2026-07-12",
+      "indent",
+      MOVE_ID,
+      childBid,
+    ),
+    null,
+  );
+});
+
+test("sameNoteMoveRequestForAction rejects missing targets and satisfied indent moves", () => {
+  const parentBid = "11111111-1111-4111-8111-111111111111";
+  const missingTarget = [
+    { ...blk("target", 0), bid: null },
+    { ...blk("source", 0), bid: SOURCE_BID },
+  ];
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction(
+      missingTarget,
+      SOURCE_BID,
+      "2026-07-12",
+      "up",
+      MOVE_ID,
+    ),
+    null,
+  );
+
+  const alreadyInside = [
+    { ...blk("parent", 0), bid: parentBid },
+    { ...blk("source", 1), bid: SOURCE_BID },
+  ];
+  assert.equal(
+    blockTreeMove.sameNoteMoveRequestForAction(
+      alreadyInside,
+      SOURCE_BID,
+      "2026-07-12",
+      "indent",
+      MOVE_ID,
+    ),
+    null,
   );
 });

@@ -17,19 +17,48 @@
    * up to its limit).
    */
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { untrack } from "svelte";
-  import { api } from "$lib/api-client";
-  import BlockOutliner, { markNextFocusAsCrossNav } from "$lib/components/BlockOutliner.svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { api, ApiError } from "$lib/api-client";
+  import BlockOutliner, {
+    BLOCK_MOVE_PREPARE_EVENT,
+    lastActiveOutlinerIsWithin,
+    markNextFocusAsCrossNav,
+    type RelocationBindings,
+  } from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
-  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import { getFocusedBlock, setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import { toast } from "$lib/stores/toast.svelte";
   import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
   import { prevDate, dailyWalkDates, filterDisplayableDailies } from "$lib/journal-dates";
   import { previewLines } from "$lib/journal-preview";
+  import { isClientMintedId } from "$lib/block-ops";
+  import {
+    BLOCK_MOVE_MIME,
+    IDLE_BLOCK_MOVE_SESSION,
+    decodeBlockMoveDragPayload,
+    encodeBlockMoveDragPayload,
+    reduceBlockMoveSession,
+    type BlockMoveRequest,
+    type BlockMoveSession,
+    type BlockMoveSessionAction,
+    type MovePlacement,
+  } from "$lib/block-tree-move";
+  import { settleNoteDocsAtServer } from "$lib/loro/note-doc-registry.svelte";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
 
   const queryClient = useQueryClient();
+
+  let moveSession = $state<BlockMoveSession>({ ...IDLE_BLOCK_MOVE_SESSION });
+  const moveActive = $derived(moveSession.phase !== "idle");
+  const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
+  const touchedSyntheticNotes = new Set<string>();
+
+  function dispatchMove(action: BlockMoveSessionAction): BlockMoveSession {
+    moveSession = reduceBlockMoveSession(moveSession, action);
+    return moveSession;
+  }
 
   // Use the user's LOCAL date — toISOString() is UTC, so in evening PST
   // it would already roll over to the next day's daily and surface as
@@ -299,6 +328,7 @@
     // reseeds while typing); cleared on flush.
     base: string | undefined;
     inFlight: AbortController | null;
+    inFlightPromise: Promise<void> | null;
     // True when the note has no file on disk yet (a synthetic day the user
     // just typed into) and must be CREATED before/instead of updated. PUT
     // 404s on a missing note, so the first save POSTs the full content.
@@ -309,7 +339,14 @@
   function getState(noteId: string): SaveState {
     let s = saveStates.get(noteId);
     if (!s) {
-      s = { timer: null, pending: null, base: undefined, inFlight: null, needsCreate: false };
+      s = {
+        timer: null,
+        pending: null,
+        base: undefined,
+        inFlight: null,
+        inFlightPromise: null,
+        needsCreate: false,
+      };
       saveStates.set(noteId, s);
     }
     return s;
@@ -327,71 +364,579 @@
     // base — they're the same during a typing burst, but first-wins is the
     // safe choice if an external reseed ever lands mid-window).
     if (s.base === undefined) s.base = baseContent;
-    if (isSynthetic) s.needsCreate = true;
+    if (isSynthetic) {
+      s.needsCreate = true;
+      touchedSyntheticNotes.add(noteId);
+    }
     if (s.timer) clearTimeout(s.timer);
     setSaving();
-    s.timer = setTimeout(() => { void flushSave(noteId); }, 500);
+    s.timer = setTimeout(() => { void flushSave(noteId).catch(() => {}); }, 500);
   }
 
-  async function flushSave(noteId: string) {
+  function flushSave(noteId: string): Promise<void> {
     const s = getState(noteId);
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
-    if (s.pending === null) return;
+    if (s.pending === null) return s.inFlightPromise ?? Promise.resolve();
+    if (s.inFlightPromise) {
+      const predecessor = s.inFlightPromise;
+      return predecessor.then(
+        () => flushSave(noteId),
+        async (error) => {
+          // A failed predecessor must not strand content typed behind it.
+          // Drain that successor first, then preserve a failed completion so
+          // relocation preflight still fails closed.
+          await flushSave(noteId);
+          throw error;
+        },
+      );
+    }
     const content = s.pending;
     s.pending = null;
     const base = s.base;
     s.base = undefined;
-    if (s.inFlight) s.inFlight.abort();
     const controller = new AbortController();
     s.inFlight = controller;
     // Phase 9.7 — optimistic pre-set so undo/cancelAndFlush wins WS-echo races.
     const cached = queryClient.getQueryData<Note>(["note", noteId]);
     if (cached) queryClient.setQueryData(["note", noteId], { ...cached, content });
-    try {
-      // Lazy-create: a synthetic day's first edit POSTs the full content
-      // (which already carries the daily frontmatter), then the journal
-      // refetch re-renders it as a real day. Claim needsCreate up front so
-      // a coalesced double-flush doesn't double-create.
-      if (s.needsCreate) {
-        s.needsCreate = false;
-        try {
-          const created = await api.createNote(noteId, content);
-          queryClient.setQueryData(["note", noteId], created);
-          queryClient.invalidateQueries({ queryKey: ["notes"] });
-          setSaved();
-          return;
-        } catch (createErr) {
-          // Already exists (race) or create failed — fall through to PUT.
-          console.warn(`Daily lazy-create fell back to update for ${noteId}:`, createErr);
+    const completion = (async () => {
+      try {
+        // Lazy-create: a synthetic day's first edit POSTs the full content
+        // (which already carries the daily frontmatter), then the journal
+        // refetch re-renders it as a real day. Claim needsCreate up front so
+        // a coalesced double-flush doesn't double-create.
+        if (s.needsCreate) {
+          s.needsCreate = false;
+          try {
+            const created = await api.createNote(noteId, content);
+            queryClient.setQueryData(["note", noteId], created);
+            await queryClient.invalidateQueries({ queryKey: ["notes"] });
+            setSaved();
+            return;
+          } catch (createErr) {
+            // Already exists (race) or create failed — fall through to PUT.
+            console.warn(`Daily lazy-create fell back to update for ${noteId}:`, createErr);
+          }
+        }
+        const updated = await api.updateNote(noteId, content, base, controller.signal);
+        if (controller.signal.aborted) return;
+        queryClient.setQueryData(["note", noteId], updated);
+        setSaved();
+      } catch (e) {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        setSaveError(msg);
+        console.error(`Daily save failed for ${noteId}:`, e);
+        throw e;
+      } finally {
+        if (s.inFlight === controller) {
+          s.inFlight = null;
+          s.inFlightPromise = null;
         }
       }
-      const updated = await api.updateNote(noteId, content, base, controller.signal);
-      if (controller.signal.aborted) return;
-      queryClient.setQueryData(["note", noteId], updated);
-      setSaved();
-    } catch (e) {
-      if ((e as { name?: string })?.name === "AbortError") return;
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      setSaveError(msg);
-      console.error(`Daily save failed for ${noteId}:`, e);
-    } finally {
-      if (s.inFlight === controller) s.inFlight = null;
+    })();
+    s.inFlightPromise = completion;
+    return completion;
+  }
+
+  async function settleJournalSave(noteId: string): Promise<void> {
+    const s = getState(noteId);
+    let failed = false;
+    let firstFailure: unknown;
+    while (true) {
+      if (s.inFlightPromise) {
+        try {
+          await s.inFlightPromise;
+        } catch (error) {
+          if (!failed) firstFailure = error;
+          failed = true;
+        }
+        continue;
+      }
+      if (s.pending === null) {
+        if (failed) throw firstFailure;
+        return;
+      }
+      try {
+        await flushSave(noteId);
+      } catch (error) {
+        if (!failed) firstFailure = error;
+        failed = true;
+      }
     }
   }
 
-  function cancelAndFlush(noteId: string, fullContent: string, baseContent?: string) {
+  function cancelAndFlush(noteId: string, fullContent: string, baseContent?: string): Promise<void> {
     const s = getState(noteId);
     s.pending = fullContent;
     if (baseContent !== undefined) s.base = baseContent;
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
-    if (s.inFlight) { s.inFlight.abort(); s.inFlight = null; }
-    void flushSave(noteId);
+    // Preserve any live request as an ordering predecessor. `settleJournalSave`
+    // awaits it, then flushes this newer body and loops until the queue is quiet.
+    const completion = settleJournalSave(noteId);
+    void completion.catch(() => {});
+    return completion;
   }
 
   // ----- Anchor scroll -----
 
   let scrollContainer = $state<HTMLElement | undefined>();
   let scrolledForAnchor = $state<string>("");
+
+  function selectorValue(value: string): string {
+    return CSS.escape(value);
+  }
+
+  function daySection(noteId: string): HTMLElement | null {
+    return scrollContainer?.querySelector<HTMLElement>(
+      `.day[data-note-id="${selectorValue(noteId)}"]`,
+    ) ?? null;
+  }
+
+  function autoScrollMove(event: DragEvent) {
+    const outline = scrollContainer?.closest<HTMLElement>(".gr-outline");
+    if (!outline) return;
+    const rect = outline.getBoundingClientRect();
+    const edge = Math.min(72, rect.height / 4);
+    if (event.clientY < rect.top + edge) outline.scrollBy({ top: -24, behavior: "auto" });
+    else if (event.clientY > rect.bottom - edge) outline.scrollBy({ top: 24, behavior: "auto" });
+  }
+
+  function carriesInternalMove(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes(BLOCK_MOVE_MIME);
+  }
+
+  function payloadMatchesSession(event: DragEvent): boolean {
+    const transfer = event.dataTransfer;
+    const request = moveSession.request;
+    if (!transfer || !request) return false;
+    const payload = decodeBlockMoveDragPayload(
+      Array.from(transfer.types),
+      transfer.getData(BLOCK_MOVE_MIME),
+    );
+    return !!payload
+      && payload.move_id === request.move_id
+      && payload.source_note_id === request.source_note_id
+      && payload.root_bid === request.root_bid;
+  }
+
+  function beginPointerMove(event: DragEvent, noteId: string, sourceBid: string) {
+    const transfer = event.dataTransfer;
+    if (!transfer || moveSession.phase !== "idle") {
+      event.preventDefault();
+      return;
+    }
+    const moveId = crypto.randomUUID();
+    transfer.clearData();
+    transfer.setData(BLOCK_MOVE_MIME, encodeBlockMoveDragPayload({
+      move_id: moveId,
+      source_note_id: noteId,
+      root_bid: sourceBid,
+    }));
+    transfer.effectAllowed = "move";
+    dispatchMove({
+      type: "start",
+      request: {
+        move_id: moveId,
+        source_note_id: noteId,
+        root_bid: sourceBid,
+        destination_note_id: noteId,
+        target_bid: null,
+        placement: "append",
+      },
+    });
+  }
+
+  function targetMove(noteId: string, bid: string | null, placement: MovePlacement): BlockMoveSession {
+    const next = reduceBlockMoveSession(moveSession, {
+      type: "target",
+      noteId,
+      bid,
+      placement,
+    });
+    moveSession = next;
+    ensureMounted(noteId);
+    return next;
+  }
+
+  function hoverBlockTarget(event: DragEvent, noteId: string, bid: string, placement: Exclude<MovePlacement, "append">) {
+    if (moveSession.phase !== "selecting") return;
+    autoScrollMove(event);
+    targetMove(noteId, bid, placement);
+  }
+
+  function dropOnBlock(event: DragEvent, noteId: string, bid: string, placement: Exclude<MovePlacement, "append">) {
+    if (moveSession.phase !== "selecting" || !payloadMatchesSession(event)) return;
+    const targeted = targetMove(noteId, bid, placement);
+    void submitSelectedMove(targeted);
+  }
+
+  function handleDayDragOver(event: DragEvent, noteId: string) {
+    if (moveSession.phase !== "selecting" || !carriesInternalMove(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    ensureMounted(noteId);
+    autoScrollMove(event);
+    targetMove(noteId, null, "append");
+  }
+
+  function handleDayDrop(event: DragEvent, noteId: string) {
+    if (!carriesInternalMove(event)) return;
+    if (moveSession.phase !== "selecting" || !payloadMatchesSession(event)) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const targeted = targetMove(noteId, null, "append");
+    void submitSelectedMove(targeted);
+  }
+
+  function cancelSelectingMove() {
+    if (moveSession.phase !== "selecting") return;
+    const request = moveSession.request;
+    dispatchMove({ type: "cancel" });
+    if (request) void focusBlockBid(request.source_note_id, request.root_bid);
+  }
+
+  async function prepareOutliner(
+    noteId: string,
+    addressedBids: string[],
+    required: boolean,
+    expandInsideBid: string | null,
+  ): Promise<void> {
+    await tick();
+    const root = daySection(noteId)?.querySelector<HTMLElement>(
+      `[data-block-outliner][data-note-id="${selectorValue(noteId)}"]`,
+    ) ?? null;
+    if (!root) {
+      if (required) throw new Error(`Move source ${noteId} is not mounted`);
+      return;
+    }
+    let response: Promise<boolean> | null = null;
+    root.dispatchEvent(new CustomEvent(BLOCK_MOVE_PREPARE_EVENT, {
+      detail: {
+        noteId,
+        addressedBids,
+        expandInsideBid,
+        respond: (promise: Promise<boolean>) => { response = promise; },
+      },
+    }));
+    if (!response || !(await response)) {
+      throw new Error(`Wait for ${noteId} to finish saving, then retry the move`);
+    }
+  }
+
+  async function prepareMove(request: BlockMoveRequest): Promise<void> {
+    ensureMounted(request.destination_note_id);
+    await tick();
+
+    const destinationDay = daySection(request.destination_note_id);
+    const untouchedSyntheticDestination =
+      request.destination_note_id !== request.source_note_id
+      && request.placement === "append"
+      && destinationDay?.classList.contains("synthetic") === true
+      && !touchedSyntheticNotes.has(request.destination_note_id);
+
+    const addressed = new Map<string, {
+      bids: Set<string>;
+      required: boolean;
+      skipOutliner: boolean;
+      expandInsideBid: string | null;
+    }>();
+    const source = {
+      bids: new Set([request.root_bid]),
+      required: true,
+      skipOutliner: false,
+      expandInsideBid: null,
+    };
+    addressed.set(request.source_note_id, source);
+    const destination = addressed.get(request.destination_note_id) ?? {
+      bids: new Set<string>(),
+      required: false,
+      skipOutliner: untouchedSyntheticDestination,
+      expandInsideBid: null,
+    };
+    if (request.target_bid) destination.bids.add(request.target_bid);
+    destination.skipOutliner = destination.skipOutliner || untouchedSyntheticDestination;
+    destination.expandInsideBid = request.placement === "inside"
+      ? request.target_bid
+      : null;
+    addressed.set(request.destination_note_id, destination);
+
+    for (const [noteId, entry] of addressed) {
+      await settleJournalSave(noteId);
+      if (!entry.skipOutliner) {
+        await prepareOutliner(
+          noteId,
+          [...entry.bids],
+          entry.required,
+          entry.expandInsideBid,
+        );
+      }
+      // A failed block-op settle may schedule its whole-body fallback through
+      // this Journal. Drain that queue before advancing to the Loro barrier.
+      await settleJournalSave(noteId);
+    }
+
+    const barrierNotes = [...addressed.keys()].filter(
+      (noteId) => !(untouchedSyntheticDestination && noteId === request.destination_note_id),
+    );
+    await settleNoteDocsAtServer(barrierNotes);
+  }
+
+  function apiErrorDetail(error: unknown): { message: string; retrySafe: boolean; moveId: string | null } {
+    if (!(error instanceof ApiError)) {
+      return {
+        message: error instanceof Error ? error.message : "Block move failed",
+        retrySafe: false,
+        moveId: null,
+      };
+    }
+    try {
+      const parsed = JSON.parse(error.body) as {
+        error?: unknown;
+        retry_safe?: unknown;
+        move_id?: unknown;
+      };
+      return {
+        message: typeof parsed.error === "string" ? parsed.error : error.message,
+        retrySafe: error.status === 503 && parsed.retry_safe === true,
+        moveId: typeof parsed.move_id === "string" ? parsed.move_id : null,
+      };
+    } catch {
+      return { message: error.message, retrySafe: false, moveId: null };
+    }
+  }
+
+  async function settleMoveResponse(request: BlockMoveRequest) {
+    const response = await api.relocateBlockSubtree(request);
+    if (response.move_id !== request.move_id) {
+      throw new Error("Move response id did not match the submitted request");
+    }
+    for (const note of response.notes) {
+      queryClient.setQueryData(["note", note.id], note);
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["notes"] }),
+      ...response.notes.map((note) =>
+        queryClient.invalidateQueries({ queryKey: ["note", note.id], exact: true })
+      ),
+    ]);
+  }
+
+  async function executeMove(request: BlockMoveRequest, withPreflight: boolean) {
+    try {
+      if (withPreflight) await prepareMove(request);
+      await settleMoveResponse(request);
+      dispatchMove({ type: "success" });
+      await focusBlockBid(request.destination_note_id, request.root_bid);
+    } catch (error) {
+      const detail = apiErrorDetail(error);
+      if (
+        error instanceof ApiError
+        && detail.retrySafe
+        && detail.moveId === request.move_id
+      ) {
+        dispatchMove({ type: "recoverable-error" });
+        toast(`${detail.message} · Press R or Enter to retry safely`, "warn", 0);
+        return;
+      }
+      dispatchMove({ type: "ordinary-error" });
+      toast(detail.message, "error", 6000);
+      await focusBlockBid(request.source_note_id, request.root_bid);
+    }
+  }
+
+  async function submitSelectedMove(selected: BlockMoveSession) {
+    if (
+      selected.phase !== "selecting"
+      || !selected.request
+      || !selected.targetNoteId
+      || !selected.placement
+    ) return;
+    moveSession = reduceBlockMoveSession(selected, { type: "submit" });
+    await executeMove(selected.request, true);
+  }
+
+  function submitSameNoteMove(request: BlockMoveRequest) {
+    if (moveSession.phase !== "idle") return;
+    let selected = reduceBlockMoveSession(IDLE_BLOCK_MOVE_SESSION, { type: "start", request });
+    selected = reduceBlockMoveSession(selected, {
+      type: "target",
+      noteId: request.destination_note_id,
+      bid: request.target_bid,
+      placement: request.placement,
+    });
+    moveSession = selected;
+    void submitSelectedMove(selected);
+  }
+
+  function retryMove() {
+    if (moveSession.phase !== "retryable" || !moveSession.request) return;
+    const request = moveSession.request;
+    dispatchMove({ type: "submit" });
+    void executeMove(request, false);
+  }
+
+  async function focusBlockBid(noteId: string, bid: string): Promise<void> {
+    ensureMounted(noteId);
+    await tick();
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const row = daySection(noteId)?.querySelector<HTMLElement>(
+        `[data-block-bid="${selectorValue(bid)}"]`,
+      );
+      const editor = row?.querySelector<HTMLElement>(".cm-editor .cm-content");
+      if (editor) {
+        row?.scrollIntoView({ block: "nearest", behavior: "auto" });
+        editor.focus();
+        return;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  }
+
+  function relocationBindings(noteId: string): RelocationBindings {
+    const request = moveSession.request;
+    const isSource = request?.source_note_id === noteId;
+    const isTarget = moveSession.targetNoteId === noteId;
+    const affected = isSource || request?.destination_note_id === noteId;
+    return {
+      sourceBid: isSource ? request?.root_bid ?? null : null,
+      targetBid: isTarget ? moveSession.targetBid : null,
+      placement: isTarget ? moveSession.placement : null,
+      pending: moveFrozen && affected,
+      onDragStart: (event, sourceBid) => beginPointerMove(event, noteId, sourceBid),
+      onDragOver: (event, targetBid, placement) => hoverBlockTarget(event, noteId, targetBid, placement),
+      onDrop: (event, targetBid, placement) => dropOnBlock(event, noteId, targetBid, placement),
+      onCancel: cancelSelectingMove,
+    };
+  }
+
+  function moveTargetElements(): HTMLElement[] {
+    return [...(scrollContainer?.querySelectorAll<HTMLElement>("[data-move-key-target]") ?? [])];
+  }
+
+  function currentMoveTargetIndex(elements: HTMLElement[]): number {
+    if (moveSession.targetNoteId) {
+      return elements.findIndex((element) => {
+        if (element.dataset.noteId !== moveSession.targetNoteId) return false;
+        return moveSession.targetBid
+          ? element.dataset.blockBid === moveSession.targetBid
+          : element.dataset.moveDayTarget === "true";
+      });
+    }
+    const request = moveSession.request;
+    if (!request) return -1;
+    return elements.findIndex(
+      (element) => element.dataset.noteId === request.source_note_id
+        && element.dataset.blockBid === request.root_bid,
+    );
+  }
+
+  async function navigateMoveTarget(direction: "up" | "down") {
+    let elements = moveTargetElements();
+    let index = currentMoveTargetIndex(elements);
+    const step = direction === "down" ? 1 : -1;
+    for (let cursor = index + step; cursor >= 0 && cursor < elements.length; cursor += step) {
+      const element = elements[cursor];
+      if (element.dataset.moveInvalid === "true") continue;
+      const noteId = element.dataset.noteId;
+      if (!noteId) continue;
+      if (element.dataset.moveDayTarget === "true") {
+        ensureMounted(noteId);
+        targetMove(noteId, null, "append");
+      } else {
+        const bid = element.dataset.blockBid;
+        if (!bid) continue;
+        targetMove(noteId, bid, "after");
+      }
+      element.scrollIntoView({ block: "nearest", behavior: "auto" });
+      return;
+    }
+    if (direction === "down") {
+      loadMore();
+      await tick();
+      elements = moveTargetElements();
+      index = currentMoveTargetIndex(elements);
+      if (index >= 0 && index < elements.length - 1) await navigateMoveTarget(direction);
+    }
+  }
+
+  function commitKeyboardMove(key: "b" | "i" | "a") {
+    if (moveSession.phase !== "selecting" || !moveSession.targetNoteId) return;
+    const placement: MovePlacement = moveSession.targetBid === null
+      ? "append"
+      : key === "b" ? "before" : key === "i" ? "inside" : "after";
+    const targeted = targetMove(moveSession.targetNoteId, moveSession.targetBid, placement);
+    void submitSelectedMove(targeted);
+  }
+
+  function startCommandMove() {
+    if (moveSession.phase !== "idle" || !lastActiveOutlinerIsWithin(scrollContainer ?? null)) return;
+    const block = getFocusedBlock();
+    if (!block?.bid || !block.note_id || isClientMintedId(block.id)) {
+      toast("Wait for the focused block to finish saving before moving it", "warn");
+      return;
+    }
+    const row = daySection(block.note_id)?.querySelector(
+      `[data-block-bid="${selectorValue(block.bid)}"]`,
+    );
+    if (!row) return;
+    dispatchMove({
+      type: "start",
+      request: {
+        move_id: crypto.randomUUID(),
+        source_note_id: block.note_id,
+        root_bid: block.bid,
+        destination_note_id: block.note_id,
+        target_bid: null,
+        placement: "append",
+      },
+    });
+    toast("Move mode · J/K target · B/I/A place · Esc cancel", "info", 5000);
+  }
+
+  onMount(() => {
+    const commandHandler = () => startCommandMove();
+    const keyHandler = (event: KeyboardEvent) => {
+      if (!moveActive) return;
+      const key = event.key.toLowerCase();
+      const handled = key === "escape"
+        || key === "j"
+        || key === "k"
+        || key === "b"
+        || key === "i"
+        || key === "a"
+        || key === "r"
+        || event.key === "Enter";
+      if (!handled) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (moveSession.phase === "pending") return;
+      if (moveSession.phase === "retryable") {
+        if (key === "r" || event.key === "Enter") retryMove();
+        return;
+      }
+      if (key === "escape") {
+        cancelSelectingMove();
+        return;
+      }
+      if (key === "j" || key === "k") {
+        void navigateMoveTarget(key === "j" ? "down" : "up");
+        return;
+      }
+      if (key === "b" || key === "i" || key === "a") commitKeyboardMove(key);
+    };
+    window.addEventListener("tesela:start-block-move", commandHandler);
+    document.addEventListener("keydown", keyHandler, true);
+    return () => {
+      window.removeEventListener("tesela:start-block-move", commandHandler);
+      document.removeEventListener("keydown", keyHandler, true);
+    };
+  });
 
   $effect(() => {
     const a = anchorDate;
@@ -587,7 +1132,22 @@
   }
 </script>
 
-<div bind:this={scrollContainer} class="journal">
+<div
+  bind:this={scrollContainer}
+  class="journal"
+  data-move-mode={moveActive ? moveSession.phase : undefined}
+>
+  {#if moveActive}
+    <div class="move-mode-banner" data-move-status={moveSession.phase}>
+      {#if moveSession.phase === "selecting"}
+        Move subtree · J/K choose target · B before · I inside · A after · Esc cancel
+      {:else if moveSession.phase === "pending"}
+        Moving subtree…
+      {:else}
+        Recovery is safe · press R or Enter to retry this exact move
+      {/if}
+    </div>
+  {/if}
   {#if notesQuery.isLoading}
     <div class="journal-meta">Loading journal…</div>
   {:else}
@@ -601,11 +1161,20 @@
         class="day"
         class:synthetic={isSynthetic}
         data-daily={note.title}
+        data-note-id={note.id}
+        data-drop-placement={moveSession.targetNoteId === note.id && moveSession.targetBid === null ? "append" : undefined}
         class:is-today={isToday}
         class:is-anchor={isAnchor}
         use:mountAction={note.id}
+        ondragover={(event) => handleDayDragOver(event, note.id)}
+        ondrop={(event) => handleDayDrop(event, note.id)}
       >
-        <header class="day-head">
+        <header
+          class="day-head"
+          data-move-key-target
+          data-move-day-target="true"
+          data-note-id={note.id}
+        >
           <h2 class="day-title">{formatDate(note.title)}</h2>
           {#if isToday}
             <span class="day-pill">Today</span>
@@ -627,6 +1196,8 @@
             onCancelAndFlush={(content, base) => cancelAndFlush(note.id, content, base)}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => setFocusedBlock(b)}
+            relocation={relocationBindings(note.id)}
+            onsamenotemove={submitSameNoteMove}
           />
         {:else}
           <!-- Cheap preview until the section scrolls near the viewport.
@@ -660,6 +1231,26 @@
 
 <style>
   .journal { display: flex; flex-direction: column; gap: 28px; padding-block: 16px; }
+  .move-mode-banner {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    align-self: center;
+    padding: 6px 12px;
+    border: 1px solid color-mix(in srgb, var(--primary) 45%, transparent);
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--background) 92%, var(--primary) 8%);
+    color: var(--foreground);
+    box-shadow: 0 4px 16px color-mix(in srgb, #000 18%, transparent);
+    font-family: var(--v9-mono);
+    font-size: 11px;
+  }
+  .day[data-drop-placement="append"] {
+    outline: 1px solid color-mix(in srgb, var(--primary) 65%, transparent);
+    outline-offset: 5px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--primary) 7%, transparent);
+  }
   .journal-meta { font-family: var(--v9-mono); font-size: 11px; color: var(--v9-ink-faint); padding: 12px 0; }
   /* Line above the date, à la Logseq's daily journal — divider sits in
      the gap, date title immediately follows. First section has no rule
