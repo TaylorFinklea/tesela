@@ -27,7 +27,7 @@
   } from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { getFocusedBlock, setFocusedBlock } from "$lib/stores/current-block.svelte";
-  import { toast } from "$lib/stores/toast.svelte";
+  import { clearToast, getToast, toast } from "$lib/stores/toast.svelte";
   import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
   import { prevDate, dailyWalkDates, filterDisplayableDailies } from "$lib/journal-dates";
   import { previewLines } from "$lib/journal-preview";
@@ -54,6 +54,18 @@
   const moveActive = $derived(moveSession.phase !== "idle");
   const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
   const touchedSyntheticNotes = new Set<string>();
+  let moveToastId: number | null = null;
+
+  function showMoveToast(message: string, tone: "info" | "warn", durationMs: number) {
+    toast(message, tone, durationMs);
+    moveToastId = getToast()?.id ?? null;
+  }
+
+  function clearMoveToast() {
+    const current = getToast();
+    if (moveToastId !== null && current?.id === moveToastId) clearToast();
+    moveToastId = null;
+  }
 
   function dispatchMove(action: BlockMoveSessionAction): BlockMoveSession {
     moveSession = reduceBlockMoveSession(moveSession, action);
@@ -597,6 +609,7 @@
     if (moveSession.phase !== "selecting") return;
     const request = moveSession.request;
     dispatchMove({ type: "cancel" });
+    clearMoveToast();
     if (request) void focusBlockBid(request.source_note_id, request.root_bid);
   }
 
@@ -731,6 +744,7 @@
       if (withPreflight) await prepareMove(request);
       await settleMoveResponse(request);
       dispatchMove({ type: "success" });
+      clearMoveToast();
       await focusBlockBid(request.destination_note_id, request.root_bid);
     } catch (error) {
       const detail = apiErrorDetail(error);
@@ -740,9 +754,10 @@
         && detail.moveId === request.move_id
       ) {
         dispatchMove({ type: "recoverable-error" });
-        toast(`${detail.message} · Press R or Enter to retry safely`, "warn", 0);
+        showMoveToast(`${detail.message} · Press R or Enter to retry safely`, "warn", 0);
         return;
       }
+      clearMoveToast();
       dispatchMove({ type: "ordinary-error" });
       toast(detail.message, "error", 6000);
       await focusBlockBid(request.source_note_id, request.root_bid);
@@ -756,6 +771,7 @@
       || !selected.targetNoteId
       || !selected.placement
     ) return;
+    clearMoveToast();
     moveSession = reduceBlockMoveSession(selected, { type: "submit" });
     await executeMove(selected.request, true);
   }
@@ -776,6 +792,7 @@
   function retryMove() {
     if (moveSession.phase !== "retryable" || !moveSession.request) return;
     const request = moveSession.request;
+    clearMoveToast();
     dispatchMove({ type: "submit" });
     void executeMove(request, false);
   }
@@ -895,7 +912,7 @@
         placement: "append",
       },
     });
-    toast("Move mode · J/K target · B/I/A place · Esc cancel", "info", 5000);
+    showMoveToast("Move mode · J/K target · B/I/A place · Esc cancel", "info", 5000);
   }
 
   onMount(() => {
@@ -935,6 +952,7 @@
     return () => {
       window.removeEventListener("tesela:start-block-move", commandHandler);
       document.removeEventListener("keydown", keyHandler, true);
+      clearMoveToast();
     };
   });
 

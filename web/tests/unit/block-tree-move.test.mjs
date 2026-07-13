@@ -46,6 +46,10 @@ function shape(blocks) {
   return blocks.map((b) => `${b.id}:${b.indent_level}`);
 }
 
+function sourceBetween(source, start, end) {
+  return source.slice(source.indexOf(start), source.indexOf(end));
+}
+
 test("moveSubtreeUp swaps the selected block plus descendants with the previous sibling subtree", () => {
   const blocks = [
     blk("a", 0),
@@ -570,6 +574,38 @@ test("same-note Alt keeps client-minted endpoints inert", () => {
 test("an untouched empty seed lets an internal drop bubble to day append", () => {
   assert.match(blockOutlinerSource, /isUntouchedEmptySeed/);
   assert.match(blockOutlinerSource, /if \(isUntouchedEmptySeed\(block\)\) return;/);
+});
+
+test("move toast cleanup never clears a newer unrelated toast", () => {
+  const cleanup = sourceBetween(
+    journalViewSource,
+    "function clearMoveToast",
+    "function dispatchMove",
+  );
+  assert.match(cleanup, /getToast\(\)/);
+  assert.match(cleanup, /current\?\.id === moveToastId/);
+  assert.match(cleanup, /clearToast\(\)/);
+});
+
+test("move instructions and recovery toasts clear when their session leaves that phase", () => {
+  const cancel = sourceBetween(
+    journalViewSource,
+    "function cancelSelectingMove",
+    "async function prepareOutliner",
+  );
+  const execute = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const retry = sourceBetween(
+    journalViewSource,
+    "function retryMove",
+    "async function focusBlockBid",
+  );
+  assert.match(cancel, /clearMoveToast\(\)/);
+  assert.match(execute, /type: "success"[\s\S]*clearMoveToast\(\)/);
+  assert.match(retry, /clearMoveToast\(\)[\s\S]*type: "submit"/);
 });
 
 test("sameNoteMoveRequestForAction derives subtree-aware Alt-arrow requests", () => {
