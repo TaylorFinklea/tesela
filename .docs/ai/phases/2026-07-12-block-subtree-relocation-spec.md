@@ -253,8 +253,8 @@ roll back by writing note bodies.
 - On precondition failure, clear pending state, retain source focus, and toast
   the server error. On recoverable post-intent failure, tell the user retry is
   safe and retain the original request/move id for that retry; `Enter` or `r`
-  repeats that exact request and Escape cancels. The next refresh reflects
-  recovery.
+  repeats that exact request. Escape cancels only before submission; pending or
+  retryable durable commands remain frozen. The next refresh reflects recovery.
 
 ## Safety invariants
 
