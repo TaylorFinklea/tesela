@@ -576,6 +576,27 @@ test("an untouched empty seed lets an internal drop bubble to day append", () =>
   assert.match(blockOutlinerSource, /if \(isUntouchedEmptySeed\(block\)\) return;/);
 });
 
+test("a canonical moved body replaces an untouched mounted synthetic seed", () => {
+  const dirtyGuard = sourceBetween(
+    blockOutlinerSource,
+    "function hasUnsavedLocalEdits",
+    "function applyExternalReparse",
+  );
+  const reparse = sourceBetween(
+    blockOutlinerSource,
+    "function applyExternalReparse",
+    "// Clear undo/redo on page navigation",
+  );
+  assert.match(
+    dirtyGuard,
+    /isClientMintedId\(b\.id\)\s*&&\s*!isUntouchedEmptySeed\(b\)/,
+  );
+  assert.match(
+    reparse,
+    /isClientMintedId\(focusedId\)\s*&&\s*!isUntouchedEmptySeed\(focusedBlock\)/,
+  );
+});
+
 test("move toast cleanup never clears a newer unrelated toast", () => {
   const cleanup = sourceBetween(
     journalViewSource,

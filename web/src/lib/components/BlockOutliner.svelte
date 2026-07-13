@@ -768,7 +768,7 @@
    *  fast-path that bypasses this guard entirely, so the held state resolves
    *  the moment our save round-trips. */
   function hasUnsavedLocalEdits(): boolean {
-    return blocks.some((b) => isClientMintedId(b.id));
+    return blocks.some((b) => isClientMintedId(b.id) && !isUntouchedEmptySeed(b));
   }
 
   /** Apply an external body reparse. Extracted from the $effect below
@@ -828,8 +828,14 @@
     // below would adopt the stale pre-merge body AND clear undo history.
     // Skip this reparse entirely; the next body change after the save
     // round-trips will be a no-op because by then `body === lastSentBody`.
-    const focusedId = blocks[focusedIndex]?.id ?? "";
-    if (isClientMintedId(focusedId) && targetBody !== lastSentBody) {
+    const focusedBlock = blocks[focusedIndex];
+    const focusedId = focusedBlock?.id ?? "";
+    if (
+      focusedBlock
+      && isClientMintedId(focusedId)
+      && !isUntouchedEmptySeed(focusedBlock)
+      && targetBody !== lastSentBody
+    ) {
       // Mark the body we couldn't apply so the deferred timer doesn't
       // fire on it either. (It'll keep being re-checked as new WS
       // events arrive and update `body`.)
