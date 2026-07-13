@@ -55,8 +55,10 @@
   const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
   const touchedSyntheticNotes = new Set<string>();
   let moveToastId: number | null = null;
+  let moveUiDisposed = false;
 
   function showMoveToast(message: string, tone: "info" | "warn", durationMs: number) {
+    if (moveUiDisposed) return;
     toast(message, tone, durationMs);
     moveToastId = getToast()?.id ?? null;
   }
@@ -743,10 +745,12 @@
     try {
       if (withPreflight) await prepareMove(request);
       await settleMoveResponse(request);
+      if (moveUiDisposed) return;
       dispatchMove({ type: "success" });
       clearMoveToast();
       await focusBlockBid(request.destination_note_id, request.root_bid);
     } catch (error) {
+      if (moveUiDisposed) return;
       const detail = apiErrorDetail(error);
       if (
         error instanceof ApiError
@@ -798,9 +802,11 @@
   }
 
   async function focusBlockBid(noteId: string, bid: string): Promise<void> {
+    if (moveUiDisposed) return;
     ensureMounted(noteId);
     await tick();
     for (let attempt = 0; attempt < 60; attempt++) {
+      if (moveUiDisposed) return;
       const row = daySection(noteId)?.querySelector<HTMLElement>(
         `[data-block-bid="${selectorValue(bid)}"]`,
       );
@@ -916,6 +922,7 @@
   }
 
   onMount(() => {
+    moveUiDisposed = false;
     const commandHandler = () => startCommandMove();
     const keyHandler = (event: KeyboardEvent) => {
       if (!moveActive) return;
@@ -950,6 +957,7 @@
     window.addEventListener("tesela:start-block-move", commandHandler);
     document.addEventListener("keydown", keyHandler, true);
     return () => {
+      moveUiDisposed = true;
       window.removeEventListener("tesela:start-block-move", commandHandler);
       document.removeEventListener("keydown", keyHandler, true);
       clearMoveToast();

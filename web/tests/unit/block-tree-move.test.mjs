@@ -608,6 +608,35 @@ test("move instructions and recovery toasts clear when their session leaves that
   assert.match(retry, /clearMoveToast\(\)[\s\S]*type: "submit"/);
 });
 
+test("late move completions cannot publish UI after Journal teardown", () => {
+  const showToast = sourceBetween(
+    journalViewSource,
+    "function showMoveToast",
+    "function clearMoveToast",
+  );
+  const execute = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const focus = sourceBetween(
+    journalViewSource,
+    "async function focusBlockBid",
+    "function relocationBindings",
+  );
+  const cleanup = journalViewSource.slice(journalViewSource.lastIndexOf("onMount(() => {"));
+
+  assert.match(showToast, /if \(moveUiDisposed\) return;/);
+  assert.ok((execute.match(/if \(moveUiDisposed\) return;/g) ?? []).length >= 2);
+  assert.ok(
+    execute.indexOf("await settleMoveResponse(request)")
+      < execute.indexOf("if (moveUiDisposed) return;"),
+    "durable response/cache work must finish before the success UI guard",
+  );
+  assert.ok((focus.match(/if \(moveUiDisposed\) return;/g) ?? []).length >= 2);
+  assert.match(cleanup, /return \(\) => \{\s*moveUiDisposed = true;[\s\S]*clearMoveToast\(\)/);
+});
+
 test("sameNoteMoveRequestForAction derives subtree-aware Alt-arrow requests", () => {
   assert.equal(typeof blockTreeMove.sameNoteMoveRequestForAction, "function");
   const bids = {
