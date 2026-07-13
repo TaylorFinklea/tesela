@@ -2602,6 +2602,7 @@
               if (!isPinnedTab) setLastActiveOutliner(rootEl ?? null);
             }}
             onchange={(text) => handleBlockChange(block.id, text)}
+            editorKey={stableBlockKey(block)}
             blockId={block.id}
             blockProperties={block.properties}
             bid={block.bid ?? undefined}

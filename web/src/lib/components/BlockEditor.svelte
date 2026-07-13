@@ -580,6 +580,7 @@
     propertyDefs,
     onInsertTemplate,
     isPinnedTab = false,
+    editorKey,
     blockId,
     blockProperties = {},
     bid,
@@ -664,6 +665,10 @@
      *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
      *  children of the current block. */
     onInsertTemplate?: (templateNoteId: string) => void;
+    /** Stable, namespaced identity shared with the parent's keyed row. Used
+     *  by ID-guarded focus stores so local-to-canonical line-id changes cannot
+     *  strand stale registrations while this bid-keyed editor stays mounted. */
+    editorKey: string;
     blockId?: string;
     blockProperties?: Record<string, string>;
     /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
@@ -1717,6 +1722,51 @@
     onLoroText?.(v.state.doc.toString());
   }
 
+  // C2.3 reactive subscription lifecycle — a bid-keyed BlockEditor stays
+  // mounted when its local line id round-trips to a canonical id. Reading
+  // `blockId` makes that transition restart the bounded bootstrap retry,
+  // replacing the remount/retry that line-id keys previously provided. Each
+  // effect generation owns exactly one timer and one unsubscribe handle;
+  // cleanup runs before a restart and again on component teardown.
+  $effect(() => {
+    const v = view;
+    const bindingBlockId = blockId;
+    const blockBid = bid;
+    const slug = noteSlug;
+    if (!browser || !v || !bindingBlockId || !blockBid || !slug) return;
+    const subscribedBid = blockBid;
+    const subscribedSlug = slug;
+
+    let disposed = false;
+    let loroUnsub: (() => void) | null = null;
+    let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attemptsLeft = 15;
+
+    function trySubscribeLoro() {
+      if (disposed || !view) return;
+      const container = getNoteDoc(subscribedSlug)?.blockTextContainer(subscribedBid) ?? null;
+      if (container) {
+        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(batch));
+        return;
+      }
+      if (attemptsLeft <= 0) return;
+      attemptsLeft -= 1;
+      subRetryTimer = setTimeout(() => {
+        subRetryTimer = null;
+        trySubscribeLoro();
+      }, 200);
+    }
+
+    trySubscribeLoro();
+    return () => {
+      disposed = true;
+      if (subRetryTimer) clearTimeout(subRetryTimer);
+      subRetryTimer = null;
+      try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
+      loroUnsub = null;
+    };
+  });
+
   onMount(() => {
     const theme = EditorView.theme({
       "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "var(--theme-font-sans)", lineHeight: "1.7" },
@@ -1759,17 +1809,17 @@
 
     const focusBlurHandler = EditorView.domEventHandlers({
       focus: () => {
-        setFocusedEditor(blockId ?? "");
+        setFocusedEditor(editorKey);
         // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
         // block's note doc while the block is focused.
-        setFocusedNoteDoc(blockId ?? "", noteSlug);
+        setFocusedNoteDoc(editorKey, noteSlug);
         wireVimCtx();
         onFocus?.();
         return false;
       },
       blur: (_e, v) => {
-        clearFocusedEditor(blockId ?? "");
-        clearFocusedNoteDoc(blockId ?? "");
+        clearFocusedEditor(editorKey);
+        clearFocusedNoteDoc(editorKey);
         clearVimCtxIfMine();
         // Model B — lift detected tokens when LEAVING the block (commit-time),
         // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
@@ -2338,36 +2388,11 @@
       });
     }
 
-    // C2.3 read path — subscribe to this block's `text_seq` LoroText so remote
-    // splices apply live into the editor. The container may not exist at mount
-    // (the snapshot bootstrap is async, or this is a brand-new local block), so
-    // we retry on a short backoff until it resolves (or the editor unmounts).
-    // Once subscribed we hold the unsubscribe handle for teardown.
-    let loroUnsub: (() => void) | null = null;
-    let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
-    let loroSubscribed = false;
-    function trySubscribeLoro(attemptsLeft: number) {
-      if (loroSubscribed || !view) return;
-      const container = loroTextContainer();
-      if (container) {
-        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(batch));
-        loroSubscribed = true;
-        return;
-      }
-      if (attemptsLeft <= 0) return;
-      subRetryTimer = setTimeout(() => {
-        subRetryTimer = null;
-        trySubscribeLoro(attemptsLeft - 1);
-      }, 200);
-    }
-    if (browser && bid) trySubscribeLoro(15); // ~3s of retries for slow bootstraps
-
     return () => {
       if (presenceTimer) clearTimeout(presenceTimer);
-      clearFocusedEditor(blockId ?? "");
+      clearFocusedEditor(editorKey);
+      clearFocusedNoteDoc(editorKey);
       vimModeOff?.();
-      if (subRetryTimer) clearTimeout(subRetryTimer);
-      try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
       view?.destroy();
       view = null;
     };

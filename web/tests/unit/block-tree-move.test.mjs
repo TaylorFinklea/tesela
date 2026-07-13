@@ -20,6 +20,10 @@ const blockOutlinerSource = readFileSync(
   new URL("../../src/lib/components/BlockOutliner.svelte", import.meta.url),
   "utf8",
 );
+const blockEditorSource = readFileSync(
+  new URL("../../src/lib/components/BlockEditor.svelte", import.meta.url),
+  "utf8",
+);
 const journalViewSource = readFileSync(
   new URL("../../src/lib/components/JournalView.svelte", import.meta.url),
   "utf8",
@@ -641,6 +645,48 @@ test("focusing a rekeyed row republishes that exact block", () => {
     editor,
     /onfocus=\{\(\) => \{[\s\S]*?focusedIndex = vi;[\s\S]*?onfocusedblockchange\?\.\(block\)/,
   );
+});
+
+test("focus and Loro undo routing share the row's stable editor key", () => {
+  const editorProps = sourceBetween(
+    blockOutlinerSource,
+    "<BlockEditor",
+    "<!-- Display chips",
+  );
+  const lifecycle = sourceBetween(
+    blockEditorSource,
+    "const focusBlurHandler",
+    "// Leader → editor bridge",
+  );
+
+  assert.match(editorProps, /editorKey=\{stableBlockKey\(block\)\}/);
+  assert.match(lifecycle, /setFocusedEditor\(editorKey\)/);
+  assert.match(lifecycle, /setFocusedNoteDoc\(editorKey, noteSlug\)/);
+  assert.equal((lifecycle.match(/clearFocusedEditor\(editorKey\)/g) ?? []).length, 2);
+  assert.equal((lifecycle.match(/clearFocusedNoteDoc\(editorKey\)/g) ?? []).length, 2);
+});
+
+test("Loro subscription restarts on canonical block identity with owned cleanup", () => {
+  const subscription = sourceBetween(
+    blockEditorSource,
+    "// C2.3 reactive subscription lifecycle",
+    "onMount(() => {",
+  );
+  const editorMount = sourceBetween(
+    blockEditorSource,
+    "onMount(() => {",
+    "// Leader → editor bridge",
+  );
+
+  assert.match(subscription, /const bindingBlockId = blockId;/);
+  assert.match(subscription, /let disposed = false;/);
+  assert.match(subscription, /if \(disposed \|\| !view\) return;/);
+  assert.match(subscription, /subRetryTimer = setTimeout/);
+  assert.match(
+    subscription,
+    /return \(\) => \{[\s\S]*disposed = true;[\s\S]*clearTimeout\(subRetryTimer\)[\s\S]*loroUnsub\?\.\(\)/,
+  );
+  assert.doesNotMatch(editorMount, /trySubscribeLoro/);
 });
 
 test("move toast cleanup never clears a newer unrelated toast", () => {
