@@ -78,6 +78,7 @@
     moveSubtreeUp,
     outdentSubtreeToRoot,
     sameNoteMoveRequestForAction,
+    stableBlockKey,
     type BlockMoveRequest,
   } from "$lib/block-tree-move";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
@@ -532,7 +533,7 @@
   let deferredReparseTimer: ReturnType<typeof setTimeout> | null = null;
   // Track which note `lastExternalBody`/`lastSentBody` belong to so the
   // body-sync effect can distinguish a real noteId change (always replace)
-  // from a same-note body update (preserve focus by block id).
+  // from a same-note body update (preserve focus by stable block key).
   let lastBodyNoteId = $state(noteId);
 
   // tesela-baa: hold this note's Loro doc open (ref-counted) while any
@@ -830,6 +831,7 @@
     // round-trips will be a no-op because by then `body === lastSentBody`.
     const focusedBlock = blocks[focusedIndex];
     const focusedId = focusedBlock?.id ?? "";
+    const focusedKey = focusedBlock ? stableBlockKey(focusedBlock) : "";
     if (
       focusedBlock
       && isClientMintedId(focusedId)
@@ -841,7 +843,9 @@
       // events arrive and update `body`.)
       return;
     }
-    const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
+    const newIdx = focusedKey
+      ? reparsed.findIndex((b) => stableBlockKey(b) === focusedKey)
+      : -1;
     if (newIdx === -1) {
       // Focused block disappeared. If it was a local-only id we
       // already returned above; reaching here means the server-canonical
@@ -880,8 +884,8 @@
       lastExternalBody = body;
       // Phase 9.9 follow-up — when noteId changes (page nav within same
       // BlockOutliner instance, e.g. drilling via gd or Esc-back), every
-      // old block id has the previous note's prefix and won't exist in the
-      // new body. The "preserve focus by id" branch below would always hit
+      // old stable block key belongs to the previous note and won't exist in
+      // the new body. The preserve-focus branch below would always hit
       // its newIdx === -1 early-return and leave `blocks` stale, so the
       // user sees the wrong note's content. Reset everything for the new
       // note instead.
@@ -2458,7 +2462,7 @@
     inert={relocation?.pending ? true : undefined}
     aria-busy={relocation?.pending ? "true" : undefined}
   >
-    {#each visibleBlocks as block, vi (block.id)}
+    {#each visibleBlocks as block, vi (stableBlockKey(block))}
       {@const displayIndent = block.indent_level - drillRootIndent}
       <div
         data-block-vi={vi}
@@ -2588,6 +2592,7 @@
             onblur={() => {}}
             onfocus={() => {
               focusedIndex = vi;
+              onfocusedblockchange?.(block);
               autoFocused = false;
               // Cross-day j/k navigation arms a one-shot flag so we land
               // in NORMAL mode on the target block; otherwise it's a

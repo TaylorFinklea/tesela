@@ -2,6 +2,13 @@ import type { ParsedBlock } from "./types/ParsedBlock";
 
 export type MovePlacement = "before" | "inside" | "after" | "append";
 
+/** Stable identity for a rendered block/editor. Canonical bids survive line
+ * shifts and reorders; legacy bid-less blocks fall back to their namespaced
+ * local id so the two key domains cannot collide. */
+export function stableBlockKey(block: Pick<ParsedBlock, "id" | "bid">): string {
+  return block.bid ? `bid:${block.bid}` : `id:${block.id}`;
+}
+
 export type BlockMoveRequest = {
   move_id: string;
   source_note_id: string;

@@ -2235,9 +2235,9 @@
     // per-block `noteSlug` PROP (the day this editor belongs to), NOT the single
     // global active doc — a non-focused day's editor must filter incoming frames
     // against ITS OWN slug or it never matches → carets blacked out. `noteSlug`
-    // is stable for this editor's lifetime (the parent re-keys blocks by
-    // `block.id`, which re-mints on any note change), so baking it into the
-    // extension at create time is safe — no Compartment reconfigure needed.
+    // is stable for this editor's lifetime (the parent keys by canonical bid,
+    // with a local-id fallback), so baking it into the extension at create time
+    // is safe — no Compartment reconfigure needed.
     const state = EditorState.create({
       doc: initialText,
       selection: clampedCursor !== undefined ? { anchor: clampedCursor, head: clampedCursor } : undefined,

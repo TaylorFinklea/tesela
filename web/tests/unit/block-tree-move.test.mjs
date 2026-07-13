@@ -597,6 +597,52 @@ test("a canonical moved body replaces an untouched mounted synthetic seed", () =
   );
 });
 
+test("stable block keys survive line shifts and keep fallback identities collision-free", () => {
+  assert.equal(typeof blockTreeMove.stableBlockKey, "function");
+  const stableBlockKey = blockTreeMove.stableBlockKey;
+  const beforeDelete = { id: "2026-07-12:1", bid: SOURCE_BID };
+  const afterDelete = { id: "2026-07-12:0", bid: SOURCE_BID };
+
+  assert.equal(stableBlockKey(beforeDelete), stableBlockKey(afterDelete));
+  assert.notEqual(
+    stableBlockKey({ id: "2026-07-12:new-a", bid: null }),
+    stableBlockKey({ id: "2026-07-12:new-b", bid: null }),
+  );
+  assert.notEqual(
+    stableBlockKey(beforeDelete),
+    stableBlockKey({ id: `bid:${SOURCE_BID}`, bid: null }),
+    "bid and fallback key namespaces must not collide",
+  );
+});
+
+test("outliner row ownership and focused reparses use the stable block key", () => {
+  const reparse = sourceBetween(
+    blockOutlinerSource,
+    "function applyExternalReparse",
+    "// Clear undo/redo on page navigation",
+  );
+
+  assert.match(
+    blockOutlinerSource,
+    /\{#each visibleBlocks as block, vi \(stableBlockKey\(block\)\)\}/,
+  );
+  assert.match(reparse, /stableBlockKey\(focusedBlock\)/);
+  assert.match(reparse, /stableBlockKey\(b\)\s*===\s*focusedKey/);
+});
+
+test("focusing a rekeyed row republishes that exact block", () => {
+  const editor = sourceBetween(
+    blockOutlinerSource,
+    "<BlockEditor",
+    "<!-- Display chips",
+  );
+
+  assert.match(
+    editor,
+    /onfocus=\{\(\) => \{[\s\S]*?focusedIndex = vi;[\s\S]*?onfocusedblockchange\?\.\(block\)/,
+  );
+});
+
 test("move toast cleanup never clears a newer unrelated toast", () => {
   const cleanup = sourceBetween(
     journalViewSource,
