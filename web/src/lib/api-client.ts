@@ -17,7 +17,10 @@ import type { TableColumnConfig } from "$lib/table/table-config";
 import type { KeymapConfig } from "$lib/stores/keybindings.svelte";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
-import type { BlockMoveRequest } from "$lib/block-tree-move";
+import {
+  executeBlockSubtreeRelocation,
+  type BlockMoveRequest,
+} from "$lib/block-tree-move";
 import { buildUpdateNoteBody } from "$lib/api-request-bodies";
 import { apiBase } from "$lib/runtime-base";
 
@@ -176,14 +179,7 @@ export const api = {
     );
   },
   relocateBlockSubtree: (req: BlockMoveRequest, signal?: AbortSignal) => {
-    recordLocalSave(req.source_note_id);
-    recordLocalSave(req.destination_note_id);
-    return post<{ move_id: string; notes: Note[] }>("/blocks/move-subtree", req, signal).then(
-      (result) => {
-        for (const note of result.notes) recordLocalSave(note.id);
-        return result;
-      },
-    );
+    return executeBlockSubtreeRelocation<Note>(req, signal, { post, recordLocalSave });
   },
   createNote: (title: string, content: string, tags: string[] = []) => {
     recordLocalSave(title);

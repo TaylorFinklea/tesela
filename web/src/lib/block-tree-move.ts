@@ -11,6 +11,32 @@ export type BlockMoveRequest = {
   placement: MovePlacement;
 };
 
+export type BlockMoveResponse<TNote extends { id: string }> = {
+  move_id: string;
+  notes: TNote[];
+};
+
+export type BlockMoveExecutorDependencies = {
+  post: <T>(path: string, body: unknown, signal?: AbortSignal) => Promise<T>;
+  recordLocalSave: (id: string) => void;
+};
+
+export async function executeBlockSubtreeRelocation<TNote extends { id: string }>(
+  req: BlockMoveRequest,
+  signal: AbortSignal | undefined,
+  dependencies: BlockMoveExecutorDependencies,
+): Promise<BlockMoveResponse<TNote>> {
+  dependencies.recordLocalSave(req.source_note_id);
+  dependencies.recordLocalSave(req.destination_note_id);
+  const response = await dependencies.post<BlockMoveResponse<TNote>>(
+    "/blocks/move-subtree",
+    req,
+    signal,
+  );
+  for (const note of response.notes) dependencies.recordLocalSave(note.id);
+  return response;
+}
+
 export type BlockMoveDragPayload = {
   move_id: string;
   source_note_id: string;

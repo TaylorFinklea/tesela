@@ -1,44 +1,68 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const apiClient = readFileSync(
-  new URL("../../src/lib/api-client.ts", import.meta.url),
-  "utf8",
-);
+import * as blockTreeMove from "../../src/lib/block-tree-move.ts";
 
-test("relocateBlockSubtree posts the typed move request and suppresses echoes for every affected note", () => {
-  assert.match(
-    apiClient,
-    /import type \{ BlockMoveRequest \} from ["']\$lib\/block-tree-move["'];/,
+const request = {
+  move_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  source_note_id: "2026-07-12",
+  root_bid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  destination_note_id: "2026-07-13",
+  target_bid: null,
+  placement: "append",
+};
+
+test("relocation executor preserves the exact transport contract and save ordering", async () => {
+  const execute = blockTreeMove.executeBlockSubtreeRelocation;
+  assert.equal(typeof execute, "function", "expected the API's relocation executor");
+
+  const controller = new AbortController();
+  const response = {
+    move_id: request.move_id,
+    notes: [{ id: request.source_note_id }, { id: request.destination_note_id }],
+  };
+  const calls = [];
+
+  const result = await execute(request, controller.signal, {
+    post: async (path, body, signal) => {
+      calls.push({ kind: "post", path, body, signal });
+      return response;
+    },
+    recordLocalSave: (id) => calls.push({ kind: "save", id }),
+  });
+
+  assert.strictEqual(result, response);
+  assert.deepEqual(
+    calls.map((call) =>
+      call.kind === "save" ? ["save", call.id] : ["post", call.path],
+    ),
+    [
+      ["save", request.source_note_id],
+      ["save", request.destination_note_id],
+      ["post", "/blocks/move-subtree"],
+      ["save", request.source_note_id],
+      ["save", request.destination_note_id],
+    ],
+  );
+  assert.strictEqual(calls[2].body, request, "POST must receive the exact request object");
+  assert.strictEqual(calls[2].signal, controller.signal, "POST must receive the same signal");
+});
+
+test("relocation executor propagates transport rejection without post-response saves", async () => {
+  const execute = blockTreeMove.executeBlockSubtreeRelocation;
+  assert.equal(typeof execute, "function", "expected the API's relocation executor");
+
+  const rejection = new Error("transport failed");
+  const saves = [];
+  await assert.rejects(
+    execute(request, undefined, {
+      post: async () => {
+        throw rejection;
+      },
+      recordLocalSave: (id) => saves.push(id),
+    }),
+    (error) => error === rejection,
   );
 
-  const methodStart = apiClient.indexOf("relocateBlockSubtree:");
-  assert.notEqual(methodStart, -1, "expected api.relocateBlockSubtree");
-
-  const sourceSave = apiClient.indexOf(
-    "recordLocalSave(req.source_note_id)",
-    methodStart,
-  );
-  const destinationSave = apiClient.indexOf(
-    "recordLocalSave(req.destination_note_id)",
-    methodStart,
-  );
-  const requestPost = apiClient.indexOf(
-    'post<{ move_id: string; notes: Note[] }>("/blocks/move-subtree", req, signal)',
-    methodStart,
-  );
-  const returnedSave = apiClient.indexOf("recordLocalSave(note.id)", requestPost);
-
-  assert.ok(sourceSave > methodStart, "source own-echo window must open before POST");
-  assert.ok(
-    destinationSave > sourceSave,
-    "destination own-echo window must open before POST",
-  );
-  assert.ok(requestPost > destinationSave, "move request must follow both preflight saves");
-  assert.ok(returnedSave > requestPost, "every returned note id must be recorded after POST");
-  assert.match(
-    apiClient.slice(methodStart, returnedSave + "recordLocalSave(note.id)".length),
-    /relocateBlockSubtree:\s*\(req: BlockMoveRequest, signal\?: AbortSignal\)[\s\S]*for \(const note of result\.notes\)[\s\S]*recordLocalSave\(note\.id\)/,
-  );
+  assert.deepEqual(saves, [request.source_note_id, request.destination_note_id]);
 });

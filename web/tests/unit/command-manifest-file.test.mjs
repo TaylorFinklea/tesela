@@ -64,4 +64,5 @@ test("manifest exposes Move block subtree on the free a m chord", () => {
   assert.equal(entry.label, "Move block subtree");
   assert.deepEqual(entry.chord, ["a", "m"]);
   assert.deepEqual(entry.surfaces, ["leader", "palette"]);
+  assert.equal(manifest.filter((item) => item.chord?.join(" ") === "a m").length, 1);
 });
