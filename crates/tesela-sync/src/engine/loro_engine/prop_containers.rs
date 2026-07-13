@@ -284,6 +284,21 @@ fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList
         .and_then(|c| c.into_list().ok())
 }
 
+/// Ensure a multi-value property has an ordered-list container and key even
+/// when it currently has no members.
+pub(super) fn prop_ensure_list(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+) -> SyncResult<loro::LoroList> {
+    clear_incompatible_child(props, key, loro::ContainerType::List)?;
+    let list = props
+        .get_or_create_container(key, loro::LoroList::new())
+        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    prop_keys_ensure(prop_keys, key)?;
+    Ok(list)
+}
+
 /// Add a value to a multi-value property's nested LoroList, union semantics
 /// (a value already present is a no-op).
 pub(super) fn prop_add_to_list(
@@ -292,14 +307,11 @@ pub(super) fn prop_add_to_list(
     key: &str,
     value: &PropScalar,
 ) -> SyncResult<()> {
-    clear_incompatible_child(props, key, loro::ContainerType::List)?;
-    let list: loro::LoroList = props
-        .get_or_create_container(key, loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    let list = prop_ensure_list(props, prop_keys, key)?;
     if list_position(&list, value).is_none() {
         list_push_scalar(&list, value)?;
     }
-    prop_keys_ensure(prop_keys, key)
+    Ok(())
 }
 
 /// Remove a value from a multi-value property's list (no-op if absent or the

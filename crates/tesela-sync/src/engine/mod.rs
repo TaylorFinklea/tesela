@@ -39,7 +39,10 @@ pub struct RelocationNoteSeed {
     pub title: String,
     /// Canonical seed Markdown whose frontmatter and page properties are kept.
     pub content: String,
-    /// Note creation time in Unix milliseconds.
+    /// Note creation time in Unix milliseconds, retained in the canonical
+    /// request for Task 4 intent/receipt hashing. As with `NoteUpsert`, the
+    /// rendered creation timestamp remains authoritative in `content`
+    /// frontmatter rather than a second Loro root register.
     pub created_at_millis: i64,
 }
 

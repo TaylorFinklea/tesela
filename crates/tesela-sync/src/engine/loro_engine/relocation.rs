@@ -71,11 +71,15 @@ fn capture_subtree(
         .ok_or_else(|| rejected(format!("missing source root {}", hex_id(&root_bid))))?;
     let root_indent = read_indent_level(&tree, source_order[root_index])
         .ok_or_else(|| rejected("source root has no valid indent metadata"))?;
-    let subtree_end = source_order[root_index + 1..]
-        .iter()
-        .position(|node| read_indent_level(&tree, *node).unwrap_or(0) <= root_indent)
-        .map(|offset| root_index + 1 + offset)
-        .unwrap_or(source_order.len());
+    let mut subtree_end = source_order.len();
+    for (offset, node) in source_order[root_index + 1..].iter().enumerate() {
+        let indent = read_indent_level(&tree, *node)
+            .ok_or_else(|| rejected("source subtree boundary contains invalid indent metadata"))?;
+        if indent <= root_indent {
+            subtree_end = root_index + 1 + offset;
+            break;
+        }
+    }
 
     let mut blocks = Vec::with_capacity(subtree_end - root_index);
     for node in &source_order[root_index..subtree_end] {
@@ -139,11 +143,16 @@ fn target_placement(
         ),
         None => None,
     };
-    let after_subtree = order[target_index + 1..]
-        .iter()
-        .position(|node| read_indent_level(tree, *node).unwrap_or(0) <= target_indent)
-        .map(|offset| target_index + 1 + offset)
-        .unwrap_or(order.len());
+    let mut after_subtree = order.len();
+    for (offset, node) in order[target_index + 1..].iter().enumerate() {
+        let indent = read_indent_level(tree, *node).ok_or_else(|| {
+            rejected("destination target boundary contains invalid indent metadata")
+        })?;
+        if indent <= target_indent {
+            after_subtree = target_index + 1 + offset;
+            break;
+        }
+    }
 
     match placement {
         MovePlacement::Before => Ok((target_index, target_indent, target_parent)),
@@ -215,6 +224,7 @@ fn author_snapshot_block(
                 prop_containers::prop_set_text(&props, &prop_keys, key, value)?;
             }
             ResolvedValue::List(values) => {
+                let _ = prop_containers::prop_ensure_list(&props, &prop_keys, key)?;
                 for value in values {
                     prop_containers::prop_add_to_list(&props, &prop_keys, key, value)?;
                 }

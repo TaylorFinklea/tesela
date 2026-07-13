@@ -87,6 +87,14 @@ async fn relocation_render_pair(
     )
 }
 
+async fn remove_indent_metadata(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16]) {
+    let doc = engine.doc_for_note_mut(note_id).await;
+    let tree = doc.get_tree("blocks");
+    let node = find_node_by_block_id(&tree, &hex_id(&bid)).unwrap();
+    tree.get_meta(node).unwrap().delete("indent_level").unwrap();
+    doc.commit();
+}
+
 async fn insert_nested_block(
     engine: &LoroEngine,
     note_id: [u8; 16],
@@ -620,6 +628,66 @@ async fn cross_note_relocation_preserves_nested_identity_and_typed_properties() 
 }
 
 #[tokio::test]
+async fn cross_note_relocation_preserves_an_existing_empty_typed_list() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xa7; 16];
+    let destination = [0xa8; 16];
+    let root = [0xa9; 16];
+    let target = [0xaa; 16];
+    seed_note(
+        &engine,
+        source,
+        "2026-07-12",
+        stamped_line(0, "moved", root),
+    )
+    .await;
+    seed_note(
+        &engine,
+        destination,
+        "2026-07-11",
+        stamped_line(0, "target", target),
+    )
+    .await;
+    for value in [
+        PropOp::AddToList(PropScalar::Text("only".into())),
+        PropOp::RemoveFromList(PropScalar::Text("only".into())),
+    ] {
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: source,
+                block_id: root,
+                key: "empty-list".into(),
+                value,
+            })
+            .await
+            .unwrap();
+    }
+    let expected = vec![(
+        "empty-list".to_string(),
+        prop_containers::ResolvedValue::List(Vec::new()),
+    )];
+    assert_eq!(block_props_typed(&engine, source, root).await, expected);
+
+    engine
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::Inside,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        block_props_typed(&engine, destination, root).await,
+        expected,
+        "the empty ordered-list container and property key must survive relocation"
+    );
+}
+
+#[tokio::test]
 async fn rejected_relocation_preconditions_leave_notes_byte_identical() {
     let device = test_device();
     let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
@@ -711,6 +779,96 @@ async fn rejected_relocation_preconditions_leave_notes_byte_identical() {
 }
 
 #[tokio::test]
+async fn malformed_source_descendant_indent_rejects_without_mutation() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xb7; 16];
+    let destination = [0xb8; 16];
+    let root = [0xb9; 16];
+    let child = [0xba; 16];
+    let target = [0xbb; 16];
+    seed_note(
+        &engine,
+        source,
+        "2026-07-12",
+        [
+            stamped_line(0, "root", root),
+            stamped_line(1, "malformed-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    seed_note(
+        &engine,
+        destination,
+        "2026-07-11",
+        stamped_line(0, "target", target),
+    )
+    .await;
+    remove_indent_metadata(&engine, source, child).await;
+    let before = relocation_render_pair(&engine, source, destination).await;
+
+    let err = engine
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::Inside,
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SyncError::RelocationRejected(message) if message.contains("indent")));
+    assert_eq!(
+        relocation_render_pair(&engine, source, destination).await,
+        before
+    );
+}
+
+#[tokio::test]
+async fn malformed_target_descendant_indent_rejects_without_mutation() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xbc; 16];
+    let destination = [0xbd; 16];
+    let root = [0xbe; 16];
+    let target = [0xbf; 16];
+    let target_child = [0xc0; 16];
+    seed_note(&engine, source, "2026-07-12", stamped_line(0, "root", root)).await;
+    seed_note(
+        &engine,
+        destination,
+        "2026-07-11",
+        [
+            stamped_line(0, "target", target),
+            stamped_line(1, "malformed-target-child", target_child),
+        ]
+        .concat(),
+    )
+    .await;
+    remove_indent_metadata(&engine, destination, target_child).await;
+    let before = relocation_render_pair(&engine, source, destination).await;
+
+    let err = engine
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::After,
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SyncError::RelocationRejected(message) if message.contains("indent")));
+    assert_eq!(
+        relocation_render_pair(&engine, source, destination).await,
+        before
+    );
+}
+
+#[tokio::test]
 async fn trusted_daily_seed_uses_frontmatter_without_placeholder_block() {
     let device = test_device();
     let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
@@ -733,7 +891,10 @@ async fn trusted_daily_seed_uses_frontmatter_without_placeholder_block() {
             "---\ntitle: 2026-07-11\ncreated: 2026-07-11T00:00:00Z\n---\n{}",
             stamped_line(0, "", placeholder)
         ),
-        created_at_millis: 1,
+        // `content` frontmatter is the authoritative rendered timestamp;
+        // this canonical seed field remains available to Task 4 request
+        // hashing/receipts and intentionally does not replace frontmatter.
+        created_at_millis: 1_720_656_000_000,
     });
 
     let outcome = engine.relocate_subtree(request).await.unwrap();
