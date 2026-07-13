@@ -978,8 +978,8 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
 
   assert.match(
     lifecycle,
-    /const revokeFocusRestoration = \(event: Event\) => \{\s*if \(event\.isTrusted\) anchorAutofocusCanceled = true;\s*focusRestoration\.revoke\(\);\s*\};/,
-    "trusted user input cancels anchor autofocus while every event revokes move focus restoration",
+    /const revokeFocusRestoration = \(event: Event\) => \{\s*if \(!event\.isTrusted\) return;\s*anchorAutofocusCanceled = true;\s*focusRestoration\.revoke\(\);\s*\};/,
+    "only trusted user input may cancel anchor or move focus restoration",
   );
   const pointerCancel = lifecycle.indexOf(
     'document.addEventListener("pointerdown", revokeFocusRestoration, true)',

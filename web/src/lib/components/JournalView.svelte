@@ -971,7 +971,8 @@
     };
     const commandHandler = () => startCommandMove();
     const revokeFocusRestoration = (event: Event) => {
-      if (event.isTrusted) anchorAutofocusCanceled = true;
+      if (!event.isTrusted) return;
+      anchorAutofocusCanceled = true;
       focusRestoration.revoke();
     };
     const keyHandler = (event: KeyboardEvent) => {

@@ -53,6 +53,7 @@ const BIDS = {
   crossBeforeChild: "20000000-0000-4000-8000-000000000022",
   crossAfterRoot: "20000000-0000-4000-8000-000000000023",
   crossAfterChild: "20000000-0000-4000-8000-000000000024",
+  untrustedFocusRoot: "20000000-0000-4000-8000-000000000025",
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
   existingEnd: "30000000-0000-4000-8000-000000000003",
@@ -67,6 +68,7 @@ const BIDS = {
   crossBeforeTargetChild: "30000000-0000-4000-8000-000000000012",
   crossAfterTarget: "30000000-0000-4000-8000-000000000013",
   crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
+  untrustedFocusTarget: "30000000-0000-4000-8000-000000000015",
 };
 
 const children = new Set();
@@ -299,6 +301,7 @@ try {
     `  - CROSS_BEFORE_CHILD <!-- bid:${BIDS.crossBeforeChild} -->`,
     `- CROSS_AFTER_ROOT <!-- bid:${BIDS.crossAfterRoot} -->`,
     `  - CROSS_AFTER_CHILD <!-- bid:${BIDS.crossAfterChild} -->`,
+    `- UNTRUSTED_FOCUS_ROOT <!-- bid:${BIDS.untrustedFocusRoot} -->`,
     "",
   ].join("\n"));
 
@@ -317,6 +320,7 @@ try {
     `  - KEYBOARD_AFTER_TARGET_CHILD <!-- bid:${BIDS.keyboardAfterTargetChild} -->`,
     `- RETRY_TARGET <!-- bid:${BIDS.retryTarget} -->`,
     `- RACE_POINTER_TARGET <!-- bid:${BIDS.racePointerTarget} -->`,
+    `- UNTRUSTED_FOCUS_TARGET <!-- bid:${BIDS.untrustedFocusTarget} -->`,
     "",
   ].join("\n"));
 

@@ -45,6 +45,7 @@ const BIDS = {
   crossBeforeChild: "20000000-0000-4000-8000-000000000022",
   crossAfterRoot: "20000000-0000-4000-8000-000000000023",
   crossAfterChild: "20000000-0000-4000-8000-000000000024",
+  untrustedFocusRoot: "20000000-0000-4000-8000-000000000025",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -60,6 +61,7 @@ const BIDS = {
   crossBeforeTargetChild: "30000000-0000-4000-8000-000000000012",
   crossAfterTarget: "30000000-0000-4000-8000-000000000013",
   crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
+  untrustedFocusTarget: "30000000-0000-4000-8000-000000000015",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
@@ -726,6 +728,49 @@ test.describe("block subtree relocation", () => {
 
     await expect.poll(() => requests).toBe(0);
     await expect.poll(() => page.locator(".journal").getAttribute("data-move-mode")).toBeNull();
+    await page.unroute(MOVE_ROUTE);
+  });
+
+  test("untrusted synthetic input cannot cancel pending move focus restoration", async ({ page }) => {
+    const { source, destination } = await openJournal(page);
+    await focusNormal(page, BIDS.untrustedFocusRoot);
+
+    let releaseResponse!: () => void;
+    let markRequestStarted!: () => void;
+    const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    const requestStarted = new Promise<void>((resolve) => { markRequestStarted = resolve; });
+    await page.route(MOVE_ROUTE, async (route) => {
+      markRequestStarted();
+      await responseGate;
+      await route.continue();
+    });
+
+    await dispatchToPlacement(
+      page,
+      row(page, BIDS.untrustedFocusRoot).locator("[data-move-handle]"),
+      row(page, BIDS.untrustedFocusTarget),
+      "after",
+    );
+    await requestStarted;
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "pending");
+
+    const isTrusted = await page.evaluate(() => {
+      const event = new KeyboardEvent("keydown", {
+        key: "i",
+        code: "KeyI",
+        bubbles: true,
+        cancelable: true,
+      });
+      document.dispatchEvent(event);
+      return event.isTrusted;
+    });
+    expect(isTrusted).toBe(false);
+
+    releaseResponse();
+    await waitForMoveIdle(page);
+    await expect(source.locator(`[data-block-bid="${BIDS.untrustedFocusRoot}"]`)).toHaveCount(0);
+    await expect(destination.locator(`[data-block-bid="${BIDS.untrustedFocusRoot}"]`)).toBeVisible();
+    await expect(row(page, BIDS.untrustedFocusRoot).locator(".cm-content")).toBeFocused();
     await page.unroute(MOVE_ROUTE);
   });
 
