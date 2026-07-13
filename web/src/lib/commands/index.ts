@@ -86,6 +86,7 @@ export type BuiltinCommand = {
   /** Leader chord path, e.g. ['g','d'] for Space → g → d. */
   chord?: string[];
   surface?: "global" | "editor";
+  surfaces?: RegistryCommand["surfaces"];
   slashKey?: string;
   keywords: string[];
   argPrompt?: string;
@@ -441,6 +442,21 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       argPrompt: "note slug or id",
       run: (arg) => {
         if (arg) openPageInFocused(asPageId(arg));
+      },
+    },
+    {
+      id: "move-block-subtree",
+      verb: "move-block-subtree",
+      label: "Move block subtree",
+      glyph: "↕",
+      category: "tile",
+      chord: ["a", "m"],
+      surface: "editor",
+      surfaces: new Set(["palette", "leader"]),
+      keywords: ["move", "block", "subtree", "drag", "daily"],
+      when: (ctx) => !!ctx.focusedBlock,
+      run: () => {
+        window.dispatchEvent(new CustomEvent("tesela:start-block-move"));
       },
     },
 

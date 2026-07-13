@@ -267,6 +267,32 @@
     "description": null
   },
   {
+    "id": "move-block-subtree",
+    "verb": "move-block-subtree",
+    "label": "Move block subtree",
+    "glyph": "↕",
+    "category": "tile",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "m"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "block",
+      "subtree",
+      "drag",
+      "daily"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "backlinks",
     "verb": "backlinks",
     "label": "Open Backlinks (follow)",
