@@ -38,6 +38,56 @@ export type TextReconciliationPlan =
   | { kind: "incremental"; events: TextChangeSpec[][]; text: string }
   | { kind: "canonical"; text: string };
 
+export type TextBindingIdentity<View, Container> = Readonly<{
+  view: View;
+  container: Container;
+  noteSlug: string;
+  bid: string;
+}>;
+
+export type TextBindingGenerationLease<View, Container> = Readonly<{
+  owns(identity: TextBindingIdentity<View, Container>): boolean;
+  revoke(): void;
+}>;
+
+/**
+ * Single-owner lease for a component's reactive text-binding generations.
+ * Captured callbacks must present the exact view/container/note/block identity
+ * they were created for. Cleanup revokes synchronously, and a newer claim
+ * supersedes an older one even if the old unsubscribe later throws or leaks.
+ */
+export function createTextBindingGenerationOwner<View, Container>(): {
+  claim(
+    identity: TextBindingIdentity<View, Container>,
+  ): TextBindingGenerationLease<View, Container>;
+} {
+  let currentToken: object | null = null;
+
+  return {
+    claim(identity) {
+      const token = {};
+      const ownedIdentity = { ...identity };
+      let revoked = false;
+      currentToken = token;
+
+      return {
+        owns(candidate) {
+          return !revoked
+            && currentToken === token
+            && candidate.view === ownedIdentity.view
+            && candidate.container === ownedIdentity.container
+            && candidate.noteSlug === ownedIdentity.noteSlug
+            && candidate.bid === ownedIdentity.bid;
+        },
+        revoke() {
+          revoked = true;
+          if (currentToken === token) currentToken = null;
+        },
+      };
+    },
+  };
+}
+
 export function deltaToChanges(delta: readonly TextDeltaOp[]): TextChangeSpec[] {
   const changes: TextChangeSpec[] = [];
   let pos = 0;

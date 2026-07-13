@@ -483,7 +483,12 @@
     setFocusedNoteDoc,
     clearFocusedNoteDoc,
   } from "$lib/loro/note-doc-registry.svelte";
-  import { planTextReconciliation, type TextDeltaOp } from "$lib/loro/text-delta";
+  import {
+    createTextBindingGenerationOwner,
+    planTextReconciliation,
+    type TextBindingGenerationLease,
+    type TextDeltaOp,
+  } from "$lib/loro/text-delta";
   // Phase 2 desktop presence: publish this caret + render remote ones.
   import { sendBinary } from "$lib/ws-client.svelte";
   import { encodePresence } from "$lib/loro/presence";
@@ -712,6 +717,7 @@
 
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
+  const loroTextBindingOwner = createTextBindingGenerationOwner<EditorView | null, LoroText>();
 
   // Slash menu state — Phase 10.3: chord-leader popover via ChordMenu.
   // No filter/typing-narrow; single-letter chords run actions immediately.
@@ -1697,17 +1703,20 @@
    *  assumption: the view must equal this exact container before the parent is
    *  notified. */
   function reconcileLoroText(
+    capturedView: EditorView,
     container: LoroText,
     eventDeltas: readonly (readonly TextDeltaOp[])[],
+    ownsGeneration: () => boolean,
   ): void {
-    const v = view;
-    if (!v) return;
+    if (!ownsGeneration()) return;
+    const v = capturedView;
     const canonicalText = container.toString();
     const plan = planTextReconciliation(v.state.doc.toString(), eventDeltas, canonicalText);
 
     if (plan.kind === "incremental") {
       for (const changes of plan.events) {
         if (changes.length === 0) continue;
+        if (!ownsGeneration()) return;
         localApplyInProgress = true;
         try {
           v.dispatch({
@@ -1719,12 +1728,15 @@
         }
       }
     } else if (plan.kind === "canonical") {
+      if (!ownsGeneration()) return;
       dispatchCanonicalText(v, canonicalText);
     }
 
     if (v.state.doc.toString() !== canonicalText) {
+      if (!ownsGeneration()) return;
       dispatchCanonicalText(v, canonicalText);
     }
+    if (!ownsGeneration()) return;
     onLoroText?.(canonicalText);
   }
 
@@ -1732,7 +1744,13 @@
    *  path, while the bound LoroText remains the source of truth. Local typing
    *  is already present in CodeMirror and remains ignored to avoid an echo;
    *  Loro undo/redo uses the same canonical reconciliation path. */
-  function applyRemoteTextEvent(container: LoroText, batch: LoroEventBatch): void {
+  function applyRemoteTextEvent(
+    capturedView: EditorView,
+    container: LoroText,
+    batch: LoroEventBatch,
+    ownsGeneration: () => boolean,
+  ): void {
+    if (!ownsGeneration()) return;
     // `by: "local"` events are our own splices — already in the editor — EXCEPT
     // when a Loro undo/redo is applying: its inverse ops are also `by: "local"`
     // but the editor does NOT have them yet, so they must be applied here. That
@@ -1744,7 +1762,7 @@
       if (diff.type !== "text") continue;
       eventDeltas.push(diff.diff);
     }
-    reconcileLoroText(container, eventDeltas);
+    reconcileLoroText(capturedView, container, eventDeltas, ownsGeneration);
   }
 
   // C2.3 reactive subscription lifecycle — a bid-keyed BlockEditor stays
@@ -1754,25 +1772,47 @@
   // effect generation owns exactly one timer and one unsubscribe handle;
   // cleanup runs before a restart and again on component teardown.
   $effect(() => {
-    const v = view;
+    const currentView = view;
     const bindingBlockId = blockId;
     const blockBid = bid;
     const slug = noteSlug;
-    if (!browser || !v || !bindingBlockId || !blockBid || !slug) return;
+    if (!browser || !currentView || !bindingBlockId || !blockBid || !slug) return;
+    const capturedView: EditorView = currentView;
     const subscribedBid = blockBid;
     const subscribedSlug = slug;
 
     let disposed = false;
     let loroUnsub: (() => void) | null = null;
+    let bindingLease: TextBindingGenerationLease<EditorView | null, LoroText> | null = null;
     let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
     let attemptsLeft = 15;
 
     function trySubscribeLoro() {
-      if (disposed || !view) return;
+      if (
+        disposed
+        || view !== capturedView
+        || blockId !== bindingBlockId
+        || bid !== subscribedBid
+        || noteSlug !== subscribedSlug
+      ) return;
       const container = getNoteDoc(subscribedSlug)?.blockTextContainer(subscribedBid) ?? null;
       if (container) {
-        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(container, batch));
-        reconcileLoroText(container, []);
+        bindingLease = loroTextBindingOwner.claim({
+          view: capturedView,
+          container,
+          noteSlug: subscribedSlug,
+          bid: subscribedBid,
+        });
+        const lease = bindingLease;
+        const ownsGeneration = () => lease.owns({
+          view,
+          container,
+          noteSlug: noteSlug ?? "",
+          bid: bid ?? "",
+        });
+        loroUnsub = container.subscribe((batch) =>
+          applyRemoteTextEvent(capturedView, container, batch, ownsGeneration));
+        reconcileLoroText(capturedView, container, [], ownsGeneration);
         return;
       }
       if (attemptsLeft <= 0) return;
@@ -1786,6 +1826,8 @@
     trySubscribeLoro();
     return () => {
       disposed = true;
+      bindingLease?.revoke();
+      bindingLease = null;
       if (subRetryTimer) clearTimeout(subRetryTimer);
       subRetryTimer = null;
       try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }

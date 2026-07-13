@@ -813,11 +813,14 @@ test("Loro subscription restarts on canonical block identity with owned cleanup"
 
   assert.match(subscription, /const bindingBlockId = blockId;/);
   assert.match(subscription, /let disposed = false;/);
-  assert.match(subscription, /if \(disposed \|\| !view\) return;/);
+  assert.match(
+    subscription,
+    /if \([\s\S]*disposed[\s\S]*view !== capturedView[\s\S]*blockId !== bindingBlockId[\s\S]*bid !== subscribedBid[\s\S]*noteSlug !== subscribedSlug[\s\S]*\) return;/,
+  );
   assert.match(subscription, /subRetryTimer = setTimeout/);
   assert.match(
     subscription,
-    /return \(\) => \{[\s\S]*disposed = true;[\s\S]*clearTimeout\(subRetryTimer\)[\s\S]*loroUnsub\?\.\(\)/,
+    /return \(\) => \{[\s\S]*disposed = true;[\s\S]*bindingLease\?\.revoke\(\);[\s\S]*clearTimeout\(subRetryTimer\)[\s\S]*loroUnsub\?\.\(\)/,
   );
   assert.doesNotMatch(editorMount, /trySubscribeLoro/);
 });
