@@ -654,3 +654,17 @@ invalid. A state-dependent `Some` on first apply and `None` after creation would
 turn an identical HTTP retry into a false move-id conflict. Excluding the seed
 from the hash would weaken mismatch detection, so the stable-input contract is
 preferred.
+
+**Ordered local-edit barrier (2026-07-13):** relocation HTTP must not overtake
+the web editor's local writes. Bound CodeMirror text uses Loro deltas on a
+WebSocket, while structural/fallback saves use HTTP, so awaiting only the HTTP
+queues is insufficient and `WebSocket.send` proves handoff, not server apply.
+Before relocation, Dailies freezes the move interaction, drains its HTTP save
+queues without aborting live requests, flushes each affected note's Loro
+registry entry, then sends a UUID-tagged barrier on that same WebSocket. The
+server's sequential receive loop acknowledges the barrier to that connection
+only after every earlier binary frame has applied/materialized. This is chosen
+over timing delays, socket `bufferedAmount`, and client-side aborts because none
+is a server-ordering proof. Offline, timed-out, client-minted, or already-live
+HTTP states fail closed with retry feedback; relocation never guesses that the
+source is current.

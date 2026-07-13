@@ -238,12 +238,21 @@ roll back by writing note bodies.
 
 - Do not optimistically delete or clone blocks. Show a pending state on the
   dragged subtree and target while the request runs.
+- Never race relocation with a local source/destination save. Await queued
+  block writes and Journal whole-note writes in server order before POST, then
+  flush outbound LoroText deltas and await a same-WebSocket server barrier.
+  The barrier acknowledgement is connection-local and is emitted only after
+  every earlier binary frame on that socket has applied. If a block write is
+  already in flight, fail closed and ask the user to retry after it settles;
+  do not abort it and mistake client cancellation for a server ordering
+  barrier. Client-minted blocks that have not round-tripped are inert.
 - On success, seed returned note data and invalidate both note/list journal
   queries. Restore focus to the moved root at its destination.
 - On precondition failure, clear pending state, retain source focus, and toast
   the server error. On recoverable post-intent failure, tell the user retry is
-  safe and retain the original request/move id for that retry; the next refresh
-  reflects recovery.
+  safe and retain the original request/move id for that retry; `Enter` or `r`
+  repeats that exact request and Escape cancels. The next refresh reflects
+  recovery.
 
 ## Safety invariants
 
