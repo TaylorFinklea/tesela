@@ -850,10 +850,14 @@
       // Focused block disappeared. If it was a local-only id we
       // already returned above; reaching here means the server-canonical
       // block is genuinely gone (remote delete, or local delete whose
-      // server round-trip just landed). Keep the cursor visible by
-      // clamping the old index into the new list.
+      // server round-trip just landed). Clamp to an adjacent row only while
+      // this outliner still owns real DOM focus. A cross-day relocation has
+      // already focused the destination outliner by the time the source
+      // reparse lands, so retaining this source index would steal focus back.
+      const ownsDomFocus = typeof document !== "undefined"
+        && rootEl?.contains(document.activeElement) === true;
       blocks = reparsed;
-      if (reparsed.length === 0) focusedIndex = null;
+      if (!ownsDomFocus || reparsed.length === 0) focusedIndex = null;
       else focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
       history.clear();
       return;
@@ -1163,6 +1167,14 @@
     }
     try {
       await blockOpsSaver.settle(noteId);
+      // The relocation response is the next authoritative body for every
+      // addressed outliner. Retire any pre-move typing defer now that those
+      // edits have settled; otherwise its stale body can delay (or later
+      // overwrite) the canonical source/destination reparse.
+      if (deferredReparseTimer) clearTimeout(deferredReparseTimer);
+      deferredReparseTimer = null;
+      deferredReparseBody = null;
+      lastLocalEditAt = 0;
       return true;
     } catch {
       return false;

@@ -690,6 +690,23 @@ test("inside preparation reveals a folded keyboard target before transport", () 
   assert.match(blockOutlinerSource, /prepareOutlinerForRelocation\(\s*addressedBids[^)]*expandInsideBid/s);
 });
 
+test("successful relocation preparation retires every pending local-edit reparse", () => {
+  const preparation = sourceBetween(
+    blockOutlinerSource,
+    "async function prepareOutlinerForRelocation",
+    "// Flush any pending coalesced block-ops immediately",
+  );
+  const settled = preparation.indexOf("await blockOpsSaver.settle(noteId)");
+  const succeeded = preparation.indexOf("return true", settled);
+  const afterSettle = preparation.slice(settled, succeeded);
+
+  assert.ok(settled >= 0 && succeeded > settled, "preparation must settle before succeeding");
+  assert.match(afterSettle, /lastLocalEditAt\s*=\s*0/);
+  assert.match(afterSettle, /clearTimeout\(deferredReparseTimer\)/);
+  assert.match(afterSettle, /deferredReparseTimer\s*=\s*null/);
+  assert.match(afterSettle, /deferredReparseBody\s*=\s*null/);
+});
+
 test("same-note Alt routes before marking the outliner locally dirty", () => {
   for (const [start, end] of [
     ["function handleMoveBlock", "function handleMoveUnderPrevious"],
@@ -765,6 +782,29 @@ test("outliner row ownership and focused reparses use the stable block key", () 
   );
   assert.match(reparse, /stableBlockKey\(focusedBlock\)/);
   assert.match(reparse, /stableBlockKey\(b\)\s*===\s*focusedKey/);
+});
+
+test("a disappearing focused block only clamps while its outliner owns DOM focus", () => {
+  const reparse = sourceBetween(
+    blockOutlinerSource,
+    "function applyExternalReparse",
+    "// Clear undo/redo on page navigation",
+  );
+  const disappeared = sourceBetween(
+    reparse,
+    "if (newIdx === -1)",
+    "const localFocused",
+  );
+
+  assert.match(
+    disappeared,
+    /rootEl\?\.contains\(document\.activeElement\)\s*===\s*true/,
+  );
+  assert.match(disappeared, /if \(!ownsDomFocus \|\| reparsed\.length === 0\) focusedIndex = null/);
+  assert.match(
+    disappeared,
+    /else focusedIndex = Math\.min\(Math\.max\(focusedIndex, 0\), reparsed\.length - 1\)/,
+  );
 });
 
 test("focusing a rekeyed row republishes that exact block", () => {
