@@ -947,6 +947,8 @@
 
   onMount(() => {
     componentDisposed = false;
+    const markComponentDisposed = () => { componentDisposed = true; };
+    const markComponentActive = () => { componentDisposed = false; };
     const commandHandler = () => startCommandMove();
     const revokeFocusRestoration = () => focusRestoration.revoke();
     const keyHandler = (event: KeyboardEvent) => {
@@ -979,6 +981,8 @@
       }
       if (key === "b" || key === "i" || key === "a") commitKeyboardMove(key);
     };
+    window.addEventListener("pagehide", markComponentDisposed);
+    window.addEventListener("pageshow", markComponentActive);
     window.addEventListener("tesela:start-block-move", commandHandler);
     document.addEventListener("pointerdown", revokeFocusRestoration, true);
     document.addEventListener("keydown", revokeFocusRestoration, true);
@@ -986,6 +990,8 @@
     return () => {
       componentDisposed = true;
       focusRestoration.dispose();
+      window.removeEventListener("pagehide", markComponentDisposed);
+      window.removeEventListener("pageshow", markComponentActive);
       window.removeEventListener("tesela:start-block-move", commandHandler);
       document.removeEventListener("pointerdown", revokeFocusRestoration, true);
       document.removeEventListener("keydown", revokeFocusRestoration, true);

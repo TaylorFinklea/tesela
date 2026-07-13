@@ -942,6 +942,21 @@ test("Journal reports ensure-dailies failures only while the component is mounte
   );
 });
 
+test("Journal page lifecycle owns async error reporting across unload and BFCache restore", () => {
+  const lifecycle = journalViewSource.slice(journalViewSource.lastIndexOf("onMount(() => {"));
+
+  assert.match(
+    lifecycle,
+    /const markComponentDisposed = \(\) => \{ componentDisposed = true; \};\s*const markComponentActive = \(\) => \{ componentDisposed = false; \};/,
+  );
+  assert.match(lifecycle, /window\.addEventListener\("pagehide", markComponentDisposed\)/);
+  assert.match(lifecycle, /window\.addEventListener\("pageshow", markComponentActive\)/);
+  assert.match(
+    lifecycle,
+    /return \(\) => \{\s*componentDisposed = true;[\s\S]*window\.removeEventListener\("pagehide", markComponentDisposed\)[\s\S]*window\.removeEventListener\("pageshow", markComponentActive\)/,
+  );
+});
+
 test("Journal focus restoration yields to later pointer and keyboard input", () => {
   const focus = sourceBetween(
     journalViewSource,
