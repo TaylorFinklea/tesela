@@ -483,7 +483,7 @@
     setFocusedNoteDoc,
     clearFocusedNoteDoc,
   } from "$lib/loro/note-doc-registry.svelte";
-  import { deltaToChanges } from "$lib/loro/text-delta";
+  import { planTextReconciliation, type TextDeltaOp } from "$lib/loro/text-delta";
   // Phase 2 desktop presence: publish this caret + render remote ones.
   import { sendBinary } from "$lib/ws-client.svelte";
   import { encodePresence } from "$lib/loro/presence";
@@ -1671,55 +1671,80 @@
     return any;
   }
 
-  /** C2.3 read path. Apply a REMOTE block-text event to this view as a minimal
-   *  CM ChangeSet so CM auto-remaps the caret (no hand-rolled cursor math). The
-   *  Loro TextDiff is a quill delta (retain/insert/delete) in UTF-16 index space
-   *  — the SAME space as CM offsets. `deltaToChanges` maps each delta into
-   *  ORIGINAL-doc coordinates (CM interprets every from/to in a multi-change
-   *  dispatch relative to the PRE-transaction doc — see text-delta.ts for the
-   *  coordinate contract; the previous in-line mapping inverted insert/delete
-   *  and misapplied any multi-run delta, e.g. a peer's Alt-Enter tag demote).
-   *  Each EVENT gets its own dispatch: a batch's later events are relative to
-   *  the doc AFTER the earlier ones applied, so they can't share one change
-   *  array. Dispatches are annotated `externalSync` + `addToHistory:false` (so
-   *  they don't loop through the write path or pollute per-block undo) and
-   *  wrapped in the `localApplyInProgress` guard. After applying, `onLoroText`
-   *  syncs the parent's ParsedBlock without re-saving. Ignores local-origin
-   *  events. */
-  function applyRemoteTextEvent(batch: LoroEventBatch): void {
+  function dispatchCanonicalText(v: EditorView, canonicalText: string): void {
+    if (v.state.doc.toString() === canonicalText) return;
+    const selection = v.state.selection.main;
+    const length = canonicalText.length;
+    localApplyInProgress = true;
+    try {
+      v.dispatch({
+        changes: { from: 0, to: v.state.doc.length, insert: canonicalText },
+        selection: {
+          anchor: Math.max(0, Math.min(selection.anchor, length)),
+          head: Math.max(0, Math.min(selection.head, length)),
+        },
+        annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+      });
+    } finally {
+      localApplyInProgress = false;
+    }
+  }
+
+  /** Project remote event deltas only when they provably take this view from
+   *  its current document to the exact subscribed LoroText value. A stale view,
+   *  malformed coordinate, or missing event takes the canonical replacement
+   *  path instead. The final check is a synchronous postcondition, not an
+   *  assumption: the view must equal this exact container before the parent is
+   *  notified. */
+  function reconcileLoroText(
+    container: LoroText,
+    eventDeltas: readonly (readonly TextDeltaOp[])[],
+  ): void {
     const v = view;
     if (!v) return;
+    const canonicalText = container.toString();
+    const plan = planTextReconciliation(v.state.doc.toString(), eventDeltas, canonicalText);
+
+    if (plan.kind === "incremental") {
+      for (const changes of plan.events) {
+        if (changes.length === 0) continue;
+        localApplyInProgress = true;
+        try {
+          v.dispatch({
+            changes,
+            annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+          });
+        } finally {
+          localApplyInProgress = false;
+        }
+      }
+    } else if (plan.kind === "canonical") {
+      dispatchCanonicalText(v, canonicalText);
+    }
+
+    if (v.state.doc.toString() !== canonicalText) {
+      dispatchCanonicalText(v, canonicalText);
+    }
+    onLoroText?.(canonicalText);
+  }
+
+  /** C2.3 read path. Remote/import event deltas are a caret-preserving fast
+   *  path, while the bound LoroText remains the source of truth. Local typing
+   *  is already present in CodeMirror and remains ignored to avoid an echo;
+   *  Loro undo/redo uses the same canonical reconciliation path. */
+  function applyRemoteTextEvent(container: LoroText, batch: LoroEventBatch): void {
     // `by: "local"` events are our own splices — already in the editor — EXCEPT
     // when a Loro undo/redo is applying: its inverse ops are also `by: "local"`
     // but the editor does NOT have them yet, so they must be applied here. That
     // window is flagged by the doc-registry undo wrapper.
     if (batch.by === "local" && !isLoroUndoApplying()) return;
-    let applied = false;
+    const eventDeltas: TextDeltaOp[][] = [];
     for (const ev of batch.events) {
       const diff = ev.diff;
       if (diff.type !== "text") continue;
-      const changes = deltaToChanges(diff.diff);
-      if (changes.length === 0) continue;
-      // Clamp to the current doc length defensively — the CM doc and LoroText
-      // should be in lock-step, but a clamp avoids a dispatch throw if a race
-      // ever leaves them briefly divergent.
-      const docLen = v.state.doc.length;
-      const safe = changes
-        .map((c) => ({ from: Math.min(c.from, docLen), to: Math.min(c.to, docLen), insert: c.insert }))
-        .filter((c) => c.from <= c.to);
-      localApplyInProgress = true;
-      try {
-        v.dispatch({
-          changes: safe,
-          annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
-        });
-      } finally {
-        localApplyInProgress = false;
-      }
-      applied = true;
+      eventDeltas.push(diff.diff);
     }
-    if (!applied) return;
-    onLoroText?.(v.state.doc.toString());
+    reconcileLoroText(container, eventDeltas);
   }
 
   // C2.3 reactive subscription lifecycle — a bid-keyed BlockEditor stays
@@ -1746,7 +1771,8 @@
       if (disposed || !view) return;
       const container = getNoteDoc(subscribedSlug)?.blockTextContainer(subscribedBid) ?? null;
       if (container) {
-        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(batch));
+        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(container, batch));
+        reconcileLoroText(container, []);
         return;
       }
       if (attemptsLeft <= 0) return;

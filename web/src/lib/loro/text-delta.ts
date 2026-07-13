@@ -33,6 +33,11 @@ export type TextDeltaOp = { retain?: number; insert?: string; delete?: number };
 /** A CM6 change spec in original-doc coordinates. */
 export type TextChangeSpec = { from: number; to: number; insert: string };
 
+export type TextReconciliationPlan =
+  | { kind: "unchanged"; text: string }
+  | { kind: "incremental"; events: TextChangeSpec[][]; text: string }
+  | { kind: "canonical"; text: string };
+
 export function deltaToChanges(delta: readonly TextDeltaOp[]): TextChangeSpec[] {
   const changes: TextChangeSpec[] = [];
   let pos = 0;
@@ -49,4 +54,86 @@ export function deltaToChanges(delta: readonly TextDeltaOp[]): TextChangeSpec[] 
     }
   }
   return changes;
+}
+
+function validLength(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validatedDeltaToChanges(
+  delta: readonly TextDeltaOp[],
+  docLength: number,
+): TextChangeSpec[] | null {
+  const changes: TextChangeSpec[] = [];
+  let pos = 0;
+
+  for (const op of delta) {
+    const hasRetain = typeof op.retain === "number";
+    const hasInsert = typeof op.insert === "string";
+    const hasDelete = typeof op.delete === "number";
+    if (Number(hasRetain) + Number(hasInsert) + Number(hasDelete) !== 1) return null;
+
+    if (hasRetain) {
+      if (!validLength(op.retain!) || pos + op.retain! > docLength) return null;
+      pos += op.retain!;
+    } else if (hasInsert) {
+      if (op.insert!.length > 0) changes.push({ from: pos, to: pos, insert: op.insert! });
+    } else {
+      if (!validLength(op.delete!) || pos + op.delete! > docLength) return null;
+      if (op.delete! > 0) changes.push({ from: pos, to: pos + op.delete!, insert: "" });
+      pos += op.delete!;
+    }
+  }
+
+  return changes;
+}
+
+function applyChanges(doc: string, changes: readonly TextChangeSpec[]): string | null {
+  let cursor = 0;
+  let result = "";
+  for (const change of changes) {
+    if (
+      !validLength(change.from)
+      || !validLength(change.to)
+      || change.from < cursor
+      || change.to < change.from
+      || change.to > doc.length
+    ) {
+      return null;
+    }
+    result += doc.slice(cursor, change.from) + change.insert;
+    cursor = change.to;
+  }
+  return result + doc.slice(cursor);
+}
+
+/**
+ * Choose the safe way to project Loro text events into a CodeMirror document.
+ * Event deltas are only an optimization: they are accepted when every event is
+ * valid against the view state produced by the previous event AND that full
+ * projection exactly equals the subscribed LoroText's canonical value.
+ * Otherwise callers must replace the view with `text` wholesale.
+ */
+export function planTextReconciliation(
+  currentText: string,
+  eventDeltas: readonly (readonly TextDeltaOp[])[],
+  canonicalText: string,
+): TextReconciliationPlan {
+  let projected = currentText;
+  const events: TextChangeSpec[][] = [];
+  let hasChanges = false;
+
+  for (const delta of eventDeltas) {
+    const changes = validatedDeltaToChanges(delta, projected.length);
+    if (!changes) return { kind: "canonical", text: canonicalText };
+    const next = applyChanges(projected, changes);
+    if (next === null) return { kind: "canonical", text: canonicalText };
+    projected = next;
+    events.push(changes);
+    if (changes.length > 0) hasChanges = true;
+  }
+
+  if (projected !== canonicalText) return { kind: "canonical", text: canonicalText };
+  if (!hasChanges) return { kind: "unchanged", text: canonicalText };
+  return { kind: "incremental", events, text: canonicalText };
 }

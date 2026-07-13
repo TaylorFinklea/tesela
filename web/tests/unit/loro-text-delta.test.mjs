@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deltaToChanges } from "../../src/lib/loro/text-delta.ts";
+import * as textDelta from "../../src/lib/loro/text-delta.ts";
+
+const { deltaToChanges } = textDelta;
 
 // The coordinate contract under test: CM6 interprets every from/to in a
 // multi-change dispatch relative to the ORIGINAL (pre-transaction) document,
@@ -100,4 +102,75 @@ test("multi-run deltas converge with the sequential quill application", () => {
 test("retain-only / empty deltas produce no changes", () => {
   assert.deepEqual(deltaToChanges([]), []);
   assert.deepEqual(deltaToChanges([{ retain: 7 }]), []);
+});
+
+function planTextReconciliation(currentText, eventDeltas, canonicalText) {
+  return textDelta.planTextReconciliation?.(currentText, eventDeltas, canonicalText);
+}
+
+function applyReconciliationPlan(currentText, plan) {
+  if (plan?.kind === "canonical") return plan.text;
+  if (plan?.kind === "unchanged") return currentText;
+  if (plan?.kind === "incremental") {
+    return plan.events.reduce((doc, changes) => applyChanges(doc, changes), currentText);
+  }
+  return undefined;
+}
+
+test("a lockstep remote event keeps the incremental path and reaches canonical text", () => {
+  const plan = planTextReconciliation(
+    "abc",
+    [[{ retain: 1 }, { insert: "X" }]],
+    "aXbc",
+  );
+
+  assert.deepEqual(plan, {
+    kind: "incremental",
+    events: [[{ from: 1, to: 1, insert: "X" }]],
+    text: "aXbc",
+  });
+  assert.equal(applyReconciliationPlan("abc", plan), "aXbc");
+});
+
+test("a view one event behind repairs to canonical when the next merge delta is insufficient", () => {
+  // The bound LoroText already contained the missing `x` before this event.
+  // Applying only the new `Y` event to the stale view is coordinate-valid but
+  // projects `abYc`, not the container's canonical `abYxc`.
+  const plan = planTextReconciliation(
+    "abc",
+    [[{ retain: 2 }, { insert: "Y" }]],
+    "abYxc",
+  );
+
+  assert.deepEqual(plan, { kind: "canonical", text: "abYxc" });
+  assert.equal(applyReconciliationPlan("abc", plan), "abYxc");
+});
+
+test("equal-length view drift still repairs instead of accepting a valid-looking delta", () => {
+  const plan = planTextReconciliation(
+    "abX",
+    [[{ retain: 3 }, { insert: "!" }]],
+    "abc!",
+  );
+
+  assert.deepEqual(plan, { kind: "canonical", text: "abc!" });
+  assert.equal(applyReconciliationPlan("abX", plan), "abc!");
+});
+
+test("an out-of-range delta repairs to canonical instead of clamping coordinates", () => {
+  const plan = planTextReconciliation(
+    "abc",
+    [[{ retain: 4 }, { insert: "!" }]],
+    "abc!",
+  );
+
+  assert.deepEqual(plan, { kind: "canonical", text: "abc!" });
+  assert.equal(applyReconciliationPlan("abc", plan), "abc!");
+});
+
+test("subscription attach with no event reconciles a stale view immediately", () => {
+  const plan = planTextReconciliation("stale", [], "canonical");
+
+  assert.deepEqual(plan, { kind: "canonical", text: "canonical" });
+  assert.equal(applyReconciliationPlan("stale", plan), "canonical");
 });

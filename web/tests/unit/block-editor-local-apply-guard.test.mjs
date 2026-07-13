@@ -29,3 +29,22 @@ test("slash/property programmatic dispatches use the local-apply guard", () => {
 test("applySlash is deleted", () => {
   assert.equal(source.indexOf("function applySlash("), -1, "applySlash must not exist");
 });
+
+test("remote text projection is anchored to the exact subscribed LoroText", () => {
+  const reconcile = functionBody("reconcileLoroText");
+  const lifecycle = source.slice(
+    source.indexOf("// C2.3 reactive subscription lifecycle"),
+    source.indexOf("onMount(() => {"),
+  );
+
+  assert.match(reconcile, /const canonicalText = container\.toString\(\);/);
+  assert.match(reconcile, /planTextReconciliation\(/);
+  assert.match(reconcile, /v\.state\.doc\.toString\(\) !== canonicalText/);
+  assert.match(reconcile, /onLoroText\?\.\(canonicalText\)/);
+  assert.doesNotMatch(reconcile, /Math\.min\(c\.(?:from|to), docLen\)/);
+  assert.match(
+    lifecycle,
+    /container\.subscribe\(\(batch\) => applyRemoteTextEvent\(container, batch\)\)/,
+  );
+  assert.match(lifecycle, /reconcileLoroText\(container, \[\]\)/);
+});
