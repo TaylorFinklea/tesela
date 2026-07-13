@@ -1351,7 +1351,8 @@ mod tests {
         // mistakenly broadcast acknowledgement cannot hide behind them.
         let b_ack_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
         while tokio::time::Instant::now() < b_ack_deadline {
-            match tokio::time::timeout(std::time::Duration::from_millis(50), client_b.next()).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), client_b.next()).await
+            {
                 Ok(Some(Ok(TMessage::Text(t)))) => {
                     if serde_json::from_str::<serde_json::Value>(&t)
                         .ok()
