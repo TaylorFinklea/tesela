@@ -16,38 +16,55 @@ export type FocusRestorationOptions<T> = {
   focusTarget: (target: T) => void;
 };
 
+export type FocusRestorationClaim = {
+  readonly __focusRestorationClaim: never;
+};
+
 export type FocusRestorationController = {
-  restore<T>(options: FocusRestorationOptions<T>): Promise<boolean>;
+  claim(): FocusRestorationClaim;
+  restore<T>(
+    claim: FocusRestorationClaim,
+    options: FocusRestorationOptions<T>,
+  ): Promise<boolean>;
   revoke(): void;
   dispose(): void;
 };
 
 /** Owns delayed focus restoration so a stale retry cannot overwrite newer
- * user intent. Every restoration gets a fresh lease; revocation and teardown
- * invalidate the current owner without consuming the canceling input. */
+ * user intent. A logical restoration claims its lease before any prerequisite
+ * work; revocation and teardown invalidate it without consuming user input. */
 export function createFocusRestorationController(): FocusRestorationController {
   let lease = 0;
   let disposed = false;
-  const owns = (candidate: number) => !disposed && candidate === lease;
+  const claims = new WeakMap<FocusRestorationClaim, number>();
+  const owns = (claim: FocusRestorationClaim) =>
+    !disposed && claims.get(claim) === lease;
 
   return {
-    async restore<T>({
-      maxAttempts,
-      findTarget,
-      waitForRetry,
-      focusTarget,
-    }: FocusRestorationOptions<T>): Promise<boolean> {
-      const owner = ++lease;
+    claim() {
+      const claim = {} as FocusRestorationClaim;
+      claims.set(claim, ++lease);
+      return claim;
+    },
+    async restore<T>(
+      claim: FocusRestorationClaim,
+      {
+        maxAttempts,
+        findTarget,
+        waitForRetry,
+        focusTarget,
+      }: FocusRestorationOptions<T>,
+    ): Promise<boolean> {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        if (!owns(owner)) return false;
+        if (!owns(claim)) return false;
         const target = await findTarget();
         if (target !== null) {
-          if (!owns(owner)) return false;
+          if (!owns(claim)) return false;
           focusTarget(target);
           return true;
         }
         if (attempt + 1 < maxAttempts) {
-          if (!owns(owner)) return false;
+          if (!owns(claim)) return false;
           await waitForRetry();
         }
       }

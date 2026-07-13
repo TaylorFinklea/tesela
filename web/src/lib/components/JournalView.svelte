@@ -42,6 +42,7 @@
     type BlockMoveRequest,
     type BlockMoveSession,
     type BlockMoveSessionAction,
+    type FocusRestorationClaim,
     type MovePlacement,
   } from "$lib/block-tree-move";
   import { settleNoteDocsAtServer } from "$lib/loro/note-doc-registry.svelte";
@@ -614,7 +615,10 @@
     const request = moveSession.request;
     dispatchMove({ type: "cancel" });
     clearMoveToast();
-    if (request) void focusBlockBid(request.source_note_id, request.root_bid);
+    if (request) {
+      const focusClaim = focusRestoration.claim();
+      void focusBlockBid(focusClaim, request.source_note_id, request.root_bid);
+    }
   }
 
   async function prepareOutliner(
@@ -744,13 +748,14 @@
   }
 
   async function executeMove(request: BlockMoveRequest, withPreflight: boolean) {
+    const focusClaim = focusRestoration.claim();
     try {
       if (withPreflight) await prepareMove(request);
       await settleMoveResponse(request);
       if (moveUiDisposed) return;
       dispatchMove({ type: "success" });
       clearMoveToast();
-      await focusBlockBid(request.destination_note_id, request.root_bid);
+      await focusBlockBid(focusClaim, request.destination_note_id, request.root_bid);
     } catch (error) {
       if (moveUiDisposed) return;
       const detail = apiErrorDetail(error);
@@ -766,7 +771,7 @@
       clearMoveToast();
       dispatchMove({ type: "ordinary-error" });
       toast(detail.message, "error", 6000);
-      await focusBlockBid(request.source_note_id, request.root_bid);
+      await focusBlockBid(focusClaim, request.source_note_id, request.root_bid);
     }
   }
 
@@ -803,11 +808,15 @@
     void executeMove(request, false);
   }
 
-  async function focusBlockBid(noteId: string, bid: string): Promise<void> {
+  async function focusBlockBid(
+    focusClaim: FocusRestorationClaim,
+    noteId: string,
+    bid: string,
+  ): Promise<void> {
     if (moveUiDisposed) return;
     ensureMounted(noteId);
     let firstLookup = true;
-    await focusRestoration.restore({
+    await focusRestoration.restore(focusClaim, {
       maxAttempts: 60,
       findTarget: async () => {
         if (firstLookup) {
