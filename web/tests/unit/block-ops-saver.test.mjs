@@ -356,3 +356,103 @@ test("per-note isolation: a flush for one note leaves another note's pending bat
   assert.equal(spy.calls.length, 2, "noteB flushes on its own trailing edge");
   assert.equal(spy.calls[1].noteId, "noteB");
 });
+
+test("settle flushes a queued request immediately and awaits its completion", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "queued")]);
+  let settled = false;
+  const completion = saver.settle("noteA").then(() => {
+    settled = true;
+  });
+
+  assert.equal(spy.calls.length, 1, "settle bypasses the debounce timer");
+  assert.equal(settled, false, "settle waits for the POST");
+  spy.calls[0].resolve({});
+  await completion;
+  assert.equal(settled, true);
+
+  t.mock.timers.tick(1000);
+  assert.equal(spy.calls.length, 1, "the cancelled timer cannot double-send");
+});
+
+test("settle waits for an existing request without aborting it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "live")]);
+  t.mock.timers.tick(500);
+  const completion = saver.settle("noteA");
+
+  assert.equal(spy.calls.length, 1, "settle reuses the live request");
+  assert.equal(spy.calls[0].aborted, false, "a live request is not used as an ordering abort");
+  spy.calls[0].resolve({});
+  await completion;
+  assert.equal(spy.calls[0].aborted, false);
+});
+
+test("settle loops through an enqueue that arrives behind the live request", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "first")]);
+  t.mock.timers.tick(500);
+  const completion = saver.settle("noteA");
+  saver.enqueue("noteA", [upsert("bid-1", "successor")]);
+
+  t.mock.timers.tick(500);
+  assert.equal(spy.calls.length, 1, "the successor debounce cannot race the settle barrier");
+  assert.equal(spy.calls[0].aborted, false);
+  spy.calls[0].resolve({});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spy.calls.length, 2, "the queued successor flushes after the live request");
+  assert.equal(spy.calls[0].aborted, false, "settle never aborts the predecessor");
+  assert.deepEqual(spy.calls[1].ops, [upsert("bid-1", "successor")]);
+
+  spy.calls[1].resolve({});
+  await completion;
+});
+
+test("settle awaits the Promise-capable whole-body fallback", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  let finishFallback;
+  const fallback = t.mock.fn(() => new Promise((resolve) => {
+    finishFallback = resolve;
+  }));
+  const saver = new BlockOpsSaver(spy.fn, fallback);
+
+  saver.enqueue("noteA", [upsert("bid-1", "needs fallback")]);
+  const completion = saver.settle("noteA");
+  let settled = false;
+  void completion.then(() => {
+    settled = true;
+  });
+  spy.calls[0].reject(new Error("500 boom"));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(fallback.mock.callCount(), 1);
+  assert.equal(settled, false, "settle remains pending until the fallback PUT finishes");
+  finishFallback();
+  await completion;
+  assert.equal(settled, true);
+});
+
+test("settle rejects when the whole-body fallback fails", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const fallbackError = new Error("PUT failed");
+  const saver = new BlockOpsSaver(spy.fn, async () => {
+    throw fallbackError;
+  });
+
+  saver.enqueue("noteA", [upsert("bid-1", "cannot persist")]);
+  const completion = saver.settle("noteA");
+  spy.calls[0].reject(new Error("POST failed"));
+  await assert.rejects(completion, fallbackError);
+});

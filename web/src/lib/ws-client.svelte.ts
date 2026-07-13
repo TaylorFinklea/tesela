@@ -8,6 +8,7 @@ import type { Note } from "$lib/types/Note";
 import type { ViewRecord } from "$lib/api-client";
 import { decodeTlr2, type LoroDocUpdate } from "$lib/loro/tlr2";
 import { decodePresence, type PresenceFrame } from "$lib/loro/presence";
+import { ServerBarrierTracker } from "$lib/loro/server-barrier";
 
 export type DeadlineApproachingEvent = {
   event: "deadline_approaching";
@@ -59,12 +60,29 @@ function wsUrl(): string {
 }
 const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
+const LORO_BARRIER_TIMEOUT_MS = 5_000;
 
 let socket: WebSocket | null = null;
 let retryDelayMs = MIN_RETRY_MS;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let intentionallyStopped = false;
 let connectionId = 0;
+
+const serverBarriers = new ServerBarrierTracker<WebSocket>({
+  createId: () => crypto.randomUUID(),
+  isOpen: (candidate) => candidate === socket && candidate.readyState === WebSocket.OPEN,
+  sendText: (candidate, text) => {
+    if (candidate !== socket || candidate.readyState !== WebSocket.OPEN) return false;
+    try {
+      candidate.send(text);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  scheduleTimeout: (cb) => setTimeout(cb, LORO_BARRIER_TIMEOUT_MS),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+});
 
 // Reactive state via Svelte 5 runes
 let connected = $state(false);
@@ -139,6 +157,7 @@ export function disconnect() {
   intentionallyStopped = true;
   cancelReconnectTimer();
   if (socket) {
+    serverBarriers.rejectConnection(socket, connectionId, new Error("WebSocket disconnected"));
     socket.close(1000, "client requested");
     socket = null;
   }
@@ -175,14 +194,17 @@ function openConnection() {
 
   ws.addEventListener("message", (ev) => {
     if (myId !== connectionId) return;
-    handleMessage(ev.data);
+    handleMessage(ev.data, ws, myId);
   });
 
-  ws.addEventListener("close", () => onSocketClosed(myId));
+  ws.addEventListener("close", () => onSocketClosed(myId, ws));
   ws.addEventListener("error", () => {});
 }
 
-function onSocketClosed(myId: number) {
+function onSocketClosed(myId: number, closedSocket?: WebSocket) {
+  if (closedSocket) {
+    serverBarriers.rejectConnection(closedSocket, myId, new Error("WebSocket closed"));
+  }
   if (myId !== connectionId) return;
   socket = null;
   connected = false;
@@ -208,7 +230,7 @@ function cancelReconnectTimer() {
   }
 }
 
-function handleMessage(raw: unknown) {
+function handleMessage(raw: unknown, sourceSocket: WebSocket, sourceGeneration: number) {
   // Binary frames are TLR2 Loro-delta payloads (protocol v2). The server may
   // deliver them as an ArrayBuffer (we set `binaryType = "arraybuffer"`) or,
   // defensively, as a Blob. ArrayBuffer is handled synchronously here; a Blob
@@ -226,12 +248,14 @@ function handleMessage(raw: unknown) {
     return;
   }
   if (typeof raw !== "string") return;
-  let event: WsEvent;
+  let parsed: unknown;
   try {
-    event = JSON.parse(raw) as WsEvent;
+    parsed = JSON.parse(raw);
   } catch {
     return;
   }
+  if (serverBarriers.handleAcknowledgement(sourceSocket, sourceGeneration, parsed)) return;
+  const event = parsed as WsEvent;
   switch (event.event) {
     case "note_created":
       onNoteCreated?.(event.note);
@@ -286,13 +310,48 @@ function handleBinaryFrame(bytes: Uint8Array) {
 /// isn't open, so callers that must not lose the payload (the doc registry's
 /// outbound cursor only advances on a real handoff) can retry after reconnect.
 export function sendBinary(frame: Uint8Array): boolean {
-  if (socket && socket.readyState === WebSocket.OPEN) {
+  return socket ? sendBinaryOnSocket(socket, frame) : false;
+}
+
+function sendBinaryOnSocket(candidate: WebSocket, frame: Uint8Array): boolean {
+  if (candidate !== socket || candidate.readyState !== WebSocket.OPEN) return false;
+  try {
     // Send the exact frame bytes as a fresh ArrayBuffer. `slice` copies just
-    // the view's range (correct even if `frame` is a subarray) and yields an
-    // ArrayBuffer-backed buffer, which `WebSocket.send` accepts unambiguously
-    // (a generic `Uint8Array<ArrayBufferLike>` is not assignable directly).
-    socket.send(frame.slice().buffer);
+    // the view's range (correct even if `frame` is a subarray).
+    candidate.send(frame.slice().buffer);
     return true;
+  } catch {
+    return false;
   }
-  return false;
+}
+
+export type CapturedBinarySender = (frame: Uint8Array) => boolean;
+
+/**
+ * Run one synchronous Loro flush against a captured socket, then place a text
+ * barrier behind those binary frames on that exact connection. The callback
+ * may return a checkpoint commit, which runs only for the matching positive
+ * acknowledgement. Any close/reconnect, dropped binary/control send, timeout,
+ * or negative acknowledgement rejects without committing.
+ */
+export async function awaitLoroServerBarrier(
+  flush: (send: CapturedBinarySender) => void | (() => void),
+): Promise<void> {
+  const capturedSocket = socket;
+  const capturedGeneration = connectionId;
+  if (!capturedSocket || capturedSocket.readyState !== WebSocket.OPEN) {
+    throw new Error("Loro barrier socket is not open");
+  }
+  const commit = flush((frame) => {
+    if (connectionId !== capturedGeneration || socket !== capturedSocket) return false;
+    return sendBinaryOnSocket(capturedSocket, frame);
+  });
+  if (commit && typeof (commit as unknown as { then?: unknown }).then === "function") {
+    throw new Error("Loro barrier flush callback must be synchronous");
+  }
+  if (connectionId !== capturedGeneration || socket !== capturedSocket) {
+    throw new Error("WebSocket changed during Loro barrier preparation");
+  }
+  await serverBarriers.request(capturedSocket, capturedGeneration);
+  commit?.();
 }

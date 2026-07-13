@@ -64,11 +64,23 @@ interface Entry<D extends RegistryDoc> {
    *  doc's ENTIRE history (bootstrap snapshot ops included), megabytes for a
    *  large note that was merely viewed. */
   lastSentVV: unknown | null;
+  /** Doc version known to have crossed a positive server-applied barrier.
+   *  This intentionally lags `lastSentVV`: handing bytes to WebSocket is not
+   *  proof that the server applied them. Barrier retries export cumulatively
+   *  from this checkpoint. */
+  lastAckedVV: unknown | null;
   /** True when a LOCAL edit (splice / undo / redo) happened since the last
    *  successful flush. Flushes are no-ops on clean docs — remote-only imports
    *  must never trigger an outbound re-broadcast on release. */
   dirty: boolean;
   flushHandle: unknown | null;
+}
+
+export interface RegistryBarrierPreparation {
+  /** Advance each affected note only to the version captured before the
+   *  barrier frame was sent. Edits authored while the ack is in flight remain
+   *  outside the checkpoint and ride the next barrier. */
+  acknowledge(): void;
 }
 
 function hex(bytes: Uint8Array): string {
@@ -105,6 +117,7 @@ export class NoteDocRegistry<D extends RegistryDoc> {
       refs: 1,
       opening: doc.open(slug),
       lastSentVV: null,
+      lastAckedVV: null,
       dirty: false,
       flushHandle: null,
     };
@@ -115,7 +128,9 @@ export class NoteDocRegistry<D extends RegistryDoc> {
     // but guard on dirty anyway so a cursor can never leapfrog unsent ops.
     entry.opening.then(() => {
       if (this.#entries.get(slug) === entry && entry.lastSentVV === null && !entry.dirty) {
-        entry.lastSentVV = entry.doc.currentVersion();
+        const baseline = entry.doc.currentVersion();
+        entry.lastSentVV = baseline;
+        entry.lastAckedVV = baseline;
       }
     });
     return entry.opening;
@@ -207,19 +222,20 @@ export class NoteDocRegistry<D extends RegistryDoc> {
   }
 
   /** Export `slug`'s dirty delta since its last successful send and ship it. */
-  flush(slug: string): void {
+  flush(slug: string): boolean {
     const entry = this.#entries.get(slug);
-    if (!entry) return;
+    if (!entry) return true;
     if (entry.flushHandle !== null) {
       this.#deps.cancelFlush(entry.flushHandle);
       entry.flushHandle = null;
     }
-    this.#flushEntry(entry);
+    const handedOff = this.#flushEntry(entry);
     // A parked entry (zero refs, kept alive only for its unsent ops) closes
     // as soon as a flush finally hands its ops off.
     if (!entry.dirty && entry.refs <= 0 && this.#entries.get(slug) === entry) {
       this.#closeEntry(slug, entry);
     }
+    return handedOff;
   }
 
   /** Flush every open doc. The layout calls this on WS reconnect so ops that
@@ -228,22 +244,76 @@ export class NoteDocRegistry<D extends RegistryDoc> {
     for (const slug of [...this.#entries.keys()]) this.flush(slug);
   }
 
-  #flushEntry(entry: Entry<D>): void {
-    if (!entry.dirty) return; // clean docs never re-broadcast (remote-only imports)
+  /** Await bootstrap for every currently-open affected doc. Deduplication is
+   *  important for source/destination aliases that resolve to the same note. */
+  async waitUntilOpen(slugs: Iterable<string>): Promise<void> {
+    const openings = [...new Set(slugs)].map((slug) => {
+      const entry = this.#entries.get(slug);
+      if (!entry) throw new Error(`Loro note doc is not open: ${slug}`);
+      return entry.opening;
+    });
+    await Promise.all(openings);
+  }
+
+  #flushEntry(entry: Entry<D>): boolean {
+    if (!entry.dirty) return true; // clean docs never re-broadcast (remote-only imports)
     const noteId16 = entry.doc.noteId16;
-    if (!noteId16) return;
+    if (!noteId16) return false;
     const bytes = entry.doc.exportSince(entry.lastSentVV);
     if (bytes.length === 0) {
       entry.dirty = false;
-      return;
+      return true;
     }
     // Advance the cursor ONLY on a confirmed handoff: sendBinary drops the
     // frame when the socket isn't open, and an advanced cursor would exclude
     // these ops from every later export — silently losing the keystrokes.
-    if (!this.#deps.send({ doc: noteId16, updateBytes: bytes })) return;
+    if (!this.#deps.send({ doc: noteId16, updateBytes: bytes })) return false;
     const v = entry.doc.currentVersion();
-    if (v) entry.lastSentVV = v;
+    if (v !== null) entry.lastSentVV = v;
     entry.dirty = false;
+    return true;
+  }
+
+  /**
+   * Synchronously hand every affected note's cumulative unacknowledged Loro
+   * history to one captured WebSocket. This cancels any scheduled rAF flush,
+   * re-exports from the server-acknowledged checkpoint (not the optimistic
+   * handoff cursor), and returns a commit callback that MUST run only after a
+   * matching positive server barrier acknowledgement.
+   */
+  prepareServerBarrier(
+    slugs: Iterable<string>,
+    send: (update: RegistryUpdate) => boolean,
+  ): RegistryBarrierPreparation | null {
+    const checkpoints: Array<{ entry: Entry<D>; version: unknown | null }> = [];
+    for (const slug of new Set(slugs)) {
+      const entry = this.#entries.get(slug);
+      if (!entry) return null;
+      if (entry.flushHandle !== null) {
+        this.#deps.cancelFlush(entry.flushHandle);
+        entry.flushHandle = null;
+      }
+      const noteId16 = entry.doc.noteId16;
+      if (!noteId16) return null;
+      const version = entry.doc.currentVersion();
+      const bytes = entry.doc.exportSince(entry.lastAckedVV);
+      if (bytes.length > 0) {
+        if (!send({ doc: noteId16, updateBytes: bytes })) return null;
+        // The bytes really entered the captured socket, so ordinary flushes
+        // need not resend them. The ack checkpoint deliberately stays put.
+        entry.lastSentVV = version;
+        entry.dirty = false;
+      }
+      checkpoints.push({ entry, version });
+    }
+    let acknowledged = false;
+    return {
+      acknowledge: () => {
+        if (acknowledged) return;
+        acknowledged = true;
+        for (const { entry, version } of checkpoints) entry.lastAckedVV = version;
+      },
+    };
   }
 
   // ── focused-doc tracking (undo/redo routing) ──────────────────────────────

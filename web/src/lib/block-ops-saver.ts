@@ -58,14 +58,20 @@ export type UpsertFn = (
 
 /** Loss-avoidance fallback for a genuine (non-abort) POST failure on
  *  `noteId`: PUT the whole body so the edit still persists. */
-export type FallbackFn = (noteId: string) => void;
+export type FallbackFn = (noteId: string) => void | Promise<unknown>;
+
+interface InFlightSave {
+  controller: AbortController;
+  completion: Promise<void>;
+}
 
 interface NoteSaveState {
   /** Latest op per block (`bid` → op). Keyed so a burst of edits to one block
    *  collapses to a single upsert carrying the final text. */
   ops: Map<string, BlockOp>;
   timer: ReturnType<typeof setTimeout> | null;
-  inFlight: AbortController | null;
+  inFlight: InFlightSave | null;
+  settlers: number;
 }
 
 /**
@@ -89,7 +95,7 @@ export class BlockOpsSaver {
   #getState(noteId: string): NoteSaveState {
     let s = this.#states.get(noteId);
     if (!s) {
-      s = { ops: new Map(), timer: null, inFlight: null };
+      s = { ops: new Map(), timer: null, inFlight: null, settlers: 0 };
       this.#states.set(noteId, s);
     }
     return s;
@@ -126,6 +132,10 @@ export class BlockOpsSaver {
       }
     }
     if (s.timer) clearTimeout(s.timer);
+    if (s.settlers > 0) {
+      s.timer = null;
+      return;
+    }
     s.timer = setTimeout(() => {
       void this.flush(noteId);
     }, this.#debounceMs);
@@ -147,7 +157,7 @@ export class BlockOpsSaver {
       }
       s.ops.clear();
       if (s.inFlight) {
-        s.inFlight.abort();
+        s.inFlight.controller.abort();
         s.inFlight = null;
       }
     }
@@ -167,27 +177,80 @@ export class BlockOpsSaver {
       clearTimeout(s.timer);
       s.timer = null;
     }
-    if (s.ops.size === 0) return;
+    this.#startFlush(noteId, s, true);
+  }
+
+  #startFlush(noteId: string, s: NoteSaveState, abortPrevious: boolean): Promise<void> | null {
+    if (s.ops.size === 0) return null;
     const ops = [...s.ops.values()];
     s.ops.clear();
-    // Cancel the superseded in-flight POST so a stale write can't land after
-    // the newer one.
-    if (s.inFlight) s.inFlight.abort();
+    // Ordinary trailing-edge saves preserve the established latest-wins
+    // behavior. `settle`, by contrast, calls this only after the existing
+    // request completed, so it never uses an abort as an ordering barrier.
+    if (abortPrevious && s.inFlight) s.inFlight.controller.abort();
     const controller = new AbortController();
-    s.inFlight = controller;
-    this.#upsert(noteId, ops, controller.signal)
-      .then(() => {
-        if (s.inFlight === controller) s.inFlight = null;
-      })
-      .catch((err) => {
-        if (s.inFlight === controller) s.inFlight = null;
+    const inFlight: InFlightSave = {
+      controller,
+      completion: Promise.resolve(),
+    };
+    inFlight.completion = this.#upsert(noteId, ops, controller.signal)
+      .then(() => undefined)
+      .catch(async (err) => {
         // An abort is expected (a newer coalesced POST superseded this one).
         // Swallow it — falling back to a whole-body PUT here would double-write.
         if (isAbortError(err)) return;
         // Genuine failure (e.g. the note doesn't exist on disk yet): PUT the
         // whole body so the edit still persists.
-        this.#fallback(noteId);
+        await this.#fallback(noteId);
+      })
+      .finally(() => {
+        if (s.inFlight === inFlight) s.inFlight = null;
       });
+    s.inFlight = inFlight;
+    // Existing callers intentionally fire-and-forget. Attach a rejection
+    // handler without changing the stored Promise so `settle` can still
+    // observe and propagate a failed whole-body fallback.
+    void inFlight.completion.catch(() => {});
+    return inFlight.completion;
+  }
+
+  /**
+   * Durability barrier for a relocation. Flush the queued batch, await the
+   * live request rather than aborting it, then repeat if another enqueue
+   * arrived while that request was in flight. A genuine POST failure is not
+   * settled until its whole-body fallback completes; fallback failure rejects.
+   */
+  async settle(noteId: string): Promise<void> {
+    const s = this.#states.get(noteId);
+    if (!s) return;
+    s.settlers += 1;
+    try {
+      while (true) {
+        if (s.timer) {
+          clearTimeout(s.timer);
+          s.timer = null;
+        }
+        if (s.inFlight) {
+          await s.inFlight.completion;
+          continue;
+        }
+        const completion = this.#startFlush(noteId, s, false);
+        if (completion) {
+          await completion;
+          continue;
+        }
+        return;
+      }
+    } finally {
+      s.settlers -= 1;
+      // If this settle failed while a newer batch waited behind it, restore
+      // the ordinary debounce path so the queued edit is not stranded.
+      if (s.settlers === 0 && s.ops.size > 0 && s.timer === null) {
+        s.timer = setTimeout(() => {
+          void this.flush(noteId);
+        }, this.#debounceMs);
+      }
+    }
   }
 
   /** Flush every note's pending batch immediately (component teardown). */

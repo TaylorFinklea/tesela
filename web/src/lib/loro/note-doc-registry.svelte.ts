@@ -15,7 +15,7 @@ import { browser } from "$app/environment";
 import { NoteDoc } from "./note-doc";
 import { NoteDocRegistry, type RegistryUpdate } from "./doc-registry";
 import { encodeTlr2, type LoroDocUpdate } from "./tlr2";
-import { sendBinary } from "$lib/ws-client.svelte";
+import { awaitLoroServerBarrier, sendBinary } from "$lib/ws-client.svelte";
 
 const registry = browser
   ? new NoteDocRegistry<NoteDoc>({
@@ -73,6 +73,32 @@ export function applyInboundToOpenDocs(updates: LoroDocUpdate[]): RegistryUpdate
  *  the shell tears down). */
 export function flushAllOutbound(): void {
   registry?.flushAll();
+}
+
+let serverBarrierQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Settle all affected mounted note docs on the server. Calls are serialized
+ * connection-wide so two panes cannot acknowledge checkpoints out of order.
+ * Included real notes fail closed if their registry doc is absent; callers
+ * deliberately omit an untouched synthetic append destination.
+ */
+export function settleNoteDocsAtServer(slugs: Iterable<string>): Promise<void> {
+  if (!registry) return Promise.resolve();
+  const affected = [...new Set(slugs)];
+  const run = async () => {
+    await registry.waitUntilOpen(affected);
+    await awaitLoroServerBarrier((sendCaptured) => {
+      const prepared = registry.prepareServerBarrier(affected, (update) =>
+        sendCaptured(encodeTlr2([{ doc: update.doc, updateBytes: update.updateBytes }])),
+      );
+      if (!prepared) throw new Error("Unable to hand affected Loro docs to the captured socket");
+      return () => prepared.acknowledge();
+    });
+  };
+  const completion = serverBarrierQueue.then(run, run);
+  serverBarrierQueue = completion.catch(() => {});
+  return completion;
 }
 
 // ── focused-doc tracking: vim undo/redo route to the note being edited ──────

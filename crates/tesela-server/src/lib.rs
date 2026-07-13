@@ -1208,6 +1208,101 @@ mod tests {
             .send(TMessage::Binary(frame.clone().into()))
             .await
             .unwrap();
+        let good_barrier = "11111111-1111-4111-8111-111111111111";
+        client_a
+            .send(TMessage::Text(
+                serde_json::json!({
+                    "event": "loro_barrier",
+                    "barrier_id": good_barrier,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        // The acknowledgement is direct to A and ordered behind the binary
+        // apply on this same socket. Seeing it therefore proves the engine
+        // already contains A's edit; no broadcast observation is used as a
+        // surrogate ordering barrier.
+        let ack_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_good_ack = false;
+        let mut echoed_to_a = false;
+        while !got_good_ack && tokio::time::Instant::now() < ack_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_a.next()).await {
+                Ok(Some(Ok(TMessage::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
+                        assert_eq!(
+                            value.get("barrier_id").and_then(|v| v.as_str()),
+                            Some(good_barrier)
+                        );
+                        assert_eq!(value.get("ok").and_then(|v| v.as_bool()), Some(true));
+                        got_good_ack = true;
+                    }
+                }
+                Ok(Some(Ok(TMessage::Binary(_)))) => echoed_to_a = true,
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            got_good_ack,
+            "sender receives its direct positive barrier acknowledgement"
+        );
+        let rendered_at_ack = server_engine_handle.render_note(note_id).await.unwrap();
+        assert!(
+            rendered_at_ack.contains("live edit from A"),
+            "positive ack is emitted only after the edit is server-applied: {rendered_at_ack:?}"
+        );
+
+        // A malformed/failed binary frame dirties this connection's next
+        // barrier window. The false result is direct even though the server
+        // remains otherwise healthy, and the window resets after the ack.
+        client_a
+            .send(TMessage::Binary(b"not a tlr2 frame".to_vec().into()))
+            .await
+            .unwrap();
+        let bad_barrier = "22222222-2222-4222-8222-222222222222";
+        client_a
+            .send(TMessage::Text(
+                serde_json::json!({
+                    "event": "loro_barrier",
+                    "barrier_id": bad_barrier,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let bad_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_bad_ack = false;
+        while !got_bad_ack && tokio::time::Instant::now() < bad_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_a.next()).await {
+                Ok(Some(Ok(TMessage::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
+                        assert_eq!(
+                            value.get("barrier_id").and_then(|v| v.as_str()),
+                            Some(bad_barrier)
+                        );
+                        assert_eq!(value.get("ok").and_then(|v| v.as_bool()), Some(false));
+                        got_bad_ack = true;
+                    }
+                }
+                Ok(Some(Ok(TMessage::Binary(_)))) => echoed_to_a = true,
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            got_bad_ack,
+            "failed inbound frame produces a negative barrier ack"
+        );
 
         // ── Client B must receive BOTH a binary delta and a text WsEvent ──
         let mut got_binary_b = false;
@@ -1243,7 +1338,6 @@ mod tests {
 
         // ── Client A must NOT receive its own binary frame back ───────────
         // (it may receive the text event — that fans out to everyone).
-        let mut echoed_to_a = false;
         let a_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
         while tokio::time::Instant::now() < a_deadline {
             match tokio::time::timeout(std::time::Duration::from_millis(200), client_a.next()).await

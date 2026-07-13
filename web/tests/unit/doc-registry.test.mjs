@@ -283,3 +283,111 @@ test("releasing the focused note clears focus routing", async () => {
   registry.release("one");
   assert.equal(registry.focusedSlug(), null);
 });
+
+test("forced flush cancels its scheduled callback and reports the real handoff result", async () => {
+  const { registry, sent, runFlushes, state } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  state.wsUp = false;
+  assert.equal(registry.flush("n"), false, "a dirty delta rejected by the socket is unsettled");
+  assert.equal(sent.length, 0);
+
+  state.wsUp = true;
+  assert.equal(registry.flush("n"), true, "a real socket handoff settles the dirty delta");
+  assert.equal(sent.length, 1);
+
+  runFlushes();
+  assert.equal(sent.length, 1, "the cancelled scheduled callback cannot send a second frame");
+});
+
+test("barrier retry re-exports cumulatively from the server-acked checkpoint", async () => {
+  const { registry, sent, runFlushes } = makeHarness();
+  await registry.acquire("n");
+
+  registry.splice("n", "b", 0, 0, "a");
+  runFlushes();
+  assert.equal(sent.length, 1, "ordinary handoff advances only the optimistic cursor");
+
+  const barrierFrames = [];
+  const handoff = (update) => {
+    barrierFrames.push(update);
+    return true;
+  };
+  const first = registry.prepareServerBarrier(["n", "n"], handoff);
+  assert.ok(first, "duplicate affected notes prepare one successful barrier handoff");
+  assert.equal(barrierFrames.length, 1);
+  assert.equal(barrierFrames[0].updateBytes.length, 1);
+
+  // No acknowledgement: the same op remains cumulative. Add another edit
+  // after the failed barrier and prove the retry carries both operations.
+  registry.splice("n", "b", 1, 0, "b");
+  const retry = registry.prepareServerBarrier(["n"], handoff);
+  assert.ok(retry);
+  assert.equal(barrierFrames.length, 2);
+  assert.equal(barrierFrames[1].updateBytes.length, 2, "retry includes every op since last ack");
+  retry.acknowledge();
+
+  registry.splice("n", "b", 2, 0, "c");
+  const afterAck = registry.prepareServerBarrier(["n"], handoff);
+  assert.ok(afterAck);
+  assert.equal(barrierFrames[2].updateBytes.length, 1, "positive ack advances only its captured VV");
+});
+
+test("failed barrier handoff does not advance the server checkpoint", async () => {
+  const { registry } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  const dropped = [];
+  const failed = registry.prepareServerBarrier(["n"], (update) => {
+    dropped.push(update);
+    return false;
+  });
+  assert.equal(failed, null);
+  assert.equal(dropped[0].updateBytes.length, 1);
+
+  const retried = [];
+  const retry = registry.prepareServerBarrier(["n"], (update) => {
+    retried.push(update);
+    return true;
+  });
+  assert.ok(retry);
+  assert.equal(retried[0].updateBytes.length, 1, "dropped bytes remain unacknowledged");
+});
+
+test("barrier callers can await every affected doc's completed bootstrap", async () => {
+  let finishOpen;
+  const doc = makeFakeDoc([]);
+  doc.open = (slug) => {
+    doc.slug = slug;
+    doc.noteId16 = new Uint8Array(16).fill(slug.charCodeAt(0));
+    doc.history = BOOTSTRAP_OPS;
+    return new Promise((resolve) => {
+      finishOpen = resolve;
+    });
+  };
+  const registry = new NoteDocRegistry({
+    createDoc: () => doc,
+    scheduleFlush: () => null,
+    cancelFlush: () => {},
+    send: () => true,
+  });
+  const acquired = registry.acquire("n");
+  let ready = false;
+  const waiting = registry.waitUntilOpen(["n", "n"]).then(() => {
+    ready = true;
+  });
+  await Promise.resolve();
+  assert.equal(ready, false);
+  finishOpen();
+  await acquired;
+  await waiting;
+  assert.equal(ready, true);
+});
+
+test("barrier preparation fails closed for an affected real note that is not open", async () => {
+  const { registry } = makeHarness();
+  await assert.rejects(registry.waitUntilOpen(["missing"]), /not open/i);
+  assert.equal(registry.prepareServerBarrier(["missing"], () => true), null);
+});
