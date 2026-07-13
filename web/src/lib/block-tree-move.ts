@@ -9,6 +9,60 @@ export function stableBlockKey(block: Pick<ParsedBlock, "id" | "bid">): string {
   return block.bid ? `bid:${block.bid}` : `id:${block.id}`;
 }
 
+export type FocusRestorationOptions<T> = {
+  maxAttempts: number;
+  findTarget: () => T | null | Promise<T | null>;
+  waitForRetry: () => Promise<void>;
+  focusTarget: (target: T) => void;
+};
+
+export type FocusRestorationController = {
+  restore<T>(options: FocusRestorationOptions<T>): Promise<boolean>;
+  revoke(): void;
+  dispose(): void;
+};
+
+/** Owns delayed focus restoration so a stale retry cannot overwrite newer
+ * user intent. Every restoration gets a fresh lease; revocation and teardown
+ * invalidate the current owner without consuming the canceling input. */
+export function createFocusRestorationController(): FocusRestorationController {
+  let lease = 0;
+  let disposed = false;
+  const owns = (candidate: number) => !disposed && candidate === lease;
+
+  return {
+    async restore<T>({
+      maxAttempts,
+      findTarget,
+      waitForRetry,
+      focusTarget,
+    }: FocusRestorationOptions<T>): Promise<boolean> {
+      const owner = ++lease;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (!owns(owner)) return false;
+        const target = await findTarget();
+        if (target !== null) {
+          if (!owns(owner)) return false;
+          focusTarget(target);
+          return true;
+        }
+        if (attempt + 1 < maxAttempts) {
+          if (!owns(owner)) return false;
+          await waitForRetry();
+        }
+      }
+      return false;
+    },
+    revoke() {
+      lease += 1;
+    },
+    dispose() {
+      disposed = true;
+      lease += 1;
+    },
+  };
+}
+
 export type BlockMoveRequest = {
   move_id: string;
   source_note_id: string;

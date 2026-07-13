@@ -35,6 +35,7 @@
   import {
     BLOCK_MOVE_MIME,
     IDLE_BLOCK_MOVE_SESSION,
+    createFocusRestorationController,
     decodeBlockMoveDragPayload,
     encodeBlockMoveDragPayload,
     reduceBlockMoveSession,
@@ -56,6 +57,7 @@
   const touchedSyntheticNotes = new Set<string>();
   let moveToastId: number | null = null;
   let moveUiDisposed = false;
+  const focusRestoration = createFocusRestorationController();
 
   function showMoveToast(message: string, tone: "info" | "warn", durationMs: number) {
     if (moveUiDisposed) return;
@@ -804,20 +806,30 @@
   async function focusBlockBid(noteId: string, bid: string): Promise<void> {
     if (moveUiDisposed) return;
     ensureMounted(noteId);
-    await tick();
-    for (let attempt = 0; attempt < 60; attempt++) {
-      if (moveUiDisposed) return;
-      const row = daySection(noteId)?.querySelector<HTMLElement>(
-        `[data-block-bid="${selectorValue(bid)}"]`,
-      );
-      const editor = row?.querySelector<HTMLElement>(".cm-editor .cm-content");
-      if (editor) {
-        row?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    let firstLookup = true;
+    await focusRestoration.restore({
+      maxAttempts: 60,
+      findTarget: async () => {
+        if (firstLookup) {
+          firstLookup = false;
+          await tick();
+        }
+        if (moveUiDisposed) return null;
+        const row = daySection(noteId)?.querySelector<HTMLElement>(
+          `[data-block-bid="${selectorValue(bid)}"]`,
+        ) ?? null;
+        const editor = row?.querySelector<HTMLElement>(".cm-editor .cm-content") ?? null;
+        return row && editor ? { row, editor } : null;
+      },
+      waitForRetry: () => new Promise<void>(
+        (resolve) => requestAnimationFrame(() => resolve()),
+      ),
+      focusTarget: ({ row, editor }) => {
+        if (moveUiDisposed) return;
+        row.scrollIntoView({ block: "nearest", behavior: "auto" });
         editor.focus();
-        return;
-      }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }
+      },
+    });
   }
 
   function relocationBindings(noteId: string): RelocationBindings {
@@ -924,6 +936,7 @@
   onMount(() => {
     moveUiDisposed = false;
     const commandHandler = () => startCommandMove();
+    const revokeFocusRestoration = () => focusRestoration.revoke();
     const keyHandler = (event: KeyboardEvent) => {
       if (!moveActive) return;
       const key = event.key.toLowerCase();
@@ -955,10 +968,15 @@
       if (key === "b" || key === "i" || key === "a") commitKeyboardMove(key);
     };
     window.addEventListener("tesela:start-block-move", commandHandler);
+    document.addEventListener("pointerdown", revokeFocusRestoration, true);
+    document.addEventListener("keydown", revokeFocusRestoration, true);
     document.addEventListener("keydown", keyHandler, true);
     return () => {
       moveUiDisposed = true;
+      focusRestoration.dispose();
       window.removeEventListener("tesela:start-block-move", commandHandler);
+      document.removeEventListener("pointerdown", revokeFocusRestoration, true);
+      document.removeEventListener("keydown", revokeFocusRestoration, true);
       document.removeEventListener("keydown", keyHandler, true);
       clearMoveToast();
     };

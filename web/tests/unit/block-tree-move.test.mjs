@@ -54,6 +54,115 @@ function sourceBetween(source, start, end) {
   return source.slice(source.indexOf(start), source.indexOf(end));
 }
 
+function focusRestorationController() {
+  assert.equal(
+    typeof blockTreeMove.createFocusRestorationController,
+    "function",
+    "focus restoration must be guarded by a revocable ownership lease",
+  );
+  return blockTreeMove.createFocusRestorationController();
+}
+
+test("focus restoration stops when its lease is canceled before the target appears", async () => {
+  const controller = focusRestorationController();
+  let releaseRetry;
+  let target = null;
+  const focused = [];
+  const retry = new Promise((resolve) => { releaseRetry = resolve; });
+
+  const restoration = controller.restore({
+    maxAttempts: 2,
+    findTarget: () => target,
+    waitForRetry: () => retry,
+    focusTarget: (value) => focused.push(value),
+  });
+
+  controller.revoke();
+  target = { bid: "moved-root" };
+  releaseRetry();
+
+  assert.equal(await restoration, false);
+  assert.deepEqual(focused, []);
+});
+
+test("uncontested focus restoration retries and focuses exactly once", async () => {
+  const controller = focusRestorationController();
+  const target = { bid: "moved-root" };
+  const focused = [];
+  let attempts = 0;
+
+  const restored = await controller.restore({
+    maxAttempts: 3,
+    findTarget: () => ++attempts === 1 ? null : target,
+    waitForRetry: async () => {},
+    focusTarget: (value) => focused.push(value),
+  });
+
+  assert.equal(restored, true);
+  assert.equal(attempts, 2);
+  assert.deepEqual(focused, [target]);
+});
+
+test("a newer focus restoration supersedes an older retrying restoration", async () => {
+  const controller = focusRestorationController();
+  let releaseOldRetry;
+  let oldTarget = null;
+  const newTarget = { bid: "new-owner" };
+  const focused = [];
+  const oldRetry = new Promise((resolve) => { releaseOldRetry = resolve; });
+
+  const oldRestoration = controller.restore({
+    maxAttempts: 2,
+    findTarget: () => oldTarget,
+    waitForRetry: () => oldRetry,
+    focusTarget: (value) => focused.push(value),
+  });
+  const newRestoration = controller.restore({
+    maxAttempts: 1,
+    findTarget: () => newTarget,
+    waitForRetry: async () => {},
+    focusTarget: (value) => focused.push(value),
+  });
+
+  oldTarget = { bid: "old-owner" };
+  releaseOldRetry();
+
+  assert.equal(await newRestoration, true);
+  assert.equal(await oldRestoration, false);
+  assert.deepEqual(focused, [newTarget]);
+});
+
+test("a newer focus restoration supersedes an owner awaiting its first lookup", async () => {
+  const controller = focusRestorationController();
+  let releaseOldLookup;
+  const oldLookup = new Promise((resolve) => { releaseOldLookup = resolve; });
+  const oldTarget = { bid: "old-owner" };
+  const newTarget = { bid: "new-owner" };
+  const focused = [];
+
+  const oldRestoration = controller.restore({
+    maxAttempts: 1,
+    findTarget: async () => {
+      await oldLookup;
+      return oldTarget;
+    },
+    waitForRetry: async () => {},
+    focusTarget: (value) => focused.push(value),
+  });
+  const newRestoration = controller.restore({
+    maxAttempts: 1,
+    findTarget: () => newTarget,
+    waitForRetry: async () => {},
+    focusTarget: (value) => focused.push(value),
+  });
+
+  releaseOldLookup();
+
+  assert.equal(await newRestoration, true);
+  assert.equal(await oldRestoration, false);
+  assert.deepEqual(focused, [newTarget]);
+});
+
 test("moveSubtreeUp swaps the selected block plus descendants with the previous sibling subtree", () => {
   const blocks = [
     blk("a", 0),
@@ -748,6 +857,51 @@ test("late move completions cannot publish UI after Journal teardown", () => {
   );
   assert.ok((focus.match(/if \(moveUiDisposed\) return;/g) ?? []).length >= 2);
   assert.match(cleanup, /return \(\) => \{\s*moveUiDisposed = true;[\s\S]*clearMoveToast\(\)/);
+});
+
+test("Journal focus restoration yields to later pointer and keyboard input", () => {
+  const focus = sourceBetween(
+    journalViewSource,
+    "async function focusBlockBid",
+    "function relocationBindings",
+  );
+  const lifecycle = journalViewSource.slice(journalViewSource.lastIndexOf("onMount(() => {"));
+
+  assert.match(journalViewSource, /createFocusRestorationController/);
+  assert.match(journalViewSource, /const focusRestoration = createFocusRestorationController\(\)/);
+  assert.match(focus, /focusRestoration\.restore\(\{/);
+  assert.match(focus, /findTarget: async \(\) =>/);
+  assert.match(focus, /focusTarget: \(\{ row, editor \}\) => \{/);
+  assert.match(focus, /row\.scrollIntoView[\s\S]*editor\.focus\(\)/);
+
+  assert.match(
+    lifecycle,
+    /const revokeFocusRestoration = \(\) => focusRestoration\.revoke\(\);/,
+    "the canceling input listener must not prevent or stop the user's event",
+  );
+  const pointerCancel = lifecycle.indexOf(
+    'document.addEventListener("pointerdown", revokeFocusRestoration, true)',
+  );
+  const keyCancel = lifecycle.indexOf(
+    'document.addEventListener("keydown", revokeFocusRestoration, true)',
+  );
+  const moveKeyHandler = lifecycle.indexOf(
+    'document.addEventListener("keydown", keyHandler, true)',
+  );
+  assert.ok(pointerCancel >= 0, "pointerdown must revoke stale restoration even on the focused editor");
+  assert.ok(keyCancel >= 0 && keyCancel < moveKeyHandler, "keydown revocation must run before move handling");
+  assert.match(
+    lifecycle,
+    /return \(\) => \{\s*moveUiDisposed = true;\s*focusRestoration\.dispose\(\)/,
+  );
+  assert.match(
+    lifecycle,
+    /document\.removeEventListener\("pointerdown", revokeFocusRestoration, true\)/,
+  );
+  assert.match(
+    lifecycle,
+    /document\.removeEventListener\("keydown", revokeFocusRestoration, true\)/,
+  );
 });
 
 test("sameNoteMoveRequestForAction derives subtree-aware Alt-arrow requests", () => {
