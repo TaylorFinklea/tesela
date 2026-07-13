@@ -970,8 +970,8 @@
       ensuredFor = "";
     };
     const commandHandler = () => startCommandMove();
-    const revokeFocusRestoration = () => {
-      anchorAutofocusCanceled = true;
+    const revokeFocusRestoration = (event: Event) => {
+      if (event.isTrusted) anchorAutofocusCanceled = true;
       focusRestoration.revoke();
     };
     const keyHandler = (event: KeyboardEvent) => {
