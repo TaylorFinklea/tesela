@@ -249,13 +249,13 @@ struct Inner {
     /// prevent torn files, but without this lock an older export can rename
     /// after a newer one and leave a current-schema yet incomplete index.
     index_persist_lock: tokio::sync::Mutex<()>,
-    /// Resident block_id → note_id map. Lets block-only ops
-    /// (BlockMove/BlockDelete) resolve the owning note in O(1) instead
+    /// Resident block_id → owning note ids map. Lets block-only ops
+    /// (BlockMove/BlockDelete) resolve a unique owning note in O(1) instead
     /// of scanning every doc's tree, and is the prerequisite for
     /// lazy-load/evict (an evicted doc can't be scanned, but this map
     /// still points at the note so it can be loaded on demand). Derived
     /// state, rebuilt from the per-note docs at boot.
-    block_index: RwLock<HashMap<[u8; 16], [u8; 16]>>,
+    block_index: RwLock<BlockIndex>,
     /// Per-note "last broadcast version vector" (encoded) for the relay
     /// broadcast model (Phase 5): each tick exports the updates a note
     /// has accrued since this marker and advances it. Idempotent imports
@@ -948,7 +948,7 @@ impl LoroEngine {
                 }
             }
         }
-        self.register_note_blocks(note_id, &ids).await;
+        self.replace_note_blocks(note_id, &ids).await;
         let root = doc.get_map("root");
         let read = |k: &str| -> String {
             root.get(k)
@@ -1088,18 +1088,41 @@ impl LoroEngine {
     /// treats that as a no-op too, so no lock is needed. Attachment ops
     /// never touch a per-note doc (see the no-op arm in
     /// `apply_payload_inner`) and always resolve to `None`.
-    async fn note_id_for_payload(&self, payload: &OpPayload) -> Option<[u8; 16]> {
+    async fn note_id_for_payload(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
         match payload {
             OpPayload::NoteUpsert { note_id, .. }
             | OpPayload::NoteDelete { note_id, .. }
             | OpPayload::BlockUpsert { note_id, .. }
             | OpPayload::BlockPropertySet { note_id, .. }
-            | OpPayload::PagePropertySet { note_id, .. } => Some(*note_id),
+            | OpPayload::PagePropertySet { note_id, .. } => Ok(Some(*note_id)),
             OpPayload::BlockMove { block_id, .. } | OpPayload::BlockDelete { block_id } => {
-                self.inner.block_index.read().await.get(block_id).copied()
+                self.unique_note_for_block(block_id).await
             }
-            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => None,
+            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => Ok(None),
         }
+    }
+
+    /// Resolve one block id to exactly one owning note. A duplicate bid in
+    /// multiple notes is ambiguous: log every owner and fail closed before
+    /// any note is mutated.
+    async fn unique_note_for_block(&self, block_id: &[u8; 16]) -> SyncResult<Option<[u8; 16]>> {
+        let index = self.inner.block_index.read().await;
+        let Some(owners) = index.get(block_id) else {
+            return Ok(None);
+        };
+        if owners.len() == 1 {
+            return Ok(owners.iter().next().copied());
+        }
+
+        let owner_ids: Vec<String> = owners.iter().map(hex_id).collect();
+        tracing::warn!(
+            "tesela-sync/loro: ambiguous block ownership for {}: owners={owner_ids:?}",
+            hex_id(block_id)
+        );
+        Err(SyncError::Protocol(format!(
+            "ambiguous block ownership for {}",
+            hex_id(block_id)
+        )))
     }
 
     /// Get-or-create the Loro doc for a given note id, with this engine's
@@ -1123,44 +1146,71 @@ impl LoroEngine {
             .clone()
     }
 
-    /// Locate the doc + tree node hosting a given block id by walking
-    /// every doc the engine has seen. `BlockMove` / `BlockDelete` ops
-    /// carry only the block id (not the owning note), so this lookup
-    /// has to be a scan. For the scaffold it's fine — typical mosaics
-    /// have a few hundred notes. Replace with an index once profiling
-    /// flags it.
-    ///
-    /// Returns the note_id alongside the doc+node so the outer
-    /// `apply_payload` wrapper knows which snapshot to refresh.
-    ///
-    /// Resolves via the resident `block_index` (block_id → note_id)
-    /// rather than scanning every doc's tree. Besides being O(1), this
-    /// is a prerequisite for lazy-load/evict (Phase 3/6): once docs can
-    /// be evicted, a scan can't see them, but the block_index always can
-    /// point at the owning note so its doc can be loaded on demand.
-    /// Stale entries (note deleted) self-correct: the docs lookup misses
-    /// and we return None, matching "unknown block → no-op".
-    async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<([u8; 16], LoroDoc, TreeID)> {
-        let note_id = *self.inner.block_index.read().await.get(block_id)?;
+    /// Locate the doc + tree node hosting a block whose ownership is unique.
+    /// Resolves through the resident owner-set index without scanning docs;
+    /// ambiguous ownership is an error and an unknown/stale block is `None`.
+    /// Returns the note id alongside the doc and node so the outer apply
+    /// wrapper knows which snapshot to refresh.
+    async fn find_doc_for_block(
+        &self,
+        block_id: &[u8; 16],
+    ) -> SyncResult<Option<([u8; 16], LoroDoc, TreeID)>> {
+        let Some(note_id) = self.unique_note_for_block(block_id).await? else {
+            return Ok(None);
+        };
         let block_hex = hex_id(block_id);
         // The final `docs` step is the one KEYED lookup here that needs
         // load-on-demand (tesela-engc.5 audit) — `block_index` above is
         // always-resident by design and already resolves the owning note
         // for an evicted-but-on-disk block.
-        let doc = self.lazy_load_doc(note_id).await?;
+        let Some(doc) = self.lazy_load_doc(note_id).await else {
+            return Ok(None);
+        };
         let tree = doc.get_tree("blocks");
-        let node = find_node_by_block_id(&tree, &block_hex)?;
-        Some((note_id, doc, node))
+        let Some(node) = find_node_by_block_id(&tree, &block_hex) else {
+            return Ok(None);
+        };
+        Ok(Some((note_id, doc, node)))
     }
 
-    /// Register every block in a note as owned by it (block_id →
-    /// note_id), so block-only ops (BlockMove/BlockDelete) and lazy-load
-    /// can resolve the owning note without scanning all docs.
+    /// Add one note to every supplied block's owner set, so block-only ops
+    /// can resolve unique ownership without scanning all docs.
     async fn register_note_blocks(&self, note_id: [u8; 16], block_ids: &[[u8; 16]]) {
         let mut idx = self.inner.block_index.write().await;
         for b in block_ids {
-            idx.insert(*b, note_id);
+            idx.entry(*b).or_default().insert(note_id);
         }
+    }
+
+    /// Replace one note's ownership projection after importing or otherwise
+    /// refreshing its whole document.
+    async fn replace_note_blocks(&self, note_id: [u8; 16], block_ids: &[[u8; 16]]) {
+        let mut idx = self.inner.block_index.write().await;
+        for owners in idx.values_mut() {
+            owners.remove(&note_id);
+        }
+        idx.retain(|_, owners| !owners.is_empty());
+        for block_id in block_ids {
+            idx.entry(*block_id).or_default().insert(note_id);
+        }
+    }
+
+    async fn unregister_note_block(&self, note_id: [u8; 16], block_id: [u8; 16]) {
+        let mut idx = self.inner.block_index.write().await;
+        if let Some(owners) = idx.get_mut(&block_id) {
+            owners.remove(&note_id);
+            if owners.is_empty() {
+                idx.remove(&block_id);
+            }
+        }
+    }
+
+    async fn unregister_note(&self, note_id: [u8; 16]) {
+        let mut idx = self.inner.block_index.write().await;
+        for owners in idx.values_mut() {
+            owners.remove(&note_id);
+        }
+        idx.retain(|_, owners| !owners.is_empty());
     }
 
     /// Best-effort wrapper used by ordinary single mutations.
@@ -2093,7 +2143,7 @@ use render::{
     page_properties_materialized, set_page_properties,
 };
 mod index;
-use index::{build_block_index, frontmatter_title, INDEX_SCHEMA_VERSION};
+use index::{build_block_index, frontmatter_title, BlockIndex, INDEX_SCHEMA_VERSION};
 mod apply;
 #[cfg(test)]
 use apply::probe_import_poison;
@@ -2559,7 +2609,7 @@ impl SyncEngine for LoroEngine {
     /// block, an attachment-only op — see `note_id_for_payload`) skip
     /// locking; there's no per-note doc mutation to serialize.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
-        match self.note_id_for_payload(&payload).await {
+        match self.note_id_for_payload(&payload).await? {
             Some(note_id) => {
                 let apply_lock = self.apply_lock_for_note(note_id).await;
                 let _apply_guard = apply_lock.lock().await;
@@ -3145,7 +3195,7 @@ impl LoroEngine {
                 new_parent,
                 new_order_key: _,
             } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await? else {
                     // We never saw the prior BlockUpsert (e.g. the
                     // engine started after the block was created).
                     // SqliteEngine handles it; LoroEngine catches up
@@ -3181,7 +3231,7 @@ impl LoroEngine {
                 Some(note_id)
             }
             OpPayload::BlockDelete { block_id } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await? else {
                     tracing::debug!(
                         "tesela-sync/loro: BlockDelete for unknown block {}",
                         hex_id(block_id)
@@ -3221,6 +3271,7 @@ impl LoroEngine {
                         .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
                 }
                 doc.commit();
+                self.unregister_note_block(note_id, *block_id).await;
                 Some(note_id)
             }
             OpPayload::NoteDelete { note_id, .. } => {
@@ -3231,8 +3282,11 @@ impl LoroEngine {
                 // The outer wrapper sees `save_snapshot(note_id)` find
                 // the doc missing and removes the .bin file too.
                 self.index_remove(*note_id);
-                let mut docs = self.inner.docs.write().await;
-                docs.remove(note_id);
+                {
+                    let mut docs = self.inner.docs.write().await;
+                    docs.remove(note_id);
+                }
+                self.unregister_note(*note_id).await;
                 Some(*note_id)
             }
             OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => {

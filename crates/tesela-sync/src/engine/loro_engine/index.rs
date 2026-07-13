@@ -1,4 +1,8 @@
 use super::*;
+use std::collections::BTreeSet;
+
+pub(super) type BlockOwners = BTreeSet<[u8; 16]>;
+pub(super) type BlockIndex = HashMap<[u8; 16], BlockOwners>;
 
 /// Schema version of the index doc's entry shape. Bump whenever the
 /// per-entry fields OR their encoding change so a stale on-disk index is
@@ -20,10 +24,10 @@ fn join_list(items: &[String]) -> String {
     items.join(&INDEX_LIST_SEP.to_string())
 }
 
-/// Build the block_id → note_id map from a set of loaded per-note docs
-/// by reading each block node's `block_id` meta. Used at boot.
-pub(super) fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> HashMap<[u8; 16], [u8; 16]> {
-    let mut out = HashMap::new();
+/// Build the block_id → owning note ids map from a set of loaded per-note
+/// docs by reading each block node's `block_id` meta. Used at boot.
+pub(super) fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> BlockIndex {
+    let mut out = BlockIndex::new();
     for (note_id, doc) in docs.iter() {
         let tree = doc.get_tree("blocks");
         for node in tree.children(TreeParentId::Root).unwrap_or_default() {
@@ -32,7 +36,7 @@ pub(super) fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> HashMap<[u
             }
             if let Some(hex) = read_meta_str(&tree, node, "block_id") {
                 if let Some(bid) = parse_note_id_from_hex(&hex) {
-                    out.insert(bid, *note_id);
+                    out.entry(bid).or_default().insert(*note_id);
                 }
             }
         }

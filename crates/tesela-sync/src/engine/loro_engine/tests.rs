@@ -2,6 +2,7 @@ use super::*;
 
 mod convergence;
 mod ops;
+mod relocation;
 mod views_and_races;
 
 fn test_device() -> DeviceId {
