@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   BLOCK_MOVE_MIME,
+  classifyBlockMoveFailure,
   classifyDropPlacement,
   decodeBlockMoveDragPayload,
   encodeBlockMoveDragPayload,
@@ -26,6 +27,38 @@ const blockEditorSource = readFileSync(
 );
 const journalViewSource = readFileSync(
   new URL("../../src/lib/components/JournalView.svelte", import.meta.url),
+  "utf8",
+);
+const pinnedTabContentSource = readFileSync(
+  new URL("../../src/lib/components/PinnedTabContent.svelte", import.meta.url),
+  "utf8",
+);
+const tagPageRendererSource = readFileSync(
+  new URL("../../src/lib/components/TagPageRenderer.svelte", import.meta.url),
+  "utf8",
+);
+const grPageSource = readFileSync(
+  new URL("../../src/lib/graphite/views/GrPage.svelte", import.meta.url),
+  "utf8",
+);
+const apiClientSource = readFileSync(
+  new URL("../../src/lib/api-client.ts", import.meta.url),
+  "utf8",
+);
+const recoverySingletonSource = readFileSync(
+  new URL("../../src/lib/block-move-recovery.svelte.ts", import.meta.url),
+  "utf8",
+);
+const mosaicSettingsSource = readFileSync(
+  new URL("../../src/lib/components/MosaicSettings.svelte", import.meta.url),
+  "utf8",
+);
+const noteDocRegistrySource = readFileSync(
+  new URL("../../src/lib/loro/note-doc-registry.svelte.ts", import.meta.url),
+  "utf8",
+);
+const rootLayoutSource = readFileSync(
+  new URL("../../src/routes/+layout.svelte", import.meta.url),
   "utf8",
 );
 
@@ -121,6 +154,64 @@ test("uncontested focus restoration retries and focuses exactly once", async () 
   assert.equal(restored, true);
   assert.equal(attempts, 2);
   assert.deepEqual(focused, [target]);
+});
+
+test("focus restoration reclaims a remounted target until focus is stable", async () => {
+  const controller = focusRestorationController();
+  const claim = controller.claim();
+  const firstTarget = { bid: "moved-root", generation: 1 };
+  const secondTarget = { bid: "moved-root", generation: 2 };
+  const focused = [];
+  let activeTarget = null;
+  let attempts = 0;
+
+  const restored = await controller.restore(claim, {
+    maxAttempts: 6,
+    stableAttempts: 3,
+    findTarget: () => {
+      attempts++;
+      if (attempts === 1) return firstTarget;
+      if (attempts === 2) {
+        activeTarget = null;
+        return secondTarget;
+      }
+      return secondTarget;
+    },
+    waitForRetry: async () => {},
+    isTargetFocused: (target) => activeTarget === target,
+    focusTarget: (target) => {
+      activeTarget = target;
+      focused.push(target);
+    },
+  });
+
+  assert.equal(restored, true);
+  assert.equal(attempts, 4);
+  assert.deepEqual(focused, [firstTarget, secondTarget]);
+});
+
+test("focus stabilization yields when its lease is revoked", async () => {
+  const controller = focusRestorationController();
+  const claim = controller.claim();
+  const target = { bid: "moved-root" };
+  const focused = [];
+  let releaseRetry;
+  const retry = new Promise((resolve) => { releaseRetry = resolve; });
+
+  const restoration = controller.restore(claim, {
+    maxAttempts: 3,
+    stableAttempts: 3,
+    findTarget: () => target,
+    waitForRetry: () => retry,
+    isTargetFocused: () => true,
+    focusTarget: (value) => focused.push(value),
+  });
+
+  controller.revoke();
+  releaseRetry();
+
+  assert.equal(await restoration, false);
+  assert.deepEqual(focused, []);
 });
 
 test("a newer focus restoration supersedes an older retrying restoration", async () => {
@@ -620,6 +711,81 @@ test("recoverable error retains the exact move id for retry", () => {
   assert.strictEqual(retried.request, request);
 });
 
+test("only route validation, not-found, and conflict responses definitively reject a submitted move", () => {
+  assert.equal(
+    typeof blockTreeMove.isDefinitiveBlockMoveRejection,
+    "function",
+    "submitted move failures need an explicit ambiguity boundary",
+  );
+  for (const status of [400, 404, 409]) {
+    assert.equal(
+      blockTreeMove.isDefinitiveBlockMoveRejection(status, '{"error":"rejected"}'),
+      true,
+      String(status),
+    );
+  }
+  for (const status of [undefined, 0, 401, 403, 422, 500, 502, 503, 504]) {
+    assert.equal(
+      blockTreeMove.isDefinitiveBlockMoveRejection(status, '{"error":"rejected"}'),
+      false,
+      String(status),
+    );
+  }
+  for (const body of [undefined, "", "not-json", "{}", '{"error":42}']) {
+    assert.equal(
+      blockTreeMove.isDefinitiveBlockMoveRejection(400, body),
+      false,
+      String(body),
+    );
+  }
+});
+
+test("retry-safe move failures distinguish the exact request from an older blocker", () => {
+  const expected = "11111111-1111-4111-8111-111111111111";
+  const blocker = "22222222-2222-4222-8222-222222222222";
+
+  assert.deepEqual(
+    classifyBlockMoveFailure(503, JSON.stringify({
+      error: "retry",
+      move_id: expected,
+      retry_safe: true,
+    }), expected),
+    { kind: "retryable", message: "retry", blockingMoveId: null },
+  );
+  assert.deepEqual(
+    classifyBlockMoveFailure(503, JSON.stringify({
+      error: "recover the blocker",
+      move_id: blocker,
+      retry_safe: true,
+    }), expected),
+    {
+      kind: "blocked-by-other",
+      message: "recover the blocker",
+      blockingMoveId: blocker,
+    },
+  );
+  assert.equal(
+    classifyBlockMoveFailure(503, JSON.stringify({
+      error: "malformed",
+      move_id: "not-a-uuid",
+      retry_safe: true,
+    }), expected).kind,
+    "ambiguous",
+  );
+});
+
+test("journal distinguishes preflight failure from an ambiguous submitted response", () => {
+  const execution = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  assert.match(execution, /let submittedToServer\s*=\s*false/);
+  assert.match(execution, /submittedToServer\s*=\s*true;\s*await settleMoveResponse\(request\)/s);
+  assert.match(execution, /classifyBlockMoveFailure\(error\.status, error\.body, request\.move_id\)/);
+  assert.match(execution, /submittedToServer\s*&&\s*failure\.kind !== "definitive"/s);
+});
+
 test("block move session ignores transitions that are invalid for its phase", () => {
   const request = requestForSession();
   const idle = blockTreeMove.IDLE_BLOCK_MOVE_SESSION;
@@ -705,6 +871,245 @@ test("successful relocation preparation retires every pending local-edit reparse
   assert.match(afterSettle, /clearTimeout\(deferredReparseTimer\)/);
   assert.match(afterSettle, /deferredReparseTimer\s*=\s*null/);
   assert.match(afterSettle, /deferredReparseBody\s*=\s*null/);
+});
+
+test("relocation preparation drains whole-note saves from every mounted parent", () => {
+  const preparation = sourceBetween(
+    blockOutlinerSource,
+    "async function prepareOutlinerForRelocation",
+    "// Flush any pending coalesced block-ops immediately",
+  );
+  const blockOpsSettled = preparation.indexOf("await blockOpsSaver.settle(noteId)");
+  const parentSettled = preparation.indexOf("await onPrepareRelocation?.()", blockOpsSettled);
+
+  assert.ok(blockOpsSettled >= 0, "block ops must settle before relocation");
+  assert.ok(parentSettled > blockOpsSettled, "the parent whole-note queue must drain afterward");
+  assert.match(grPageSource, /onPrepareRelocation=\{settleSave\}/);
+  assert.equal(
+    pinnedTabContentSource.match(/onPrepareRelocation=\{\(\) => settleSave\(note\.id\)\}/g)?.length,
+    2,
+  );
+  assert.match(tagPageRendererSource, /\{onPrepareRelocation\}/);
+  assert.match(grPageSource, /<TagPageRenderer[\s\S]*onPrepareRelocation=\{settleSave\}/);
+  assert.match(journalViewSource, /onPrepareRelocation=\{\(\) => settleJournalSave\(note\.id\)\}/);
+});
+
+test("whole-note relocation barriers latch save failures that finish before preflight", () => {
+  const journalSettle = sourceBetween(
+    journalViewSource,
+    "async function settleJournalSave",
+    "function cancelAndFlush",
+  );
+  const grSettle = sourceBetween(grPageSource, "async function settleSave", "async function cancelAndFlush");
+  const pinnedSettle = sourceBetween(
+    pinnedTabContentSource,
+    "async function settleSave",
+    "function handleCancelAndFlush",
+  );
+
+  assert.match(journalViewSource, /if \(!s\.failed\) \{[\s\S]*s\.failure = e/);
+  assert.match(journalSettle, /if \(s\.failed\) throw s\.failure/);
+  assert.match(grPageSource, /if \(!saveFailed\) \{[\s\S]*saveFailure = e/);
+  assert.match(grSettle, /if \(saveFailed\) throw saveFailure/);
+  assert.match(pinnedTabContentSource, /if \(!state\.failed\) \{[\s\S]*state\.failure = e/);
+  assert.match(pinnedSettle, /if \(state\.failed\) throw state\.failure/);
+});
+
+test("journal reserves affected properties before relocation preflight", () => {
+  const execution = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const reserved = execution.indexOf("propertyMutationBarrier.reserve");
+  const propertyWritesSettled = execution.indexOf("await movePropertyReservation.settle()");
+  const preflight = execution.indexOf("await prepareMove(request)");
+
+  assert.ok(reserved >= 0, "the reservation must be marked synchronously by executeMove");
+  assert.ok(propertyWritesSettled > reserved, "pre-existing property writes must drain");
+  assert.ok(preflight > propertyWritesSettled, "the reservation must drain before other preflight work");
+});
+
+test("journal freezes direct note writes only after mounted queues drain", () => {
+  const execution = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const prepare = execution.indexOf("await prepareMove(request)");
+  const reserveWrites = execution.indexOf("noteWriteBarrier.reserve", prepare);
+  const settleWrites = execution.indexOf("await moveNoteWriteReservation.settle()", reserveWrites);
+  const adopt = execution.indexOf("blockMoveRecovery.adopt", settleWrites);
+  const transport = execution.indexOf("await settleMoveResponse(request)", adopt);
+
+  assert.ok(prepare >= 0, "mounted editor queues must prepare first");
+  assert.ok(reserveWrites > prepare, "the API barrier must not deadlock editor flushes");
+  assert.ok(settleWrites > reserveWrites, "pre-existing direct writes must drain");
+  assert.ok(adopt > settleWrites && transport > adopt, "both reservations transfer before transport");
+});
+
+test("note-addressed API mutations participate in the direct-write barrier", () => {
+  assert.match(apiClientSource, /import \{[\s\S]*noteWriteBarrier[\s\S]*\} from "\$lib\/block-ops-saver"/);
+  for (const method of ["updateNote", "upsertBlocks", "createNote", "deleteNote", "deleteBlock", "recurBump"]) {
+    const start = apiClientSource.indexOf(`  ${method}:`);
+    const remainder = apiClientSource.slice(start + 3);
+    const nextMethod = remainder.match(/\n  [A-Za-z][A-Za-z0-9]+:\s/);
+    const body = apiClientSource.slice(
+      start,
+      nextMethod?.index === undefined ? undefined : start + 3 + nextMethod.index,
+    );
+    assert.match(body, /noteWriteBarrier\.track\(/, `${method} must be ordered against relocation`);
+  }
+  assert.match(
+    apiClientSource,
+    /async function del[\s\S]*if \(!res\.ok\) throw new ApiError/,
+    "DELETE failures must reject so the direct-write barrier stays fail-closed",
+  );
+  for (const method of ["deleteNote", "deleteBlock"]) {
+    const start = apiClientSource.indexOf(`  ${method}:`);
+    const remainder = apiClientSource.slice(start + 3);
+    const nextMethod = remainder.match(/\n  [A-Za-z][A-Za-z0-9]+:\s/);
+    const body = apiClientSource.slice(
+      start,
+      nextMethod?.index === undefined ? undefined : start + 3 + nextMethod.index,
+    );
+    assert.match(body, /\(\) => del\(/, `${method} must use the rejecting DELETE helper`);
+  }
+  assert.match(recoverySingletonSource, /blockMoveMutationBarrier/);
+});
+
+test("mosaic switching is blocked while an exact move recovery marker is owned", () => {
+  const switching = sourceBetween(
+    mosaicSettingsSource,
+    "async function switchAndRestart",
+    "function fmtRelative",
+  );
+  const recoveryCheck = switching.indexOf("blockMoveRecovery.current()");
+  const switchRequest = switching.indexOf("api.switchMosaic(path)");
+
+  assert.match(mosaicSettingsSource, /import \{ blockMoveRecovery \}/);
+  assert.ok(recoveryCheck >= 0 && recoveryCheck < switchRequest);
+  assert.match(switching, /Resolve the submitted block move before switching mosaics/);
+});
+
+test("journal relocation preflight settles every mounted copy of an affected note", () => {
+  const preparation = sourceBetween(
+    journalViewSource,
+    "async function prepareOutliner",
+    "async function prepareMove",
+  );
+
+  assert.match(preparation, /document\.querySelectorAll<HTMLElement>/);
+  assert.match(preparation, /Promise\.all\(responses\)/);
+  assert.doesNotMatch(
+    preparation,
+    /daySection\(noteId\)\?\.querySelector/,
+    "split panes outside the daily section must participate in the same freeze",
+  );
+});
+
+test("synthetic append recomputes destination existence after every duplicate save drains", () => {
+  const preparation = sourceBetween(
+    journalViewSource,
+    "async function prepareMove",
+    "async function settleMoveResponse",
+  );
+  const prepareOutliner = preparation.indexOf("await prepareOutliner(");
+  const globalDrain = preparation.indexOf("await saveAdmissionRegistry.settle(affectedNoteIds)");
+  const existenceProbe = preparation.indexOf("await api.getNote(request.destination_note_id)");
+  const loroBarrier = preparation.indexOf("await settleNoteDocsAtServer(barrierNoteIds)");
+
+  assert.doesNotMatch(preparation, /untouchedSyntheticDestination/);
+  assert.ok(
+    prepareOutliner >= 0 && prepareOutliner < globalDrain,
+    "mounted duplicate save queues must drain before the global queue barrier",
+  );
+  assert.ok(
+    existenceProbe > globalDrain && existenceProbe < loroBarrier,
+    "a second pane's synthetic-day create must be observed before deciding whether to omit its doc",
+  );
+  assert.match(preparation, /error instanceof ApiError && error\.status === 404/);
+  assert.ok(loroBarrier >= 0, "the recomputed affected docs must participate in the Loro barrier");
+});
+
+test("journal globally drains unmounted save admissions before the Loro barrier", () => {
+  const preparation = sourceBetween(
+    journalViewSource,
+    "async function prepareMove",
+    "async function settleMoveResponse",
+  );
+  const mountedPreparation = preparation.lastIndexOf("await prepareOutliner(");
+  const globalDrain = preparation.indexOf("await saveAdmissionRegistry.settle(");
+  const loroBarrier = preparation.indexOf("await settleNoteDocsAtServer(");
+
+  assert.ok(mountedPreparation >= 0, "mounted outliners must prepare first");
+  assert.ok(
+    globalDrain > mountedPreparation && globalDrain < loroBarrier,
+    "unmounted/fallback save queues must settle before the Loro server proof",
+  );
+});
+
+test("every mounted outliner observes the shared note reservation", () => {
+  assert.match(
+    blockOutlinerSource,
+    /propertyMutationBarrier\.subscribe\(noteId,[\s\S]*noteMutationReserved = reserved/,
+  );
+  assert.ok(
+    blockOutlinerSource.match(/data-block-outliner/g)?.length >= 2,
+    "both populated and empty outliners must be addressable by relocation preflight",
+  );
+  assert.match(blockOutlinerSource, /inert=\{noteMutationIsReserved\(\) \|\| relocation\?\.pending/);
+  assert.match(
+    sourceBetween(blockOutlinerSource, "function handleBlockChange", "/** C2.3"),
+    /if \(noteMutationIsReserved\(\)\) return;/,
+  );
+  assert.match(
+    sourceBetween(noteDocRegistrySource, "export function spliceNoteBlock", "/** Feed inbound"),
+    /propertyMutationBarrier\.isReserved\(slug\)[\s\S]*return false/,
+    "local Loro splices must stop at the shared note freeze",
+  );
+  assert.match(
+    rootLayoutSource,
+    /import \{ blockMoveRecovery \} from "\$lib\/block-move-recovery\.svelte"/,
+    "recovery must rehydrate before route outliners mount",
+  );
+});
+
+test("journal retains durable move ownership only for ambiguous exact-request retry", () => {
+  const execution = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const success = sourceBetween(execution, "await settleMoveResponse(request)", "} catch (error)");
+  const recoverable = sourceBetween(execution, "blockMoveRecovery.markRetryable", "if (componentDisposed) return");
+  const ordinaryDispatch = execution.indexOf('dispatchMove({ type: "ordinary-error" })');
+  const ordinaryComplete = execution.lastIndexOf("blockMoveRecovery.complete", ordinaryDispatch);
+
+  assert.match(success, /blockMoveRecovery\.complete\(request\.move_id\)/);
+  assert.ok(
+    success.indexOf("blockMoveRecovery.complete(request.move_id)")
+      < success.indexOf("if (componentDisposed) return"),
+    "terminal success clears durable ownership even after teardown",
+  );
+  assert.doesNotMatch(recoverable, /blockMoveRecovery\.complete/);
+  assert.ok(ordinaryComplete >= 0 && ordinaryComplete < ordinaryDispatch);
+});
+
+test("structured property optimism is suppressed while relocation owns the note", () => {
+  const propertyWriter = sourceBetween(
+    blockOutlinerSource,
+    "async function setBlockPropertyStructured",
+    "function handleStatusCycle",
+  );
+  const reservationCheck = propertyWriter.indexOf("noteMutationIsReserved()");
+  const optimisticMutation = propertyWriter.indexOf("blocks = blocks.map");
+
+  assert.ok(reservationCheck >= 0, "the mounted surface must check the shared reservation");
+  assert.ok(
+    optimisticMutation > reservationCheck,
+    "a rejected late property write must not optimistically mutate the outliner",
+  );
 });
 
 test("same-note Alt routes before marking the outliner locally dirty", () => {
@@ -972,7 +1377,12 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
   assert.match(journalViewSource, /createFocusRestorationController/);
   assert.match(journalViewSource, /const focusRestoration = createFocusRestorationController\(\)/);
   assert.match(focus, /focusRestoration\.restore\(focusClaim, \{/);
+  assert.match(focus, /stableAttempts:\s*60/);
   assert.match(focus, /findTarget: async \(\) =>/);
+  assert.match(
+    focus,
+    /isTargetFocused:\s*\(\{ editor \}\) => document\.activeElement === editor/,
+  );
   assert.match(focus, /focusTarget: \(\{ row, editor \}\) => \{/);
   assert.match(focus, /row\.scrollIntoView[\s\S]*editor\.focus\(\)/);
 
@@ -994,7 +1404,7 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
   assert.ok(keyCancel >= 0 && keyCancel < moveKeyHandler, "keydown revocation must run before move handling");
   assert.match(
     lifecycle,
-    /return \(\) => \{\s*componentDisposed = true;\s*focusRestoration\.dispose\(\)/,
+    /return \(\) => \{\s*componentDisposed = true;[\s\S]*focusRestoration\.dispose\(\)/,
   );
   assert.match(
     lifecycle,
@@ -1003,6 +1413,39 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
   assert.match(
     lifecycle,
     /document\.removeEventListener\("keydown", revokeFocusRestoration, true\)/,
+  );
+});
+
+test("submitted relocation hands its exact request to durable ownership before transport", () => {
+  const execute = sourceBetween(
+    journalViewSource,
+    "async function executeMove",
+    "async function submitSelectedMove",
+  );
+  const lifecycle = journalViewSource.slice(journalViewSource.lastIndexOf("onMount(() => {"));
+  const transport = execute.indexOf("await settleMoveResponse(request)");
+  const adopt = execute.indexOf("blockMoveRecovery.adopt(request, reservation)");
+  const propertyTransfer = execute.indexOf("movePropertyReservation = null", adopt);
+  const writeTransfer = execute.indexOf("moveNoteWriteReservation = null", adopt);
+
+  assert.ok(adopt >= 0 && adopt < transport, "durable ownership must persist before transport");
+  assert.ok(propertyTransfer > adopt && propertyTransfer < transport, "property ownership must transfer");
+  assert.ok(writeTransfer > adopt && writeTransfer < transport, "write ownership must transfer");
+  assert.match(
+    lifecycle,
+    /stopMoveRecovery\(\);[\s\S]*releaseMoveReservations\(\)/,
+    "teardown unsubscribes and releases only a still-local preflight reservation",
+  );
+  assert.doesNotMatch(lifecycle, /blockMoveRecovery\.complete/);
+  assert.match(
+    execute,
+    /await moveNoteWriteReservation\.settle\(\);[\s\S]*if \(componentDisposed\) \{\s*releaseMoveReservations\(\);\s*return;\s*\}/,
+    "a torn-down preflight must stop before transport",
+  );
+  assert.ok(
+    execute.indexOf("blockMoveRecovery.markRetryable")
+      < execute.indexOf("if (componentDisposed) return", execute.indexOf("blockMoveRecovery.markRetryable")),
+    "an ambiguous response must update durable ownership before suppressing disposed UI",
   );
 });
 

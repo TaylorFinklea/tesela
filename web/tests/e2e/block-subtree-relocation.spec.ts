@@ -46,6 +46,9 @@ const BIDS = {
   crossAfterRoot: "20000000-0000-4000-8000-000000000023",
   crossAfterChild: "20000000-0000-4000-8000-000000000024",
   untrustedFocusRoot: "20000000-0000-4000-8000-000000000025",
+  ambiguousRoot: "20000000-0000-4000-8000-000000000026",
+  propertyRaceRoot: "20000000-0000-4000-8000-000000000027",
+  propertyFailureRoot: "20000000-0000-4000-8000-000000000028",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -62,9 +65,14 @@ const BIDS = {
   crossAfterTarget: "30000000-0000-4000-8000-000000000013",
   crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
   untrustedFocusTarget: "30000000-0000-4000-8000-000000000015",
+  ambiguousTarget: "30000000-0000-4000-8000-000000000016",
+  propertyRaceTarget: "30000000-0000-4000-8000-000000000017",
+  propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
+const SET_PROPERTY_ROUTE = "**/api/blocks/set-property";
+const RECOVERY_STORAGE_KEY = "tesela:block-move-recovery:v1";
 
 function day(page: Page, date: string): Locator {
   return page.locator(`.day[data-daily="${date}"]`);
@@ -234,6 +242,35 @@ async function noteContent(request: APIRequestContext, noteId: string): Promise<
   expect(response.ok()).toBeTruthy();
   const note = await response.json() as { content: string };
   return note.content;
+}
+
+async function setPropertyThroughApp(
+  page: Page,
+  blockId: string,
+  key: string,
+  value: string,
+): Promise<{ ok: boolean; message: string }> {
+  return page.evaluate(async ({ blockId, key, value }) => {
+    const apiClientUrl = "/src/lib/api-client.ts";
+    const { api } = await import(apiClientUrl);
+    try {
+      await api.setBlockProperty(blockId, key, value);
+      return { ok: true, message: "" };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }, { blockId, key, value });
+}
+
+async function propertyReservationHeld(page: Page, noteId: string): Promise<boolean> {
+  return page.evaluate(async (id) => {
+    const mutationBarrierUrl = "/src/lib/block-ops-saver.ts";
+    const { propertyMutationBarrier } = await import(mutationBarrierUrl);
+    return propertyMutationBarrier.isReserved(id);
+  }, noteId);
 }
 
 function occurrences(haystack: string, needle: string): number {
@@ -849,7 +886,7 @@ test.describe("block subtree relocation", () => {
     expect(content).toMatch(new RegExp(`^  - ALT_MOVER .*${BIDS.altMover}`, "m"));
   });
 
-  test("retry-safe 503 retains the exact request, source, and frozen UI", async ({ page, request }) => {
+  test("foreign and exact retry-safe 503s retain one persisted request across reload", async ({ page, request }) => {
     const { source, destination } = await openJournal(page);
     const sourceBefore = await noteContent(request, SOURCE);
     const destinationBefore = await noteContent(request, DESTINATION);
@@ -858,6 +895,8 @@ test.describe("block subtree relocation", () => {
     let attempts = 0;
     let firstBody = "";
     let secondBody = "";
+    let thirdBody = "";
+    const blockingMoveId = "44444444-4444-4444-8444-444444444444";
 
     await page.route(MOVE_ROUTE, async (route) => {
       attempts++;
@@ -865,15 +904,28 @@ test.describe("block subtree relocation", () => {
       if (attempts === 1) {
         firstBody = body;
         await firstGate;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: "Injected earlier recovery gate",
+            move_id: blockingMoveId,
+            retry_safe: true,
+          }),
+        });
+        return;
+      }
+      if (attempts === 2) {
+        secondBody = body;
         const moveId = (JSON.parse(body) as { move_id: string }).move_id;
         await route.fulfill({
           status: 503,
           contentType: "application/json",
-          body: JSON.stringify({ error: "Injected recovery gate", move_id: moveId, retry_safe: true }),
+          body: JSON.stringify({ error: "Injected exact recovery gate", move_id: moveId, retry_safe: true }),
         });
         return;
       }
-      secondBody = body;
+      thirdBody = body;
       await route.continue();
     });
 
@@ -886,13 +938,20 @@ test.describe("block subtree relocation", () => {
     await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "pending");
     await expect(source.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
     await expect(destination.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
+    await expect.poll(() => attempts).toBe(1);
+    const pendingMarker = await page.evaluate(
+      (key) => sessionStorage.getItem(key),
+      RECOVERY_STORAGE_KEY,
+    );
+    expect(pendingMarker).not.toBeNull();
+    expect((JSON.parse(pendingMarker!).request as unknown)).toEqual(JSON.parse(firstBody));
     await expect(source.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toBeVisible();
     await expect(destination.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toHaveCount(0);
 
     releaseFirst();
     await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
     await expect(page.locator("[data-move-status='retryable']")).toContainText(/R or Enter/i);
-    await expect(page.locator(".tesela-toast-warn")).toContainText(/retry safely/i);
+    await expect(page.locator(".tesela-toast-warn")).toContainText(/recovering earlier move/i);
     const expectRetryFrozen = async () => {
       await expect(source.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
       await expect(destination.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
@@ -906,12 +965,95 @@ test.describe("block subtree relocation", () => {
     await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
     await expectRetryFrozen();
 
+    await page.reload();
+    await mountDay(page, SOURCE);
+    await mountDay(page, DESTINATION);
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
+    await expectRetryFrozen();
+
     await page.keyboard.press("r");
+    await expect.poll(() => attempts).toBe(2);
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
+    expect(secondBody).toBe(firstBody);
+
+    await page.keyboard.press("Enter");
+    await expect.poll(() => attempts).toBe(3);
+    await waitForMoveIdle(page);
+    expect(thirdBody).toBe(firstBody);
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), RECOVERY_STORAGE_KEY)).toBeNull();
+    await expect(source.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toHaveCount(0);
+    await expect(destination.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toBeVisible();
+    await page.unroute(MOVE_ROUTE);
+  });
+
+  test("a committed move with a lost response retries the exact request to terminal success", async ({ page, request }) => {
+    const { source, destination } = await openJournal(page);
+    let attempts = 0;
+    let firstBody = "";
+    let secondBody = "";
+    let markCommitted!: () => void;
+    const committed = new Promise<void>((resolve) => { markCommitted = resolve; });
+
+    await page.route(MOVE_ROUTE, async (route) => {
+      attempts++;
+      const body = route.request().postData() ?? "";
+      if (attempts === 1) {
+        firstBody = body;
+        const upstream = await route.fetch();
+        expect(upstream.ok()).toBeTruthy();
+        markCommitted();
+        await route.abort("failed");
+        return;
+      }
+      secondBody = body;
+      await route.continue();
+    });
+
+    await dispatchToPlacement(
+      page,
+      row(page, BIDS.ambiguousRoot).locator("[data-move-handle]"),
+      row(page, BIDS.ambiguousTarget),
+      "inside",
+    );
+    await expect.poll(() => attempts, {
+      timeout: 3_000,
+      message: "relocation preflight should reach the durable move endpoint",
+    }).toBe(1);
+    await committed;
+    expect(occurrences(await noteContent(request, SOURCE), BIDS.ambiguousRoot)).toBe(0);
+    expect(occurrences(await noteContent(request, DESTINATION), BIDS.ambiguousRoot)).toBe(1);
+
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
+    await expect(page.locator("[data-move-status='retryable']")).toContainText(/R or Enter/i);
+    await expect(source.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
+    await expect(destination.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
+    expect(await propertyReservationHeld(page, SOURCE)).toBe(true);
+    expect(await propertyReservationHeld(page, DESTINATION)).toBe(true);
+
+    const pendingMarker = await page.evaluate(
+      (key) => sessionStorage.getItem(key),
+      RECOVERY_STORAGE_KEY,
+    );
+    expect(pendingMarker).not.toBeNull();
+    expect((JSON.parse(pendingMarker!).request as unknown)).toEqual(JSON.parse(firstBody));
+
+    await page.reload();
+    await mountDay(page, SOURCE);
+    await mountDay(page, DESTINATION);
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
+    expect(await propertyReservationHeld(page, SOURCE)).toBe(true);
+    expect(await propertyReservationHeld(page, DESTINATION)).toBe(true);
+
+    await page.keyboard.press("Enter");
     await expect.poll(() => attempts).toBe(2);
     await waitForMoveIdle(page);
     expect(secondBody).toBe(firstBody);
-    await expect(source.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toHaveCount(0);
-    await expect(destination.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toBeVisible();
+    await expect(source.locator(`[data-block-bid="${BIDS.ambiguousRoot}"]`)).toHaveCount(0);
+    await expect(destination.locator(`[data-block-bid="${BIDS.ambiguousRoot}"]`)).toBeVisible();
+    await expect(row(page, BIDS.ambiguousRoot).locator(".cm-content")).toBeFocused();
+    expect(await propertyReservationHeld(page, SOURCE)).toBe(false);
+    expect(await propertyReservationHeld(page, DESTINATION)).toBe(false);
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), RECOVERY_STORAGE_KEY)).toBeNull();
     await page.unroute(MOVE_ROUTE);
   });
 
@@ -948,5 +1090,155 @@ test.describe("block subtree relocation", () => {
     expect(occurrences(destinationContent, altMarker)).toBe(0);
     await expect(row(page, BIDS.racePointerRoot).locator(".cm-content")).toContainText(pointerMarker);
     await expect(row(page, BIDS.raceAltRoot).locator(".cm-content")).toContainText(altMarker);
+  });
+
+  test("relocation waits for an in-flight structured property write", async ({ page, request }) => {
+    const { source, destination } = await openJournal(page);
+    let releaseWrites!: () => void;
+    let markPropertyStarted!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrites = resolve; });
+    const propertyStarted = new Promise<void>((resolve) => { markPropertyStarted = resolve; });
+    let moveRequests = 0;
+    const propertyValues: string[] = [];
+    let propertyRequests = 0;
+    let latePropertyRequests = 0;
+
+    await page.route(SET_PROPERTY_ROUTE, async (route) => {
+      const payload = route.request().postDataJSON() as {
+        block_id?: string;
+        key?: string;
+        value?: string;
+      };
+      if (
+        payload.block_id === `${SOURCE}:${BIDS.propertyRaceRoot}`
+        && payload.key === "status"
+      ) {
+        propertyRequests++;
+        propertyValues.push(payload.value ?? "");
+        markPropertyStarted();
+        if (propertyRequests === 1) await writeGate;
+      }
+      if (
+        payload.block_id?.endsWith(`:${BIDS.propertyRaceRoot}`)
+        && payload.key === "priority"
+        && payload.value === "A"
+      ) {
+        latePropertyRequests++;
+      }
+      await route.continue();
+    });
+    await page.route(MOVE_ROUTE, async (route) => {
+      moveRequests++;
+      await writeGate;
+      await route.continue();
+    });
+
+    try {
+      const statusButton = row(page, BIDS.propertyRaceRoot).locator("button[title^='Status:']");
+      await statusButton.click();
+      await statusButton.click();
+      await propertyStarted;
+      await page.waitForTimeout(250);
+      expect(propertyRequests).toBe(1);
+
+      await dispatchToPlacement(
+        page,
+        row(page, BIDS.propertyRaceRoot).locator("[data-move-handle]"),
+        row(page, BIDS.propertyRaceTarget),
+        "after",
+      );
+      await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "pending");
+      await page.waitForTimeout(250);
+      expect(moveRequests).toBe(0);
+      expect(await propertyReservationHeld(page, SOURCE)).toBe(true);
+      expect(await propertyReservationHeld(page, DESTINATION)).toBe(true);
+
+      const rejectedLateWrite = await setPropertyThroughApp(
+        page,
+        `${SOURCE}:${BIDS.propertyRaceRoot}`,
+        "priority",
+        "A",
+      );
+      expect(rejectedLateWrite.ok).toBe(false);
+      expect(rejectedLateWrite.message).toMatch(/reserved for block relocation/i);
+      expect(latePropertyRequests).toBe(0);
+
+      releaseWrites();
+      await waitForMoveIdle(page);
+      expect(moveRequests).toBe(1);
+      expect(propertyRequests).toBe(2);
+      expect(propertyValues[0]).not.toBe(propertyValues.at(-1));
+      await expect(source.locator(`[data-block-bid="${BIDS.propertyRaceRoot}"]`)).toHaveCount(0);
+      await expect(destination.locator(`[data-block-bid="${BIDS.propertyRaceRoot}"]`)).toBeVisible();
+      expect(await propertyReservationHeld(page, SOURCE)).toBe(false);
+      expect(await propertyReservationHeld(page, DESTINATION)).toBe(false);
+
+      const acceptedAfterMove = await setPropertyThroughApp(
+        page,
+        `${DESTINATION}:${BIDS.propertyRaceRoot}`,
+        "priority",
+        "A",
+      );
+      expect(acceptedAfterMove).toEqual({ ok: true, message: "" });
+      expect(latePropertyRequests).toBe(1);
+
+      const destinationContent = await noteContent(request, DESTINATION);
+      const blockStart = destinationContent.indexOf(
+        `- PROPERTY_RACE_ROOT <!-- bid:${BIDS.propertyRaceRoot} -->`,
+      );
+      expect(blockStart).toBeGreaterThanOrEqual(0);
+      const nextRoot = destinationContent.indexOf("\n- ", blockStart + 1);
+      const blockContent = destinationContent.slice(
+        blockStart,
+        nextRoot < 0 ? destinationContent.length : nextRoot,
+      );
+      expect(blockContent).toContain(`status:: ${propertyValues.at(-1)}`);
+      expect(blockContent).toContain("priority:: A");
+    } finally {
+      releaseWrites();
+    }
+  });
+
+  test("a failed property write blocks every relocation attempt until reload", async ({ page }) => {
+    await openJournal(page);
+    let propertyRequests = 0;
+    let moveRequests = 0;
+
+    await page.route(SET_PROPERTY_ROUTE, async (route) => {
+      const payload = route.request().postDataJSON() as {
+        block_id?: string;
+        key?: string;
+      };
+      if (
+        payload.block_id === `${SOURCE}:${BIDS.propertyFailureRoot}`
+        && payload.key === "status"
+      ) {
+        propertyRequests++;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await page.route(MOVE_ROUTE, async (route) => {
+      moveRequests++;
+      await route.continue();
+    });
+
+    await row(page, BIDS.propertyFailureRoot).locator("button[title^='Status:']").click();
+    await expect.poll(() => propertyRequests).toBe(1);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await dispatchToPlacement(
+        page,
+        row(page, BIDS.propertyFailureRoot).locator("[data-move-handle]"),
+        row(page, BIDS.propertyFailureTarget),
+        "after",
+      );
+      await waitForMoveIdle(page);
+      expect(moveRequests).toBe(0);
+      expect(await propertyReservationHeld(page, SOURCE)).toBe(false);
+      expect(await propertyReservationHeld(page, DESTINATION)).toBe(false);
+      await expect(page.locator(".tesela-toast")).toContainText(/property save.*uncertain.*reload/i);
+    }
   });
 });

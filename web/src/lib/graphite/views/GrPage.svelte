@@ -26,6 +26,10 @@
   import { onDestroy } from "svelte";
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
+  import {
+    saveAdmissionRegistry,
+    type SaveAdmissionLease,
+  } from "$lib/block-ops-saver";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
@@ -121,14 +125,36 @@
   // ── debounced save (mirrors BufferShell) ───────────────────────────────
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: AbortController | null = null;
+  let inFlightPromise: Promise<void> | null = null;
+  let saveFailed = false;
+  let saveFailure: unknown;
   let pending: string | null = null;
+  let saveAdmission: SaveAdmissionLease | null = null;
   // Edit BASE for the pending save (body the outliner last reseeded from),
   // sent as `base_content` so the server diffs the author's real changes and
   // never re-asserts an untouched block over a concurrent peer edit. First
   // base of the window wins; cleared on flush.
   let pendingBase: string | undefined = undefined;
 
+  function ensureSaveAdmission(): void {
+    if (saveAdmission || !pageId) return;
+    saveAdmission = saveAdmissionRegistry.admit(pageId, settleSave);
+  }
+
+  function releaseSaveAdmissionIfQuiet(): void {
+    if (
+      saveFailed
+      || saveTimer !== null
+      || pending !== null
+      || inFlightPromise !== null
+    ) return;
+    const admission = saveAdmission;
+    saveAdmission = null;
+    admission?.release();
+  }
+
   function handleContentChange(fullContent: string, baseContent?: string) {
+    ensureSaveAdmission();
     pending = fullContent;
     if (pendingBase === undefined) pendingBase = baseContent;
     setSaving();
@@ -136,48 +162,107 @@
     saveTimer = setTimeout(() => void flushSave(), 500);
   }
 
-  async function flushSave() {
+  function flushSave(): Promise<void> {
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
-    if (pending === null || !pageId) return;
+    if (pending === null || !pageId) return inFlightPromise ?? Promise.resolve();
+    if (inFlightPromise) {
+      const predecessor = inFlightPromise;
+      return predecessor.then(
+        () => flushSave(),
+        async (error) => {
+          await flushSave();
+          throw error;
+        },
+      );
+    }
     const content = pending;
     pending = null;
     const base = pendingBase;
     pendingBase = undefined;
-    if (inFlight) inFlight.abort();
     const controller = new AbortController();
     inFlight = controller;
     if (note) queryClient.setQueryData(["note", pageId], { ...note, content });
+    const completion = (async () => {
+      try {
+        const updated = await api.updateNote(pageId, content, base, controller.signal);
+        if (controller.signal.aborted) return;
+        queryClient.setQueryData(["note", pageId], updated);
+        setSaved();
+      } catch (e) {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        if (!saveFailed) {
+          saveFailed = true;
+          saveFailure = e;
+        }
+        // Surface the failure instead of swallowing it. Keep the optimistic
+        // cache (the user's only live copy of the unsaved edit) — do NOT roll
+        // back, which would feed pre-edit content into the live editor and
+        // destroy in-progress work. Mirrors BufferShell's setSaveError path.
+        console.error("GrPage save failed:", e);
+        setSaveError(e instanceof Error ? e.message : "Unknown error");
+        toast("Failed to save page", "error");
+        throw e;
+      } finally {
+        if (inFlight === controller) {
+          inFlight = null;
+          inFlightPromise = null;
+        }
+        releaseSaveAdmissionIfQuiet();
+      }
+    })();
+    inFlightPromise = completion;
+    void completion.catch(() => {});
+    return completion;
+  }
+
+  async function settleSave(): Promise<void> {
+    let failed = false;
+    let firstFailure: unknown;
     try {
-      const updated = await api.updateNote(pageId, content, base, controller.signal);
-      if (controller.signal.aborted) return;
-      queryClient.setQueryData(["note", pageId], updated);
-      setSaved();
-    } catch (e) {
-      if ((e as { name?: string })?.name === "AbortError") return;
-      // Surface the failure instead of swallowing it. Keep the optimistic
-      // cache (the user's only live copy of the unsaved edit) — do NOT roll
-      // back, which would feed pre-edit content into the live editor and
-      // destroy in-progress work. Mirrors BufferShell's setSaveError path.
-      console.error("GrPage save failed:", e);
-      setSaveError(e instanceof Error ? e.message : "Unknown error");
-      toast("Failed to save page", "error");
+      while (true) {
+        if (inFlightPromise) {
+          try {
+            await inFlightPromise;
+          } catch (error) {
+            if (!failed) firstFailure = error;
+            failed = true;
+          }
+          continue;
+        }
+        if (pending === null) {
+          if (saveFailed) throw saveFailure;
+          if (failed) throw firstFailure;
+          return;
+        }
+        try {
+          await flushSave();
+        } catch (error) {
+          if (!failed) firstFailure = error;
+          failed = true;
+        }
+      }
     } finally {
-      if (inFlight === controller) inFlight = null;
+      releaseSaveAdmissionIfQuiet();
     }
   }
 
   async function cancelAndFlush(fullContent: string, baseContent?: string) {
+    ensureSaveAdmission();
     pending = fullContent;
     if (baseContent !== undefined) pendingBase = baseContent;
-    await flushSave();
+    await settleSave();
   }
 
   onDestroy(() => {
-    if (saveTimer) clearTimeout(saveTimer);
-    if (inFlight) inFlight.abort();
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    const completion = settleSave();
+    void completion.catch((error) => console.error("GrPage teardown save failed:", error));
   });
 
   function openRef(target: string) {
@@ -232,6 +317,7 @@
             {paneId}
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
+            onPrepareRelocation={settleSave}
           />
         {:else if noteType === "property"}
           <PropertyTypeConfig {note} />
@@ -249,6 +335,7 @@
             {paneId}
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
+            onPrepareRelocation={settleSave}
             contentJump={contentJump}
           />
         {/if}

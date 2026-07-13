@@ -35,6 +35,7 @@
   import {
     BLOCK_MOVE_MIME,
     IDLE_BLOCK_MOVE_SESSION,
+    classifyBlockMoveFailure,
     createFocusRestorationController,
     decodeBlockMoveDragPayload,
     encodeBlockMoveDragPayload,
@@ -45,6 +46,16 @@
     type FocusRestorationClaim,
     type MovePlacement,
   } from "$lib/block-tree-move";
+  import {
+    combineMutationReservations,
+    noteWriteBarrier,
+    propertyMutationBarrier,
+    saveAdmissionRegistry,
+    type PerNoteMutationReservation,
+    type SaveAdmissionLease,
+  } from "$lib/block-ops-saver";
+  import { blockMoveRecovery } from "$lib/block-move-recovery.svelte";
+  import type { BlockMoveRecoveryState } from "$lib/block-move-recovery";
   import { settleNoteDocsAtServer } from "$lib/loro/note-doc-registry.svelte";
   import type { Note } from "$lib/types/Note";
 
@@ -52,15 +63,40 @@
 
   const queryClient = useQueryClient();
 
-  let moveSession = $state<BlockMoveSession>({ ...IDLE_BLOCK_MOVE_SESSION });
+  function recoveryMoveSession(state: BlockMoveRecoveryState): BlockMoveSession {
+    return {
+      phase: state.status === "submitting" ? "pending" : "retryable",
+      request: state.request,
+      targetBid: state.request.target_bid,
+      targetNoteId: state.request.destination_note_id,
+      placement: state.request.placement,
+    };
+  }
+
+  const initialMoveRecovery = blockMoveRecovery.current();
+  let moveSession = $state<BlockMoveSession>(
+    initialMoveRecovery
+      ? recoveryMoveSession(initialMoveRecovery)
+      : { ...IDLE_BLOCK_MOVE_SESSION },
+  );
   const moveActive = $derived(moveSession.phase !== "idle");
   const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
-  const touchedSyntheticNotes = new Set<string>();
   let moveToastId: number | null = null;
   let componentDisposed = false;
   let pageInactive = false;
   let ensureDailiesRetryNeeded = false;
   const focusRestoration = createFocusRestorationController();
+  let movePropertyReservation: PerNoteMutationReservation | null = null;
+  let moveNoteWriteReservation: PerNoteMutationReservation | null = null;
+
+  function releaseMoveReservations() {
+    const writeReservation = moveNoteWriteReservation;
+    moveNoteWriteReservation = null;
+    writeReservation?.release();
+    const propertyReservation = movePropertyReservation;
+    movePropertyReservation = null;
+    propertyReservation?.release();
+  }
 
   function showMoveToast(message: string, tone: "info" | "warn", durationMs: number) {
     if (componentDisposed) return;
@@ -355,6 +391,9 @@
     base: string | undefined;
     inFlight: AbortController | null;
     inFlightPromise: Promise<void> | null;
+    failed: boolean;
+    failure: unknown;
+    admission: SaveAdmissionLease | null;
     // True when the note has no file on disk yet (a synthetic day the user
     // just typed into) and must be CREATED before/instead of updated. PUT
     // 404s on a missing note, so the first save POSTs the full content.
@@ -365,17 +404,41 @@
   function getState(noteId: string): SaveState {
     let s = saveStates.get(noteId);
     if (!s) {
-      s = {
+      const next: SaveState = {
         timer: null,
         pending: null,
         base: undefined,
         inFlight: null,
         inFlightPromise: null,
+        failed: false,
+        failure: undefined,
+        admission: null,
         needsCreate: false,
       };
-      saveStates.set(noteId, s);
+      saveStates.set(noteId, next);
+      s = next;
     }
     return s;
+  }
+
+  function ensureSaveAdmission(noteId: string, state: SaveState): void {
+    if (state.admission) return;
+    state.admission = saveAdmissionRegistry.admit(
+      noteId,
+      () => settleJournalSave(noteId),
+    );
+  }
+
+  function releaseSaveAdmissionIfQuiet(state: SaveState): void {
+    if (
+      state.failed
+      || state.timer !== null
+      || state.pending !== null
+      || state.inFlightPromise !== null
+    ) return;
+    const admission = state.admission;
+    state.admission = null;
+    admission?.release();
   }
 
   function handleContentChange(
@@ -385,6 +448,7 @@
     baseContent?: string,
   ) {
     const s = getState(noteId);
+    ensureSaveAdmission(noteId, s);
     s.pending = fullContent;
     // Keep the FIRST base of the window (don't overwrite with a later change's
     // base — they're the same during a typing burst, but first-wins is the
@@ -392,7 +456,6 @@
     if (s.base === undefined) s.base = baseContent;
     if (isSynthetic) {
       s.needsCreate = true;
-      touchedSyntheticNotes.add(noteId);
     }
     if (s.timer) clearTimeout(s.timer);
     setSaving();
@@ -450,6 +513,10 @@
         setSaved();
       } catch (e) {
         if ((e as { name?: string })?.name === "AbortError") return;
+        if (!s.failed) {
+          s.failed = true;
+          s.failure = e;
+        }
         const msg = e instanceof Error ? e.message : "Unknown error";
         setSaveError(msg);
         console.error(`Daily save failed for ${noteId}:`, e);
@@ -459,6 +526,7 @@
           s.inFlight = null;
           s.inFlightPromise = null;
         }
+        releaseSaveAdmissionIfQuiet(s);
       }
     })();
     s.inFlightPromise = completion;
@@ -469,31 +537,37 @@
     const s = getState(noteId);
     let failed = false;
     let firstFailure: unknown;
-    while (true) {
-      if (s.inFlightPromise) {
+    try {
+      while (true) {
+        if (s.inFlightPromise) {
+          try {
+            await s.inFlightPromise;
+          } catch (error) {
+            if (!failed) firstFailure = error;
+            failed = true;
+          }
+          continue;
+        }
+        if (s.pending === null) {
+          if (s.failed) throw s.failure;
+          if (failed) throw firstFailure;
+          return;
+        }
         try {
-          await s.inFlightPromise;
+          await flushSave(noteId);
         } catch (error) {
           if (!failed) firstFailure = error;
           failed = true;
         }
-        continue;
       }
-      if (s.pending === null) {
-        if (failed) throw firstFailure;
-        return;
-      }
-      try {
-        await flushSave(noteId);
-      } catch (error) {
-        if (!failed) firstFailure = error;
-        failed = true;
-      }
+    } finally {
+      releaseSaveAdmissionIfQuiet(s);
     }
   }
 
   function cancelAndFlush(noteId: string, fullContent: string, baseContent?: string): Promise<void> {
     const s = getState(noteId);
+    ensureSaveAdmission(noteId, s);
     s.pending = fullContent;
     if (baseContent !== undefined) s.base = baseContent;
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
@@ -645,23 +719,30 @@
     expandInsideBid: string | null,
   ): Promise<void> {
     await tick();
-    const root = daySection(noteId)?.querySelector<HTMLElement>(
+    const roots = [...document.querySelectorAll<HTMLElement>(
       `[data-block-outliner][data-note-id="${selectorValue(noteId)}"]`,
-    ) ?? null;
-    if (!root) {
+    )];
+    if (roots.length === 0) {
       if (required) throw new Error(`Move source ${noteId} is not mounted`);
       return;
     }
-    let response: Promise<boolean> | null = null;
-    root.dispatchEvent(new CustomEvent(BLOCK_MOVE_PREPARE_EVENT, {
-      detail: {
-        noteId,
-        addressedBids,
-        expandInsideBid,
-        respond: (promise: Promise<boolean>) => { response = promise; },
-      },
-    }));
-    if (!response || !(await response)) {
+    const responses: Promise<boolean>[] = [];
+    for (const root of roots) {
+      let response: Promise<boolean> | null = null;
+      root.dispatchEvent(new CustomEvent(BLOCK_MOVE_PREPARE_EVENT, {
+        detail: {
+          noteId,
+          addressedBids,
+          expandInsideBid,
+          respond: (promise: Promise<boolean>) => { response = promise; },
+        },
+      }));
+      if (!response) {
+        throw new Error(`Move surface for ${noteId} could not prepare`);
+      }
+      responses.push(response);
+    }
+    if ((await Promise.all(responses)).some((prepared) => !prepared)) {
       throw new Error(`Wait for ${noteId} to finish saving, then retry the move`);
     }
   }
@@ -670,34 +751,28 @@
     ensureMounted(request.destination_note_id);
     await tick();
 
-    const destinationDay = daySection(request.destination_note_id);
-    const untouchedSyntheticDestination =
-      request.destination_note_id !== request.source_note_id
+    const destinationMayBeAbsent =
+      request.source_note_id !== request.destination_note_id
       && request.placement === "append"
-      && destinationDay?.classList.contains("synthetic") === true
-      && !touchedSyntheticNotes.has(request.destination_note_id);
+      && daySection(request.destination_note_id)?.classList.contains("synthetic") === true;
 
     const addressed = new Map<string, {
       bids: Set<string>;
       required: boolean;
-      skipOutliner: boolean;
       expandInsideBid: string | null;
     }>();
     const source = {
       bids: new Set([request.root_bid]),
       required: true,
-      skipOutliner: false,
       expandInsideBid: null,
     };
     addressed.set(request.source_note_id, source);
     const destination = addressed.get(request.destination_note_id) ?? {
       bids: new Set<string>(),
       required: false,
-      skipOutliner: untouchedSyntheticDestination,
       expandInsideBid: null,
     };
     if (request.target_bid) destination.bids.add(request.target_bid);
-    destination.skipOutliner = destination.skipOutliner || untouchedSyntheticDestination;
     destination.expandInsideBid = request.placement === "inside"
       ? request.target_bid
       : null;
@@ -705,47 +780,45 @@
 
     for (const [noteId, entry] of addressed) {
       await settleJournalSave(noteId);
-      if (!entry.skipOutliner) {
-        await prepareOutliner(
-          noteId,
-          [...entry.bids],
-          entry.required,
-          entry.expandInsideBid,
-        );
-      }
+      await prepareOutliner(
+        noteId,
+        [...entry.bids],
+        entry.required,
+        entry.expandInsideBid,
+      );
       // A failed block-op settle may schedule its whole-body fallback through
       // this Journal. Drain that queue before advancing to the Loro barrier.
       await settleJournalSave(noteId);
     }
 
-    const barrierNotes = [...addressed.keys()].filter(
-      (noteId) => !(untouchedSyntheticDestination && noteId === request.destination_note_id),
-    );
-    await settleNoteDocsAtServer(barrierNotes);
-  }
-
-  function apiErrorDetail(error: unknown): { message: string; retrySafe: boolean; moveId: string | null } {
-    if (!(error instanceof ApiError)) {
-      return {
-        message: error instanceof Error ? error.message : "Block move failed",
-        retrySafe: false,
-        moveId: null,
-      };
-    }
+    const affectedNoteIds = [...addressed.keys()];
     try {
-      const parsed = JSON.parse(error.body) as {
-        error?: unknown;
-        retry_safe?: unknown;
-        move_id?: unknown;
-      };
-      return {
-        message: typeof parsed.error === "string" ? parsed.error : error.message,
-        retrySafe: error.status === 503 && parsed.retry_safe === true,
-        moveId: typeof parsed.move_id === "string" ? parsed.move_id : null,
-      };
+      await saveAdmissionRegistry.settle(affectedNoteIds);
     } catch {
-      return { message: error.message, retrySafe: false, moveId: null };
+      throw new Error("An affected editor save is uncertain; reload before moving blocks");
     }
+
+    let barrierNoteIds = affectedNoteIds;
+    if (destinationMayBeAbsent) {
+      let destinationExists = true;
+      try {
+        // Recheck after the global save drain: another Journal pane may have
+        // just materialized this locally-synthetic day and may also own an
+        // unsent Loro splice. In that case its doc must join the same-socket
+        // barrier. Only a still-authoritative 404 may omit the empty doc.
+        await api.getNote(request.destination_note_id);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) destinationExists = false;
+        else throw error;
+      }
+      if (!destinationExists) {
+        barrierNoteIds = affectedNoteIds.filter(
+          (noteId) => noteId !== request.destination_note_id,
+        );
+      }
+    }
+
+    await settleNoteDocsAtServer(barrierNoteIds);
   }
 
   async function settleMoveResponse(request: BlockMoveRequest) {
@@ -766,28 +839,83 @@
 
   async function executeMove(request: BlockMoveRequest, withPreflight: boolean) {
     const focusClaim = focusRestoration.claim();
+    let submittedToServer = false;
     try {
-      if (withPreflight) await prepareMove(request);
+      if (withPreflight) {
+        if (movePropertyReservation || moveNoteWriteReservation) {
+          throw new Error("Another block relocation still owns its mutation reservations");
+        }
+        const affectedNoteIds = [
+          request.source_note_id,
+          request.destination_note_id,
+        ];
+        movePropertyReservation = propertyMutationBarrier.reserve(affectedNoteIds);
+        try {
+          await movePropertyReservation.settle();
+        } catch {
+          throw new Error("An affected property save is uncertain; reload before moving blocks");
+        }
+        await prepareMove(request);
+        moveNoteWriteReservation = noteWriteBarrier.reserve(affectedNoteIds);
+        try {
+          await moveNoteWriteReservation.settle();
+        } catch {
+          throw new Error("An affected note save is uncertain; reload before moving blocks");
+        }
+        if (componentDisposed) {
+          releaseMoveReservations();
+          return;
+        }
+        const propertyReservation = movePropertyReservation;
+        const writeReservation = moveNoteWriteReservation;
+        if (!propertyReservation || !writeReservation) {
+          throw new Error("The block relocation mutation reservations are no longer active");
+        }
+        const reservation = combineMutationReservations([
+          propertyReservation,
+          writeReservation,
+        ]);
+        blockMoveRecovery.adopt(request, reservation);
+        movePropertyReservation = null;
+        moveNoteWriteReservation = null;
+      } else if (!blockMoveRecovery.markSubmitting(request.move_id)) {
+        throw new Error("The exact block move recovery request is no longer available");
+      }
+      submittedToServer = true;
       await settleMoveResponse(request);
+      if (!blockMoveRecovery.complete(request.move_id)) return;
       if (componentDisposed) return;
       dispatchMove({ type: "success" });
       clearMoveToast();
       await focusBlockBid(focusClaim, request.destination_note_id, request.root_bid);
     } catch (error) {
-      if (componentDisposed) return;
-      const detail = apiErrorDetail(error);
+      const failure = error instanceof ApiError
+        ? classifyBlockMoveFailure(error.status, error.body, request.move_id)
+        : {
+            kind: "ambiguous" as const,
+            message: error instanceof Error ? error.message : null,
+            blockingMoveId: null,
+          };
+      const failureMessage = failure.message
+        ?? (error instanceof Error ? error.message : "Block move failed");
       if (
-        error instanceof ApiError
-        && detail.retrySafe
-        && detail.moveId === request.move_id
+        submittedToServer
+        && failure.kind !== "definitive"
       ) {
-        dispatchMove({ type: "recoverable-error" });
-        showMoveToast(`${detail.message} · Press R or Enter to retry safely`, "warn", 0);
+        const blockingMoveId = failure.blockingMoveId;
+        const message = blockingMoveId
+          ? `${failureMessage} · The server is recovering earlier move ${blockingMoveId}`
+          : failureMessage;
+        blockMoveRecovery.markRetryable(request.move_id, message, blockingMoveId);
+        if (componentDisposed) return;
         return;
       }
+      if (submittedToServer && !blockMoveRecovery.complete(request.move_id)) return;
+      releaseMoveReservations();
+      if (componentDisposed) return;
       clearMoveToast();
       dispatchMove({ type: "ordinary-error" });
-      toast(detail.message, "error", 6000);
+      toast(failureMessage, "error", 6000);
       await focusBlockBid(focusClaim, request.source_note_id, request.root_bid);
     }
   }
@@ -834,7 +962,8 @@
     ensureMounted(noteId);
     let firstLookup = true;
     await focusRestoration.restore(focusClaim, {
-      maxAttempts: 60,
+      maxAttempts: 180,
+      stableAttempts: 60,
       findTarget: async () => {
         if (firstLookup) {
           firstLookup = false;
@@ -850,6 +979,7 @@
       waitForRetry: () => new Promise<void>(
         (resolve) => requestAnimationFrame(() => resolve()),
       ),
+      isTargetFocused: ({ editor }) => document.activeElement === editor,
       focusTarget: ({ row, editor }) => {
         if (componentDisposed) return;
         row.scrollIntoView({ block: "nearest", behavior: "auto" });
@@ -962,6 +1092,26 @@
   onMount(() => {
     anchorAutofocusAnchor = anchorDate;
     anchorAutofocusCanceled = false;
+    const stopMoveRecovery = blockMoveRecovery.subscribe((state) => {
+      if (componentDisposed) return;
+      if (!state) {
+        if (moveSession.phase === "pending" || moveSession.phase === "retryable") {
+          moveSession = { ...IDLE_BLOCK_MOVE_SESSION };
+        }
+        clearMoveToast();
+        return;
+      }
+      moveSession = recoveryMoveSession(state);
+      if (state.status === "retryable") {
+        showMoveToast(
+          `${state.message ?? "A submitted block move needs recovery"} · Press R or Enter to retry safely`,
+          "warn",
+          0,
+        );
+      } else {
+        clearMoveToast();
+      }
+    });
     const markPageInactive = () => { pageInactive = true; };
     const restorePageActivity = () => {
       pageInactive = false;
@@ -1013,7 +1163,19 @@
     document.addEventListener("keydown", keyHandler, true);
     return () => {
       componentDisposed = true;
+      for (const [noteId, state] of saveStates) {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+        const completion = settleJournalSave(noteId);
+        void completion.catch(
+          (error) => console.error(`Journal teardown save failed for ${noteId}:`, error),
+        );
+      }
+      stopMoveRecovery();
       focusRestoration.dispose();
+      releaseMoveReservations();
       window.removeEventListener("pagehide", markPageInactive);
       window.removeEventListener("pageshow", restorePageActivity);
       window.removeEventListener("tesela:start-block-move", commandHandler);
@@ -1288,6 +1450,7 @@
             frontmatter={split.frontmatter}
             onContentChange={(content, base) => handleContentChange(note.id, content, isSynthetic, base)}
             onCancelAndFlush={(content, base) => cancelAndFlush(note.id, content, base)}
+            onPrepareRelocation={() => settleJournalSave(note.id)}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => setFocusedBlock(b)}
             relocation={relocationBindings(note.id)}

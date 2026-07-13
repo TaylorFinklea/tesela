@@ -8,7 +8,11 @@ import type { Note } from "$lib/types/Note";
 import type { ViewRecord } from "$lib/api-client";
 import { decodeTlr2, type LoroDocUpdate } from "$lib/loro/tlr2";
 import { decodePresence, type PresenceFrame } from "$lib/loro/presence";
-import { ServerBarrierTracker } from "$lib/loro/server-barrier";
+import {
+  runServerBarrierTransaction,
+  ServerBarrierTracker,
+  type ServerBarrierTransaction,
+} from "$lib/loro/server-barrier";
 
 export type DeadlineApproachingEvent = {
   event: "deadline_approaching";
@@ -330,28 +334,30 @@ export type CapturedBinarySender = (frame: Uint8Array) => boolean;
 /**
  * Run one synchronous Loro flush against a captured socket, then place a text
  * barrier behind those binary frames on that exact connection. The callback
- * may return a checkpoint commit, which runs only for the matching positive
- * acknowledgement. Any close/reconnect, dropped binary/control send, timeout,
- * or negative acknowledgement rejects without committing.
+ * may return a checkpoint transaction. It commits only for the matching
+ * positive acknowledgement and rolls back for every later failure. Any
+ * close/reconnect, dropped binary/control send, timeout, or negative
+ * acknowledgement therefore leaves the document delta retryable.
  */
 export async function awaitLoroServerBarrier(
-  flush: (send: CapturedBinarySender) => void | (() => void),
+  flush: (send: CapturedBinarySender) => void | ServerBarrierTransaction,
 ): Promise<void> {
   const capturedSocket = socket;
   const capturedGeneration = connectionId;
-  if (!capturedSocket || capturedSocket.readyState !== WebSocket.OPEN) {
-    throw new Error("Loro barrier socket is not open");
-  }
-  const commit = flush((frame) => {
-    if (connectionId !== capturedGeneration || socket !== capturedSocket) return false;
-    return sendBinaryOnSocket(capturedSocket, frame);
+  await runServerBarrierTransaction({
+    prepare: () =>
+      flush((frame) => {
+        if (!capturedSocket || capturedSocket.readyState !== WebSocket.OPEN) return false;
+        if (connectionId !== capturedGeneration || socket !== capturedSocket) return false;
+        return sendBinaryOnSocket(capturedSocket, frame);
+      }),
+    isConnectionCurrent: () =>
+      capturedSocket !== null
+      && capturedSocket.readyState === WebSocket.OPEN
+      && connectionId === capturedGeneration
+      && socket === capturedSocket,
+    request: () => capturedSocket
+      ? serverBarriers.request(capturedSocket, capturedGeneration)
+      : Promise.reject(new Error("Loro barrier socket is not open")),
   });
-  if (commit && typeof (commit as unknown as { then?: unknown }).then === "function") {
-    throw new Error("Loro barrier flush callback must be synchronous");
-  }
-  if (connectionId !== capturedGeneration || socket !== capturedSocket) {
-    throw new Error("WebSocket changed during Loro barrier preparation");
-  }
-  await serverBarriers.request(capturedSocket, capturedGeneration);
-  commit?.();
 }

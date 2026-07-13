@@ -39,9 +39,12 @@
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
   import { registerBuiltinCommands } from "$lib/commands";
   import { initKeymapConfig } from "$lib/stores/keymap-sync";
+  import { blockMoveRecovery } from "$lib/block-move-recovery.svelte";
   import "../app.css";
 
   let { children } = $props();
+
+  void blockMoveRecovery;
 
   // Explicit bootstrap for the command registry (the emacs-2.0 spine): every
   // route runs through this root layout, so registering here — once, before

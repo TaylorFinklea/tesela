@@ -12,6 +12,123 @@ export interface ServerBarrierTrackerDeps<S> {
   clearTimeout(handle: unknown): void;
 }
 
+export interface ServerBarrierTransaction {
+  acknowledge(): boolean | void;
+  reject(): void;
+}
+
+export interface ServerBarrierTransactionDeps {
+  /** Synchronously hand the affected document deltas to the captured socket. */
+  prepare(): void | ServerBarrierTransaction;
+  /** The socket and generation captured by the caller are still current. */
+  isConnectionCurrent(): boolean;
+  /** Request and await the connection-local server acknowledgement. */
+  request(): Promise<void>;
+}
+
+export interface ServerBarrierRetryQueueDeps<K> {
+  run(keys: readonly K[]): Promise<void>;
+  schedule(cb: () => void, delayMs: number): unknown;
+  cancelSchedule(handle: unknown): void;
+  initialDelayMs: number;
+  maxDelayMs: number;
+}
+
+/** Coalesces documents awaiting durable proof and retries with bounded
+ * exponential backoff. A generation per key prevents a successful in-flight
+ * batch from erasing a newer retry request for the same document. */
+export class ServerBarrierRetryQueue<K> {
+  #deps: ServerBarrierRetryQueueDeps<K>;
+  #pending = new Map<K, number>();
+  #generation = 0;
+  #handle: unknown | null = null;
+  #running = false;
+  #delayMs: number;
+
+  constructor(deps: ServerBarrierRetryQueueDeps<K>) {
+    this.#deps = deps;
+    this.#delayMs = deps.initialDelayMs;
+  }
+
+  enqueue(keys: Iterable<K>): void {
+    for (const key of keys) this.#pending.set(key, ++this.#generation);
+    this.#scheduleIfNeeded();
+  }
+
+  /** A barrier outside this queue proved these keys while a retry was queued. */
+  resolve(keys: Iterable<K>): void {
+    for (const key of keys) this.#pending.delete(key);
+    if (this.#pending.size === 0) {
+      this.#delayMs = this.#deps.initialDelayMs;
+      if (this.#handle !== null) {
+        this.#deps.cancelSchedule(this.#handle);
+        this.#handle = null;
+      }
+    }
+  }
+
+  #scheduleIfNeeded(): void {
+    if (this.#pending.size === 0 || this.#running || this.#handle !== null) return;
+    this.#handle = this.#deps.schedule(() => {
+      this.#handle = null;
+      void this.#run();
+    }, this.#delayMs);
+  }
+
+  async #run(): Promise<void> {
+    if (this.#running || this.#pending.size === 0) return;
+    this.#running = true;
+    const batch = [...this.#pending.entries()];
+    let failed = false;
+    try {
+      for (const [key, generation] of batch) {
+        try {
+          await this.#deps.run([key]);
+          if (this.#pending.get(key) === generation) this.#pending.delete(key);
+        } catch {
+          failed = true;
+        }
+      }
+    } finally {
+      if (failed && this.#pending.size > 0) {
+        this.#delayMs = Math.min(
+          this.#deps.maxDelayMs,
+          Math.max(this.#deps.initialDelayMs, this.#delayMs * 2),
+        );
+      } else {
+        this.#delayMs = this.#deps.initialDelayMs;
+      }
+      this.#running = false;
+      this.#scheduleIfNeeded();
+    }
+  }
+}
+
+/** Coordinate the optimistic document handoff with its durable server ack.
+ * Every failure after preparation rolls the document transaction back before
+ * it escapes to the caller, so reconnect/release flushes can replay it. */
+export async function runServerBarrierTransaction(
+  deps: ServerBarrierTransactionDeps,
+): Promise<void> {
+  const transaction = deps.prepare();
+  if (transaction && typeof (transaction as unknown as { then?: unknown }).then === "function") {
+    throw new Error("Loro barrier flush callback must be synchronous");
+  }
+  if (!deps.isConnectionCurrent()) {
+    transaction?.reject();
+    throw new Error("WebSocket changed during Loro barrier preparation");
+  }
+  try {
+    await deps.request();
+  } catch (error) {
+    transaction?.reject();
+    throw error;
+  }
+  if (transaction?.acknowledge() === false) {
+    throw new Error("Loro document changed while the server barrier was pending");
+  }
+}
+
 interface PendingBarrier<S> {
   socket: S;
   generation: number;

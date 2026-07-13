@@ -1,11 +1,12 @@
-// Unit tests for the per-note block-ops debounce/coalesce/abort saver
+// Unit tests for the per-note block-ops debounce/coalesce/serialization saver
 // (sync redesign 2026-06-02, S1 follow-up).
 //
 // S1 dropped the 500ms debounce the whole-body-PUT path had, so the editor
 // POSTed `/notes/{id}/blocks` on EVERY keystroke. `BlockOpsSaver` restores
 // per-note coalescing: a burst of enqueues within the window collapses into
-// ONE trailing-edge POST carrying the LATEST op per block, and a superseded
-// in-flight POST is aborted (its AbortError swallowed, NOT PUT-fallen-back).
+// ONE trailing-edge POST carrying the LATEST op per block. Once admitted, an
+// in-flight POST is drained before its coalesced successor starts: aborting a
+// fetch cannot prove the server stopped processing the write.
 //
 // The debounce uses real setTimeout; we drive it deterministically with
 // node:test's mock timers (the suite's "test clock" pattern — cf.
@@ -14,7 +15,9 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { BlockOpsSaver, isAbortError } from "../../src/lib/block-ops-saver.ts";
+import * as saverModule from "../../src/lib/block-ops-saver.ts";
+
+const { BlockOpsSaver } = saverModule;
 
 /** Build a concrete upsert op for a given bid/text. */
 function upsert(bid, text, indent_level = 0, parent_bid = null) {
@@ -55,13 +58,211 @@ function makeUpsertSpy() {
   return { calls, fn };
 }
 
-test("isAbortError detects DOMException-style and plain AbortError", () => {
-  const e1 = new Error("x");
-  e1.name = "AbortError";
-  assert.equal(isAbortError(e1), true);
-  assert.equal(isAbortError({ name: "AbortError" }), true);
-  assert.equal(isAbortError(new Error("nope")), false);
-  assert.equal(isAbortError(null), false);
+function deferredMutation() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+test("per-note mutation barrier drains a successor added while its predecessor is in flight", async () => {
+  assert.equal(
+    typeof saverModule.PerNoteMutationBarrier,
+    "function",
+    "expected a reusable per-note mutation barrier",
+  );
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const predecessor = deferredMutation();
+  const successor = deferredMutation();
+  void barrier.track("noteA", () => predecessor.promise);
+
+  let settled = false;
+  const completion = barrier.settle("noteA").then(() => {
+    settled = true;
+  });
+  void barrier.track("noteA", () => successor.promise);
+
+  predecessor.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "a late successor remains inside the barrier");
+
+  successor.resolve();
+  await completion;
+  assert.equal(settled, true);
+});
+
+test("per-note mutation barrier propagates a write failure after draining the note", async () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const mutation = deferredMutation();
+  const tracked = barrier.track("noteA", () => mutation.promise);
+  const completion = barrier.settle("noteA");
+  const failure = new Error("property write failed");
+
+  mutation.reject(failure);
+  await assert.rejects(tracked, failure);
+  await assert.rejects(completion, failure);
+});
+
+test("per-note mutation barrier latches a rejection that finishes before settle starts", async () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const mutation = deferredMutation();
+  const tracked = barrier.track("noteA", () => mutation.promise);
+  const failure = new Error("property write failed early");
+
+  mutation.reject(failure);
+  await assert.rejects(tracked, failure);
+  await assert.rejects(barrier.settle("noteA"), failure);
+  await assert.rejects(
+    barrier.settle("noteA"),
+    failure,
+    "a second move attempt must stay blocked until authoritative reconciliation",
+  );
+});
+
+test("per-note mutation barrier starts rapid mutations in registration order", async () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const predecessor = deferredMutation();
+  const successor = deferredMutation();
+  const starts = [];
+
+  const first = barrier.track("noteA", () => {
+    starts.push("first");
+    return predecessor.promise;
+  });
+  const second = barrier.track("noteA", () => {
+    starts.push("second");
+    return successor.promise;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, ["first"]);
+
+  predecessor.resolve();
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, ["first", "second"]);
+
+  successor.resolve();
+  await second;
+  await barrier.settle("noteA");
+});
+
+test("per-note mutation reservation synchronously rejects late writes without latching failure", async () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const reservation = barrier.reserve(["noteA"]);
+  let started = false;
+
+  assert.equal(barrier.isReserved("noteA"), true);
+  await assert.rejects(
+    barrier.track("noteA", async () => {
+      started = true;
+    }),
+    /reserved for block relocation/i,
+  );
+  assert.equal(started, false, "a late mutation must not reach the network factory");
+
+  reservation.release();
+  assert.equal(barrier.isReserved("noteA"), false);
+  await barrier.track("noteA", async () => {
+    started = true;
+  });
+  assert.equal(started, true);
+  await barrier.settle("noteA");
+});
+
+test("per-note mutation reservation drains writes captured before acquisition", async () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const predecessor = deferredMutation();
+  void barrier.track("noteA", () => predecessor.promise);
+  const reservation = barrier.reserve(["noteA"]);
+
+  let settled = false;
+  const completion = reservation.settle().then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  predecessor.resolve();
+  await completion;
+  assert.equal(settled, true);
+  assert.equal(barrier.isReserved("noteA"), true, "settling must retain the reservation");
+  reservation.release();
+});
+
+test("overlapping reservation failure is atomic across notes", () => {
+  assert.equal(typeof saverModule.PerNoteMutationBarrier, "function");
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const first = barrier.reserve(["noteA"]);
+
+  assert.throws(
+    () => barrier.reserve(["noteB", "noteA"]),
+    /reserved for block relocation/i,
+  );
+  assert.equal(barrier.isReserved("noteA"), true);
+  assert.equal(barrier.isReserved("noteB"), false, "failed acquisition must not partially reserve");
+
+  first.release();
+});
+
+test("combined block-move reservation drains direct note writes and rejects late ones", async () => {
+  assert.equal(typeof saverModule.createCombinedMutationBarrier, "function");
+  const uiBarrier = new saverModule.PerNoteMutationBarrier();
+  const noteWriteBarrier = new saverModule.PerNoteMutationBarrier();
+  const combined = saverModule.createCombinedMutationBarrier(uiBarrier, noteWriteBarrier);
+  const predecessor = deferredMutation();
+  const tracked = noteWriteBarrier.track("noteA", () => predecessor.promise);
+  const reservation = combined.reserve(["noteA"]);
+
+  let settled = false;
+  const completion = reservation.settle().then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "an unmounted/direct predecessor remains inside preflight");
+  await assert.rejects(
+    noteWriteBarrier.track("noteA", async () => {}),
+    /reserved for block relocation/i,
+  );
+
+  predecessor.resolve();
+  await tracked;
+  await completion;
+  assert.equal(uiBarrier.isReserved("noteA"), true);
+  assert.equal(noteWriteBarrier.isReserved("noteA"), true);
+  reservation.release();
+  assert.equal(uiBarrier.isReserved("noteA"), false);
+  assert.equal(noteWriteBarrier.isReserved("noteA"), false);
+});
+
+test("per-note mutation reservation synchronously notifies every mounted subscriber", () => {
+  const barrier = new saverModule.PerNoteMutationBarrier();
+  const noteAStates = [];
+  const noteBStates = [];
+  const unsubscribeA1 = barrier.subscribe("noteA", (reserved) => noteAStates.push(reserved));
+  const unsubscribeA2 = barrier.subscribe("noteA", (reserved) => noteAStates.push(reserved));
+  const unsubscribeB = barrier.subscribe("noteB", (reserved) => noteBStates.push(reserved));
+
+  assert.deepEqual(noteAStates, [false, false], "subscriptions publish their initial state");
+  assert.deepEqual(noteBStates, [false]);
+
+  const reservation = barrier.reserve(["noteA", "noteB"]);
+  assert.deepEqual(noteAStates, [false, false, true, true]);
+  assert.deepEqual(noteBStates, [false, true]);
+
+  reservation.release();
+  assert.deepEqual(noteAStates, [false, false, true, true, false, false]);
+  assert.deepEqual(noteBStates, [false, true, false]);
+
+  unsubscribeA1();
+  unsubscribeA2();
+  unsubscribeB();
 });
 
 test("coalesce: N rapid enqueues for the same block within the window → ONE POST with the latest text", (t) => {
@@ -222,7 +423,7 @@ test("coalesce: edits to different blocks in one window → one POST with one op
   assert.deepEqual(byBid, { "bid-1": "a2", "bid-2": "b1" }, "latest per block wins");
 });
 
-test("supersede: a later POST aborts the in-flight one; the AbortError is swallowed (no PUT fallback)", async (t) => {
+test("a later POST waits for the admitted in-flight write instead of aborting it", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const spy = makeUpsertSpy();
   const fallback = t.mock.fn();
@@ -234,20 +435,18 @@ test("supersede: a later POST aborts the in-flight one; the AbortError is swallo
   assert.equal(spy.calls.length, 1, "first POST in-flight");
   assert.equal(spy.calls[0].aborted, false);
 
-  // A second batch flushes before the first resolves → aborts the first.
+  // A second batch reaches its trailing edge before the first resolves. It
+  // remains queued because canceling fetch would not prove the server stopped.
   saver.enqueue("noteA", [upsert("bid-1", "second")]);
   t.mock.timers.tick(500);
-  assert.equal(spy.calls.length, 2, "second POST fired");
-  assert.equal(spy.calls[0].aborted, true, "the superseded in-flight POST was aborted");
+  assert.equal(spy.calls.length, 1, "successor waits behind the admitted write");
+  assert.equal(spy.calls[0].aborted, false);
+
+  spy.calls[0].resolve({});
+  await spy.calls[0].promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spy.calls.length, 2, "successor starts after its predecessor settles");
   assert.deepEqual(spy.calls[1].ops, [upsert("bid-1", "second")], "the latest wins");
-
-  // Let the aborted promise's rejection settle. It must NOT trigger the PUT
-  // fallback (that would double-write the superseding edit).
-  await spy.calls[0].promise.catch(() => {});
-  await Promise.resolve();
-  assert.equal(fallback.mock.callCount(), 0, "abort is swallowed, not treated as a failure");
-
-  // The live POST succeeds.
   spy.calls[1].resolve({});
   await spy.calls[1].promise;
   assert.equal(fallback.mock.callCount(), 0);
@@ -267,6 +466,24 @@ test("genuine (non-abort) failure → PUT fallback fires once", async (t) => {
   await spy.calls[0].promise.catch(() => {});
   await Promise.resolve();
   assert.equal(fallback.mock.callCount(), 1, "genuine failure falls back to whole-body PUT");
+  assert.deepEqual(fallback.mock.calls[0].arguments, ["noteA"]);
+});
+
+test("AbortError is ambiguous and falls back instead of being treated as canceled", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const fallback = t.mock.fn();
+  const saver = new BlockOpsSaver(spy.fn, fallback);
+
+  saver.enqueue("noteA", [upsert("bid-1", "x")]);
+  t.mock.timers.tick(500);
+  const abort = new Error("transport canceled after admission");
+  abort.name = "AbortError";
+  spy.calls[0].reject(abort);
+  await spy.calls[0].promise.catch(() => {});
+  await Promise.resolve();
+
+  assert.equal(fallback.mock.callCount(), 1);
   assert.deepEqual(fallback.mock.calls[0].arguments, ["noteA"]);
 });
 
@@ -291,7 +508,7 @@ test("supersedeWithBody: cancels the pending block-ops batch (timer + in-flight)
   assert.equal(spy.calls.length, 0, "no block-ops POST after supersede — one path per save");
 });
 
-test("supersedeWithBody aborts an in-flight block-ops POST before PUTting", (t) => {
+test("supersedeWithBody leaves an admitted block-ops POST alive", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const spy = makeUpsertSpy();
   const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
@@ -301,7 +518,7 @@ test("supersedeWithBody aborts an in-flight block-ops POST before PUTting", (t) 
   assert.equal(spy.calls.length, 1, "first POST in-flight");
 
   saver.supersedeWithBody("noteA", () => {});
-  assert.equal(spy.calls[0].aborted, true, "in-flight POST aborted on supersede");
+  assert.equal(spy.calls[0].aborted, false, "admitted writes cannot be canceled durably");
 });
 
 test("flush (forced, e.g. on blur) lands a pending batch immediately without waiting for the timer", (t) => {
@@ -338,6 +555,104 @@ test("flushAll (teardown) flushes every note's pending batch", (t) => {
   saver.flushAll();
   assert.equal(spy.calls.length, 2);
   assert.deepEqual(spy.calls.map((c) => c.noteId).sort(), ["noteA", "noteB"]);
+});
+
+test("save admission repeats a parent drain when a child re-admits its late fallback", async () => {
+  assert.equal(typeof saverModule.PerNoteSaveAdmissionRegistry, "function");
+  const registry = new saverModule.PerNoteSaveAdmissionRegistry();
+  const releaseChildDrain = deferredMutation();
+  let parentLease = null;
+  let childLease = null;
+  let parentDrains = 0;
+
+  const admitParent = () => {
+    parentLease = registry.admit("noteA", async () => {
+      parentDrains += 1;
+      const lease = parentLease;
+      parentLease = null;
+      lease.release();
+    });
+  };
+
+  admitParent();
+  childLease = registry.admit("noteA", async () => {
+    await releaseChildDrain.promise;
+    // Mirrors a BlockOpsSaver failure fallback: the parent already drained
+    // once, but this causal successor becomes active before the child releases.
+    admitParent();
+    const lease = childLease;
+    childLease = null;
+    lease.release();
+  });
+
+  let settled = false;
+  const completion = registry.settle(["noteA"]).then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(parentDrains, 1, "the parent may become quiet before its child");
+  assert.equal(settled, false, "the active child keeps global settlement open");
+
+  releaseChildDrain.resolve();
+  await completion;
+  assert.equal(parentDrains, 2, "the re-admitted fallback is drained in a new generation");
+});
+
+test("teardown admission remains globally drainable through an in-flight predecessor and successor", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  assert.equal(typeof saverModule.PerNoteSaveAdmissionRegistry, "function");
+  const registry = new saverModule.PerNoteSaveAdmissionRegistry();
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn(), 500, registry);
+
+  saver.enqueue("noteA", [upsert("bid-1", "first")]);
+  t.mock.timers.tick(500);
+  saver.enqueue("noteA", [upsert("bid-1", "second")]);
+  const disposing = saver.dispose();
+  let relocationSettled = false;
+  const relocationDrain = registry.settle(["noteA"]).then(() => {
+    relocationSettled = true;
+  });
+  assert.equal(spy.calls.length, 1, "the predecessor remains the only admitted write");
+
+  spy.calls[0].resolve({});
+  await spy.calls[0].promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spy.calls.length, 2, "the teardown successor starts before admission releases");
+  assert.deepEqual(spy.calls[1].ops, [upsert("bid-1", "second")]);
+  assert.equal(relocationSettled, false, "global settlement still owns the queued successor");
+
+  spy.calls[1].resolve({});
+  await Promise.all([disposing, relocationDrain]);
+  await registry.settle(["noteA"]);
+});
+
+test("a failed teardown admission stays registered and blocks every later settlement", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const registry = new saverModule.PerNoteSaveAdmissionRegistry();
+  const spy = makeUpsertSpy();
+  const fallbackError = new Error("teardown fallback failed");
+  const saver = new BlockOpsSaver(
+    spy.fn,
+    async () => {
+      throw fallbackError;
+    },
+    500,
+    registry,
+  );
+
+  saver.enqueue("noteA", [upsert("bid-1", "uncertain")]);
+  t.mock.timers.tick(500);
+  const disposing = saver.dispose();
+  spy.calls[0].reject(new Error("POST failed"));
+
+  await assert.rejects(disposing, fallbackError);
+  await assert.rejects(registry.settle(["noteA"]), fallbackError);
+  await assert.rejects(
+    registry.settle(["noteA"]),
+    fallbackError,
+    "failure ownership must survive the component that created it",
+  );
 });
 
 test("per-note isolation: a flush for one note leaves another note's pending batch armed", (t) => {
@@ -479,4 +794,25 @@ test("settle rejects when the whole-body fallback fails", async (t) => {
   const completion = saver.settle("noteA");
   spy.calls[0].reject(new Error("POST failed"));
   await assert.rejects(completion, fallbackError);
+});
+
+test("settle latches a fallback failure that completed before preflight", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const fallbackError = new Error("PUT failed before relocation");
+  const saver = new BlockOpsSaver(spy.fn, async () => {
+    throw fallbackError;
+  });
+
+  saver.enqueue("noteA", [upsert("bid-1", "uncertain")]);
+  t.mock.timers.tick(500);
+  spy.calls[0].reject(new Error("POST failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await assert.rejects(saver.settle("noteA"), fallbackError);
+  await assert.rejects(
+    saver.settle("noteA"),
+    fallbackError,
+    "later move attempts must stay blocked until authoritative reconciliation",
+  );
 });

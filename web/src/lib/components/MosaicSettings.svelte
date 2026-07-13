@@ -8,6 +8,7 @@
     type LogseqPlan,
     type LogseqApplyOutcome,
   } from "$lib/api-client";
+  import { blockMoveRecovery } from "$lib/block-move-recovery.svelte";
   import LogseqPlanPreview from "$lib/components/LogseqPlanPreview.svelte";
 
   let current = $state<CurrentMosaicResponse | null>(null);
@@ -177,6 +178,12 @@
 
   async function switchAndRestart(path: string) {
     if (switchingPath || embedded) return;
+    if (blockMoveRecovery.current()) {
+      const message = "Resolve the submitted block move before switching mosaics";
+      error = message;
+      rowMessage[path] = message;
+      return;
+    }
     if (
       !confirm(
         `Switch to ${path}? The server will shut down (auto-backup runs), then a new instance will start in ~2 seconds. The page will lose its WebSocket connection during the swap.`,

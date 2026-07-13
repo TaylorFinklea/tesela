@@ -54,6 +54,9 @@ const BIDS = {
   crossAfterRoot: "20000000-0000-4000-8000-000000000023",
   crossAfterChild: "20000000-0000-4000-8000-000000000024",
   untrustedFocusRoot: "20000000-0000-4000-8000-000000000025",
+  ambiguousRoot: "20000000-0000-4000-8000-000000000026",
+  propertyRaceRoot: "20000000-0000-4000-8000-000000000027",
+  propertyFailureRoot: "20000000-0000-4000-8000-000000000028",
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
   existingEnd: "30000000-0000-4000-8000-000000000003",
@@ -69,6 +72,9 @@ const BIDS = {
   crossAfterTarget: "30000000-0000-4000-8000-000000000013",
   crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
   untrustedFocusTarget: "30000000-0000-4000-8000-000000000015",
+  ambiguousTarget: "30000000-0000-4000-8000-000000000016",
+  propertyRaceTarget: "30000000-0000-4000-8000-000000000017",
+  propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
 };
 
 const children = new Set();
@@ -302,6 +308,10 @@ try {
     `- CROSS_AFTER_ROOT <!-- bid:${BIDS.crossAfterRoot} -->`,
     `  - CROSS_AFTER_CHILD <!-- bid:${BIDS.crossAfterChild} -->`,
     `- UNTRUSTED_FOCUS_ROOT <!-- bid:${BIDS.untrustedFocusRoot} -->`,
+    `- AMBIGUOUS_ROOT <!-- bid:${BIDS.ambiguousRoot} -->`,
+    `- PROPERTY_RACE_ROOT <!-- bid:${BIDS.propertyRaceRoot} -->`,
+    `- PROPERTY_FAILURE_ROOT <!-- bid:${BIDS.propertyFailureRoot} -->`,
+    `  status:: todo`,
     "",
   ].join("\n"));
 
@@ -321,20 +331,29 @@ try {
     `- RETRY_TARGET <!-- bid:${BIDS.retryTarget} -->`,
     `- RACE_POINTER_TARGET <!-- bid:${BIDS.racePointerTarget} -->`,
     `- UNTRUSTED_FOCUS_TARGET <!-- bid:${BIDS.untrustedFocusTarget} -->`,
+    `- AMBIGUOUS_TARGET <!-- bid:${BIDS.ambiguousTarget} -->`,
+    `- PROPERTY_RACE_TARGET <!-- bid:${BIDS.propertyRaceTarget} -->`,
+    `- PROPERTY_FAILURE_TARGET <!-- bid:${BIDS.propertyFailureTarget} -->`,
     "",
   ].join("\n"));
 
-  const propertyResponse = await fetch(`${apiBase}/blocks/set-property`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      block_id: `${SOURCE_DAILY}:${BIDS.crossRoot}`,
-      key: "status",
-      value: "doing",
-    }),
-  });
-  if (!propertyResponse.ok) {
-    throw new Error(`seed relocation property failed: ${propertyResponse.status} ${await propertyResponse.text()}`);
+  for (const [bid, value] of [
+    [BIDS.crossRoot, "doing"],
+    [BIDS.propertyRaceRoot, "todo"],
+    [BIDS.propertyFailureRoot, "todo"],
+  ]) {
+    const propertyResponse = await fetch(`${apiBase}/blocks/set-property`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        block_id: `${SOURCE_DAILY}:${bid}`,
+        key: "status",
+        value,
+      }),
+    });
+    if (!propertyResponse.ok) {
+      throw new Error(`seed relocation property failed: ${propertyResponse.status} ${await propertyResponse.text()}`);
+    }
   }
 
   // Create a dedicated PAGE note (a single BlockOutliner — the bug lives in

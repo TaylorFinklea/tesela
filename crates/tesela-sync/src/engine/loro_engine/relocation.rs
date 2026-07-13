@@ -1,13 +1,14 @@
 use super::*;
 use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const RELOCATION_DIR: &str = "_relocations";
 const RELOCATION_TOMBSTONES_FILE: &str = "_relocation_tombstones.bin";
 const RECEIPT_LIMIT: usize = 4_096;
 const RELOCATION_MOVE_ID_META: &str = "relocation_move_id";
 const RELOCATION_REQUEST_HASH_META: &str = "relocation_request_hash";
+const RELOCATION_SUBTREE_BIDS_META: &str = "relocation_subtree_bids";
 
 pub(super) type ReceiptIndex = BTreeMap<(HlcTimestamp, [u8; 16]), ()>;
 pub(super) type RelocationTombstones = BTreeMap<[u8; 16], [u8; 32]>;
@@ -117,6 +118,14 @@ struct DestinationRootProof {
     root_bid: [u8; 16],
 }
 
+#[derive(Clone, Debug)]
+struct DestinationMetadataProof {
+    move_id: [u8; 16],
+    request_hash: [u8; 32],
+    root_bid: [u8; 16],
+    block_bids: Option<Vec<[u8; 16]>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RelocationIntent {
     request_hash: [u8; 32],
@@ -172,6 +181,11 @@ struct PreparedRelocation {
     destination_pre_version: Vec<u8>,
     destination_created: bool,
     no_op: bool,
+}
+
+enum LockedRelocationAttempt {
+    Pending([u8; 16]),
+    Completed(SyncResult<BlockRelocationOutcome>),
 }
 
 fn rejected(message: impl Into<String>) -> SyncError {
@@ -267,6 +281,13 @@ impl RelocationReceipt {
 fn live_root_nodes(tree: &LoroTree) -> Vec<TreeID> {
     tree.children(TreeParentId::Root)
         .unwrap_or_default()
+        .into_iter()
+        .filter(|node| !matches!(tree.is_node_deleted(node), Ok(true)))
+        .collect()
+}
+
+fn all_live_nodes(tree: &LoroTree) -> Vec<TreeID> {
+    tree.nodes()
         .into_iter()
         .filter(|node| !matches!(tree.is_node_deleted(node), Ok(true)))
         .collect()
@@ -435,8 +456,24 @@ fn destination_order_without_captured(
         .collect()
 }
 
+fn captured_destination_nodes_are_rooted(
+    tree: &LoroTree,
+    blocks: &[RelocatedBlockSnapshot],
+) -> bool {
+    let moved_bids: HashSet<[u8; 16]> = blocks.iter().map(|block| block.bid).collect();
+    let root_nodes: HashSet<TreeID> = live_root_nodes(tree).into_iter().collect();
+    all_live_nodes(tree)
+        .into_iter()
+        .filter(|node| {
+            node_bid(tree, *node)
+                .map(|bid| moved_bids.contains(&bid))
+                .unwrap_or(false)
+        })
+        .all(|node| root_nodes.contains(&node))
+}
+
 fn captured_source_nodes_are_unique(tree: &LoroTree, blocks: &[RelocatedBlockSnapshot]) -> bool {
-    let order = live_root_nodes(tree);
+    let order = all_live_nodes(tree);
     blocks.iter().all(|block| {
         if !matches!(tree.is_node_deleted(&block.source_node), Ok(false)) {
             return false;
@@ -446,6 +483,28 @@ fn captured_source_nodes_are_unique(tree: &LoroTree, blocks: &[RelocatedBlockSna
             .copied()
             .filter(|node| node_bid(tree, *node) == Some(block.bid));
         matching.next() == Some(block.source_node) && matching.next().is_none()
+    })
+}
+
+fn captured_source_nodes_have_no_competitors(
+    tree: &LoroTree,
+    blocks: &[RelocatedBlockSnapshot],
+) -> bool {
+    let live_nodes = all_live_nodes(tree);
+    blocks.iter().all(|block| {
+        live_nodes
+            .iter()
+            .filter(|node| node_bid(tree, **node) == Some(block.bid))
+            .all(|node| *node == block.source_node)
+    })
+}
+
+fn captured_source_bids_are_absent(tree: &LoroTree, blocks: &[RelocatedBlockSnapshot]) -> bool {
+    let moved_bids: HashSet<[u8; 16]> = blocks.iter().map(|block| block.bid).collect();
+    all_live_nodes(tree).iter().all(|node| {
+        node_bid(tree, *node)
+            .map(|bid| !moved_bids.contains(&bid))
+            .unwrap_or(true)
     })
 }
 
@@ -494,7 +553,7 @@ fn validate_recovery_target_ancestry(
             "destination target belongs to the captured relocation subtree",
         ));
     }
-    let live_order = live_root_nodes(tree);
+    let live_order = all_live_nodes(tree);
     let mut current_bid = target_bid;
     let mut current_node =
         unique_live_node_for_recovery_bid(tree, &live_order, move_id, current_bid, "target")?;
@@ -1050,8 +1109,11 @@ impl LoroEngine {
         Ok(())
     }
 
-    fn read_destination_proof_at(tree: &LoroTree, node: TreeID) -> Option<DestinationRootProof> {
-        Some(DestinationRootProof {
+    fn read_destination_proof_at(
+        tree: &LoroTree,
+        node: TreeID,
+    ) -> Option<DestinationMetadataProof> {
+        Some(DestinationMetadataProof {
             move_id: decode_fixed_hex(&read_meta_str(tree, node, RELOCATION_MOVE_ID_META)?)?,
             request_hash: decode_fixed_hex(&read_meta_str(
                 tree,
@@ -1059,6 +1121,14 @@ impl LoroEngine {
                 RELOCATION_REQUEST_HASH_META,
             )?)?,
             root_bid: node_bid(tree, node)?,
+            block_bids: read_meta_str(tree, node, RELOCATION_SUBTREE_BIDS_META).and_then(
+                |encoded| {
+                    encoded
+                        .split(',')
+                        .map(parse_note_id_from_hex)
+                        .collect::<Option<Vec<_>>>()
+                },
+            ),
         })
     }
 
@@ -1067,6 +1137,7 @@ impl LoroEngine {
         node: TreeID,
         move_id: [u8; 16],
         request_hash: [u8; 32],
+        blocks: &[RelocatedBlockSnapshot],
     ) -> SyncResult<()> {
         let meta = tree.get_meta(node).map_err(|error| {
             SyncError::Storage(format!("loro relocation proof metadata: {error}"))
@@ -1075,17 +1146,51 @@ impl LoroEngine {
             .map_err(|error| SyncError::Storage(format!("loro relocation move proof: {error}")))?;
         meta.insert(RELOCATION_REQUEST_HASH_META, hex::encode(request_hash))
             .map_err(|error| SyncError::Storage(format!("loro relocation hash proof: {error}")))?;
+        let block_bids = blocks
+            .iter()
+            .map(|block| hex_id(&block.bid))
+            .collect::<Vec<_>>()
+            .join(",");
+        meta.insert(RELOCATION_SUBTREE_BIDS_META, block_bids)
+            .map_err(|error| {
+                SyncError::Storage(format!("loro relocation subtree proof: {error}"))
+            })?;
         Ok(())
+    }
+
+    fn validated_proof_block_bids<'a>(
+        request: &BlockRelocationRequest,
+        proof: &'a DestinationMetadataProof,
+    ) -> SyncResult<&'a [[u8; 16]]> {
+        let Some(block_bids) = proof.block_bids.as_deref() else {
+            return Err(recovery_required(
+                request.move_id,
+                "destination proof predates durable subtree identity metadata",
+            ));
+        };
+        if block_bids.first() != Some(&request.root_bid) {
+            return Err(recovery_required(
+                request.move_id,
+                "destination proof subtree does not begin with the requested root",
+            ));
+        }
+        if block_bids.iter().copied().collect::<BTreeSet<_>>().len() != block_bids.len() {
+            return Err(recovery_required(
+                request.move_id,
+                "destination proof subtree contains duplicate block ids",
+            ));
+        }
+        Ok(block_bids)
     }
 
     async fn completed_proof_for_move(
         &self,
         move_id: [u8; 16],
-    ) -> Option<([u8; 16], DestinationRootProof)> {
+    ) -> Option<([u8; 16], DestinationMetadataProof)> {
         let docs = self.inner.docs.read().await;
         for (note_id, doc) in docs.iter() {
             let tree = doc.get_tree("blocks");
-            for node in live_root_nodes(&tree) {
+            for node in all_live_nodes(&tree) {
                 let Some(proof) = Self::read_destination_proof_at(&tree, node) else {
                     continue;
                 };
@@ -1135,7 +1240,9 @@ impl LoroEngine {
         &self,
         request: &BlockRelocationRequest,
         request_hash: [u8; 32],
+        proof: &DestinationMetadataProof,
     ) -> SyncResult<Option<PreparedRelocation>> {
+        let proof_block_bids = Self::validated_proof_block_bids(request, proof)?;
         let Some(source_doc) = self.lazy_load_doc(request.source_note_id).await else {
             return Ok(None);
         };
@@ -1150,6 +1257,16 @@ impl LoroEngine {
             return Err(recovery_required(
                 request.move_id,
                 "captured source subtree is not uniquely recoverable",
+            ));
+        }
+        if !blocks
+            .iter()
+            .map(|block| block.bid)
+            .eq(proof_block_bids.iter().copied())
+        {
+            return Err(recovery_required(
+                request.move_id,
+                "captured source subtree does not match the durable destination proof",
             ));
         }
 
@@ -1193,7 +1310,82 @@ impl LoroEngine {
                 "proof-bearing destination does not match the captured source subtree",
             ));
         }
+        let expected_owners = BTreeSet::from([request.source_note_id, request.destination_note_id]);
+        if !self
+            .relocated_bids_have_exact_owners(proof_block_bids, &expected_owners)
+            .await
+        {
+            return Err(recovery_required(
+                request.move_id,
+                "proof-bearing subtree has owners outside the source and destination",
+            ));
+        }
         Ok(Some(prepared))
+    }
+
+    async fn relocated_bids_have_exact_owners(
+        &self,
+        block_bids: &[[u8; 16]],
+        expected: &BTreeSet<[u8; 16]>,
+    ) -> bool {
+        let owners = self.inner.block_index.read().await;
+        block_bids
+            .iter()
+            .all(|bid| owners.get(bid) == Some(expected))
+    }
+
+    async fn relocated_bids_have_only_allowed_owners(
+        &self,
+        block_bids: &[[u8; 16]],
+        allowed: &BTreeSet<[u8; 16]>,
+    ) -> bool {
+        let owners = self.inner.block_index.read().await;
+        block_bids.iter().all(|bid| {
+            owners
+                .get(bid)
+                .map(|current| !current.is_empty() && current.is_subset(allowed))
+                .unwrap_or(false)
+        })
+    }
+
+    async fn validate_completed_destination_subtree(
+        &self,
+        request: &BlockRelocationRequest,
+        proof: &DestinationMetadataProof,
+    ) -> SyncResult<()> {
+        let proof_block_bids = Self::validated_proof_block_bids(request, proof)?;
+        let destination_doc = self
+            .lazy_load_doc(request.destination_note_id)
+            .await
+            .ok_or_else(|| {
+                recovery_required(request.move_id, "proof-bearing destination note is missing")
+            })?;
+        validate_slug(&destination_doc, &request.destination_slug, "destination")?;
+        let destination_tree = destination_doc.get_tree("blocks");
+        let destination_nodes = all_live_nodes(&destination_tree);
+        if !proof_block_bids.iter().all(|bid| {
+            destination_nodes
+                .iter()
+                .filter(|node| node_bid(&destination_tree, **node) == Some(*bid))
+                .count()
+                == 1
+        }) {
+            return Err(recovery_required(
+                request.move_id,
+                "proof-bearing destination blocks are missing or ambiguous",
+            ));
+        }
+        let expected_owners = BTreeSet::from([request.destination_note_id]);
+        if !self
+            .relocated_bids_have_exact_owners(proof_block_bids, &expected_owners)
+            .await
+        {
+            return Err(recovery_required(
+                request.move_id,
+                "proof-bearing destination subtree has another live owner",
+            ));
+        }
+        Ok(())
     }
 
     fn mismatched_proof_is_inherited_from_same_note_source(
@@ -1210,7 +1402,7 @@ impl LoroEngine {
         if proof_node != source_root {
             return false;
         }
-        let mut matching_roots = live_root_nodes(tree)
+        let mut matching_roots = all_live_nodes(tree)
             .into_iter()
             .filter(|node| node_bid(tree, *node) == Some(prepared.request.root_bid));
         matching_roots.next() == Some(source_root) && matching_roots.next().is_none()
@@ -1245,7 +1437,21 @@ impl LoroEngine {
                 "destination root carries different relocation metadata".into(),
             ));
         }
+        if let Some(proof_block_bids) = proof.block_bids.as_deref() {
+            if !prepared
+                .blocks
+                .iter()
+                .map(|block| block.bid)
+                .eq(proof_block_bids.iter().copied())
+            {
+                return Err(recovery_required(
+                    prepared.request.move_id,
+                    "destination proof subtree does not match the captured relocation",
+                ));
+            }
+        }
         let order = live_root_nodes(&tree);
+        let all_nodes = all_live_nodes(&tree);
         let Some(actual_start) = order.iter().position(|node| *node == root_node) else {
             return Ok(false);
         };
@@ -1253,7 +1459,7 @@ impl LoroEngine {
             return Ok(false);
         }
         for block in &prepared.blocks {
-            if order
+            if all_nodes
                 .iter()
                 .filter(|node| node_bid(&tree, **node) == Some(block.bid))
                 .count()
@@ -1357,6 +1563,12 @@ impl LoroEngine {
             .ok_or_else(|| rejected("source note is missing"))?;
         validate_slug(&source_doc, &request.source_slug, "source")?;
         let (source_order, blocks) = capture_subtree(&source_doc, request.root_bid)?;
+        let source_tree = source_doc.get_tree("blocks");
+        if !captured_source_nodes_are_unique(&source_tree, &blocks) {
+            return Err(rejected(
+                "source relocation subtree contains a duplicate live block id",
+            ));
+        }
         for block in &blocks {
             self.validate_owner(&block.bid, request.source_note_id, "source subtree block")
                 .await?;
@@ -1496,78 +1708,66 @@ impl LoroEngine {
         request_hash: [u8; 32],
     ) -> SyncResult<()> {
         let tree = prepared.source_doc.get_tree("blocks");
-        let captured_nodes_are_live_and_unique =
-            captured_source_nodes_are_unique(&tree, &prepared.blocks);
+        if !captured_source_nodes_are_unique(&tree, &prepared.blocks) {
+            return Err(recovery_required(
+                prepared.request.move_id,
+                "same-note relocation source is missing or ambiguous",
+            ));
+        }
         let order_without_captured = destination_order_without_captured(&tree, &prepared.blocks);
         let placement = current_destination_placement(&tree, prepared, &order_without_captured)?;
-        let destination_root = if captured_nodes_are_live_and_unique {
-            if placement.insertion_index < order_without_captured.len() {
-                let anchor = order_without_captured[placement.insertion_index];
-                for block in &prepared.blocks {
-                    tree.mov_before(block.source_node, anchor)
-                        .map_err(|error| {
-                            SyncError::Storage(format!("loro relocation move before: {error}"))
-                        })?;
-                }
-            } else if let Some(mut anchor) = order_without_captured.last().copied() {
-                for block in &prepared.blocks {
-                    tree.mov_after(block.source_node, anchor).map_err(|error| {
-                        SyncError::Storage(format!("loro relocation move after: {error}"))
-                    })?;
-                    anchor = block.source_node;
-                }
-            } else {
-                for (offset, block) in prepared.blocks.iter().enumerate() {
-                    tree.mov_to(
-                        block.source_node,
-                        TreeParentId::Root,
-                        placement.insertion_index + offset,
-                    )
+        if placement.insertion_index < order_without_captured.len() {
+            let anchor = order_without_captured[placement.insertion_index];
+            for block in &prepared.blocks {
+                tree.mov_before(block.source_node, anchor)
                     .map_err(|error| {
-                        SyncError::Storage(format!("loro relocation anchorless move: {error}"))
+                        SyncError::Storage(format!("loro relocation move before: {error}"))
                     })?;
-                }
             }
-            for (index, block) in prepared.blocks.iter().enumerate() {
-                reconcile_snapshot_block(
-                    &tree,
-                    block.source_node,
-                    block,
-                    placement.new_indents[index],
-                    placement.new_parents[index],
-                )?;
+        } else if let Some(mut anchor) = order_without_captured.last().copied() {
+            for block in &prepared.blocks {
+                tree.mov_after(block.source_node, anchor).map_err(|error| {
+                    SyncError::Storage(format!("loro relocation move after: {error}"))
+                })?;
+                anchor = block.source_node;
             }
-            prepared.blocks[0].source_node
         } else {
-            self.delete_captured_destination_nodes(&tree, &prepared.blocks)?;
-            let mut destination_root = None;
             for (offset, block) in prepared.blocks.iter().enumerate() {
-                let node = tree
-                    .create_at(TreeParentId::Root, placement.insertion_index + offset)
-                    .map_err(|error| {
-                        SyncError::Storage(format!("loro relocation same-note rebuild: {error}"))
-                    })?;
-                author_snapshot_block(
-                    &tree,
-                    node,
-                    block,
-                    placement.new_indents[offset],
-                    placement.new_parents[offset],
-                )?;
-                destination_root.get_or_insert(node);
+                tree.mov_to(
+                    block.source_node,
+                    TreeParentId::Root,
+                    placement.insertion_index + offset,
+                )
+                .map_err(|error| {
+                    SyncError::Storage(format!("loro relocation anchorless move: {error}"))
+                })?;
             }
-            destination_root.ok_or_else(|| {
+        }
+        for (index, block) in prepared.blocks.iter().enumerate() {
+            reconcile_snapshot_block(
+                &tree,
+                block.source_node,
+                block,
+                placement.new_indents[index],
+                placement.new_parents[index],
+            )?;
+        }
+        let destination_root = prepared
+            .blocks
+            .first()
+            .map(|block| block.source_node)
+            .ok_or_else(|| {
                 recovery_required(
                     prepared.request.move_id,
                     "captured relocation subtree is empty",
                 )
-            })?
-        };
+            })?;
         Self::write_destination_proof(
             &tree,
             destination_root,
             prepared.request.move_id,
             request_hash,
+            &prepared.blocks,
         )?;
         prepared.source_doc.commit();
         Ok(())
@@ -1614,6 +1814,7 @@ impl LoroEngine {
             destination_root,
             prepared.request.move_id,
             request_hash,
+            &prepared.blocks,
         )?;
         destination_doc.commit();
         if prepared.destination_created {
@@ -1654,6 +1855,15 @@ impl LoroEngine {
     ) -> SyncResult<bool> {
         if self.destination_snapshot_complete(prepared, request_hash)? {
             return Ok(false);
+        }
+        if let Some(destination_doc) = prepared.destination_doc.as_ref() {
+            let destination_tree = destination_doc.get_tree("blocks");
+            if !captured_destination_nodes_are_rooted(&destination_tree, &prepared.blocks) {
+                return Err(recovery_required(
+                    prepared.request.move_id,
+                    "destination contains a nested duplicate of the captured relocation subtree",
+                ));
+            }
         }
         let same_note = prepared.request.source_note_id == prepared.request.destination_note_id;
         if same_note {
@@ -1749,6 +1959,34 @@ impl LoroEngine {
         replayed: bool,
     ) -> SyncResult<BlockRelocationOutcome> {
         let move_id = intent.request.move_id;
+        let mut prepared = self.prepared_from_intent(&intent).await?;
+        let same_note = intent.request.source_note_id == intent.request.destination_note_id;
+        let moved_bids: Vec<[u8; 16]> = prepared.blocks.iter().map(|block| block.bid).collect();
+        let source_tree = prepared.source_doc.get_tree("blocks");
+        let source_is_unambiguous = if same_note {
+            captured_source_nodes_are_unique(&source_tree, &prepared.blocks)
+        } else {
+            captured_source_nodes_have_no_competitors(&source_tree, &prepared.blocks)
+        };
+        if !source_is_unambiguous {
+            return Err(recovery_required(
+                move_id,
+                "captured source subtree has a competing live block id",
+            ));
+        }
+        let allowed_owners = BTreeSet::from([
+            intent.request.source_note_id,
+            intent.request.destination_note_id,
+        ]);
+        if !self
+            .relocated_bids_have_only_allowed_owners(&moved_bids, &allowed_owners)
+            .await
+        {
+            return Err(recovery_required(
+                move_id,
+                "captured relocation subtree has an owner outside the source and destination",
+            ));
+        }
         if intent.no_op {
             let outcome = intent.outcome(replayed);
             let receipt = RelocationReceipt {
@@ -1771,9 +2009,6 @@ impl LoroEngine {
                 .map_err(|error| preserve_recovery_error(move_id, error))?;
             return Ok(outcome);
         }
-
-        let mut prepared = self.prepared_from_intent(&intent).await?;
-        let same_note = intent.request.source_note_id == intent.request.destination_note_id;
         if intent.phase == RelocationPhase::Prepared {
             self.ensure_destination_snapshot(&mut prepared, intent.request_hash)
                 .await
@@ -1804,13 +2039,13 @@ impl LoroEngine {
                 self.persist_note_boundary(intent.request.source_note_id)
                     .await
                     .map_err(|error| preserve_recovery_error(move_id, error))?;
-                if !self
-                    .captured_source_deleted(&prepared)
-                    .map_err(|error| preserve_recovery_error(move_id, error))?
-                {
+                if !captured_source_bids_are_absent(
+                    &prepared.source_doc.get_tree("blocks"),
+                    &prepared.blocks,
+                ) {
                     return Err(recovery_required(
                         move_id,
-                        "captured source nodes remain live after checked deletion",
+                        "a relocated block id remains live in the source after checked deletion",
                     ));
                 }
             }
@@ -1843,13 +2078,14 @@ impl LoroEngine {
                     .map_err(|error| preserve_recovery_error(move_id, error))?;
             }
             if !same_note
-                && !self
-                    .captured_source_deleted(&prepared)
-                    .map_err(|error| preserve_recovery_error(move_id, error))?
+                && !captured_source_bids_are_absent(
+                    &prepared.source_doc.get_tree("blocks"),
+                    &prepared.blocks,
+                )
             {
                 return Err(recovery_required(
                     move_id,
-                    "captured source nodes remain live before receipt finalization",
+                    "a relocated block id remains live in the source before receipt finalization",
                 ));
             }
         }
@@ -1872,6 +2108,16 @@ impl LoroEngine {
                 &destination_doc,
             )
             .await;
+        }
+        let completed_owners = BTreeSet::from([intent.request.destination_note_id]);
+        if !self
+            .relocated_bids_have_exact_owners(&moved_bids, &completed_owners)
+            .await
+        {
+            return Err(recovery_required(
+                move_id,
+                "completed relocation subtree does not have exactly one destination owner",
+            ));
         }
         let outcome = intent.outcome(replayed);
         let receipt = RelocationReceipt {
@@ -1946,12 +2192,6 @@ impl LoroEngine {
                 "relocation receipt was pruned; move id is stale and cannot be replayed",
             ));
         }
-        if let Some(pending_move_id) = self.overlapping_pending_move(&request).await {
-            return Err(recovery_required(
-                pending_move_id,
-                "another relocation touching these notes requires recovery first",
-            ));
-        }
         if let Some((proof_note_id, proof)) = self.completed_proof_for_move(request.move_id).await {
             if proof.request_hash != hash || proof.root_bid != request.root_bid {
                 return Err(SyncError::RelocationConflict(
@@ -1964,7 +2204,9 @@ impl LoroEngine {
                 ));
             }
             if request.source_note_id != request.destination_note_id {
-                if let Some(prepared) = self.prepared_from_destination_proof(&request, hash).await?
+                if let Some(prepared) = self
+                    .prepared_from_destination_proof(&request, hash, &proof)
+                    .await?
                 {
                     self.persist_note_boundary(request.destination_note_id)
                         .await
@@ -1977,13 +2219,8 @@ impl LoroEngine {
                     return self.complete_intent_under_locks(intent, true).await;
                 }
             }
-            self.validate_owner(
-                &request.root_bid,
-                request.destination_note_id,
-                "proof-bearing destination root",
-            )
-            .await
-            .map_err(|error| recovery_required(request.move_id, error))?;
+            self.validate_completed_destination_subtree(&request, &proof)
+                .await?;
             self.persist_note_boundary(request.destination_note_id)
                 .await
                 .map_err(|error| preserve_recovery_error(request.move_id, error))?;
@@ -1996,6 +2233,32 @@ impl LoroEngine {
         self.checkpoint_after_prepared(intent.request.move_id)
             .await?;
         self.complete_intent_under_locks(intent, false).await
+    }
+
+    async fn relocation_attempt_under_locks(
+        &self,
+        request: BlockRelocationRequest,
+    ) -> LockedRelocationAttempt {
+        match self.read_relocation_record(request.move_id).await {
+            Ok(Some(_)) => {
+                return LockedRelocationAttempt::Completed(self.relocate_under_locks(request).await)
+            }
+            Err(error) => return LockedRelocationAttempt::Completed(Err(error)),
+            Ok(None) => {}
+        }
+        if self
+            .inner
+            .relocation_tombstones
+            .lock()
+            .await
+            .contains_key(&request.move_id)
+        {
+            return LockedRelocationAttempt::Completed(self.relocate_under_locks(request).await);
+        }
+        match self.overlapping_pending_move(&request).await {
+            Some(move_id) => LockedRelocationAttempt::Pending(move_id),
+            None => LockedRelocationAttempt::Completed(self.relocate_under_locks(request).await),
+        }
     }
 
     async fn recover_intent_with_locks(&self, intent: RelocationIntent) -> SyncResult<()> {
@@ -2015,7 +2278,7 @@ impl LoroEngine {
                 None => None,
             };
             let _ownership_guard = self.inner.ownership_transition.lock().await;
-            self.complete_intent_under_locks(intent, true).await?;
+            self.recover_current_intent_under_locks(&intent).await?;
         } else {
             let destination_lock = destination_lock
                 .as_ref()
@@ -2023,9 +2286,84 @@ impl LoroEngine {
             let _destination_guard = destination_lock.lock().await;
             let _source_guard = source_lock.lock().await;
             let _ownership_guard = self.inner.ownership_transition.lock().await;
-            self.complete_intent_under_locks(intent, true).await?;
+            self.recover_current_intent_under_locks(&intent).await?;
         }
         Ok(())
+    }
+
+    async fn recover_current_intent_under_locks(
+        &self,
+        expected: &RelocationIntent,
+    ) -> SyncResult<()> {
+        let move_id = expected.request.move_id;
+        match self.read_relocation_record(move_id).await? {
+            Some(RelocationRecord::Intent(current)) => {
+                if current.request_hash != expected.request_hash
+                    || current.request != expected.request
+                {
+                    return Err(recovery_required(
+                        move_id,
+                        "pending relocation changed while recovery waited for its locks",
+                    ));
+                }
+                self.complete_intent_under_locks(current, true).await?;
+            }
+            Some(RelocationRecord::Receipt(receipt)) => {
+                if receipt.move_id != move_id || receipt.request_hash != expected.request_hash {
+                    return Err(recovery_required(
+                        move_id,
+                        "completed relocation differs from the intent selected for recovery",
+                    ));
+                }
+            }
+            None => {
+                let completed_hash = self
+                    .inner
+                    .relocation_tombstones
+                    .lock()
+                    .await
+                    .get(&move_id)
+                    .copied();
+                if completed_hash != Some(expected.request_hash) {
+                    return Err(recovery_required(
+                        move_id,
+                        "pending relocation record disappeared before recovery",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn recover_pending_move(&self, move_id: [u8; 16]) -> SyncResult<()> {
+        match self.read_relocation_record(move_id).await? {
+            Some(RelocationRecord::Intent(intent)) => self.recover_intent_with_locks(intent).await,
+            Some(RelocationRecord::Receipt(receipt)) if receipt.move_id == move_id => {
+                self.inner.active_relocations.lock().await.remove(&move_id);
+                Ok(())
+            }
+            Some(RelocationRecord::Receipt(_)) => Err(recovery_required(
+                move_id,
+                "relocation record move id changed before recovery",
+            )),
+            None => {
+                if self
+                    .inner
+                    .relocation_tombstones
+                    .lock()
+                    .await
+                    .contains_key(&move_id)
+                {
+                    self.inner.active_relocations.lock().await.remove(&move_id);
+                    Ok(())
+                } else {
+                    Err(recovery_required(
+                        move_id,
+                        "active relocation has no durable intent to recover",
+                    ))
+                }
+            }
+        }
     }
 
     pub(super) async fn recover_persisted_relocations(&self) -> SyncResult<()> {
@@ -2106,22 +2444,32 @@ impl LoroEngine {
         };
         let source_first = request.source_note_id <= request.destination_note_id;
 
-        if source_first {
-            let _source_guard = source_lock.lock().await;
-            let _destination_guard = match destination_lock.as_ref() {
-                Some(lock) => Some(lock.lock().await),
-                None => None,
+        loop {
+            let attempt = if source_first {
+                let _source_guard = source_lock.lock().await;
+                let _destination_guard = match destination_lock.as_ref() {
+                    Some(lock) => Some(lock.lock().await),
+                    None => None,
+                };
+                let _ownership_guard = self.inner.ownership_transition.lock().await;
+                self.relocation_attempt_under_locks(request.clone()).await
+            } else {
+                let destination_lock = destination_lock
+                    .as_ref()
+                    .expect("different note ids always have a destination lock");
+                let _destination_guard = destination_lock.lock().await;
+                let _source_guard = source_lock.lock().await;
+                let _ownership_guard = self.inner.ownership_transition.lock().await;
+                self.relocation_attempt_under_locks(request.clone()).await
             };
-            let _ownership_guard = self.inner.ownership_transition.lock().await;
-            self.relocate_under_locks(request).await
-        } else {
-            let destination_lock = destination_lock
-                .as_ref()
-                .expect("different note ids always have a destination lock");
-            let _destination_guard = destination_lock.lock().await;
-            let _source_guard = source_lock.lock().await;
-            let _ownership_guard = self.inner.ownership_transition.lock().await;
-            self.relocate_under_locks(request).await
+
+            let pending_move_id = match attempt {
+                LockedRelocationAttempt::Pending(move_id) => move_id,
+                LockedRelocationAttempt::Completed(outcome) => return outcome,
+            };
+            self.recover_pending_move(pending_move_id)
+                .await
+                .map_err(|error| preserve_recovery_error(pending_move_id, error))?;
         }
     }
 }

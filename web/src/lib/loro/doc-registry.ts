@@ -52,6 +52,11 @@ export interface RegistryDeps<D extends RegistryDoc> {
    *  the outbound cursor only advances on a true handoff, so ops typed during
    *  a WS outage re-export on the next flush instead of stranding. */
   send(update: RegistryUpdate): boolean;
+  /** Queue a connection-level durable barrier for entries whose optimistic
+   *  replay still needs server-applied proof. */
+  requestBarrierRetry?(slugs: readonly string[]): void;
+  /** Remove entries from that retry queue once any barrier proves them. */
+  completeBarrierRetry?(slugs: readonly string[]): void;
 }
 
 interface Entry<D extends RegistryDoc> {
@@ -73,14 +78,28 @@ interface Entry<D extends RegistryDoc> {
    *  successful flush. Flushes are no-ops on clean docs — remote-only imports
    *  must never trigger an outbound re-broadcast on release. */
   dirty: boolean;
+  /** Monotonic local-mutation counter. Server echoes and remote imports may
+   *  advance the CRDT version while a barrier is pending, but only a local
+   *  mutation invalidates the captured pre-move editing boundary. */
+  localMutationVersion: number;
   flushHandle: unknown | null;
+  /** Unsettled server barriers retain zero-ref entries until their durable
+   *  acknowledgement or rollback can finish normal release cleanup. */
+  barrierHolds: number;
+  /** A failed or superseded barrier exposed unacknowledged local history.
+   *  A zero-ref doc stays parked until a later positive barrier proves it. */
+  requiresBarrierAck: boolean;
 }
 
 export interface RegistryBarrierPreparation {
   /** Advance each affected note only to the version captured before the
    *  barrier frame was sent. Edits authored while the ack is in flight remain
    *  outside the checkpoint and ride the next barrier. */
-  acknowledge(): void;
+  acknowledge(): boolean;
+  /** Roll every affected note back to the durable export checkpoint. This is
+   *  idempotent and MUST run when the captured socket/barrier does not receive
+   *  a positive acknowledgement. */
+  reject(): void;
 }
 
 function hex(bytes: Uint8Array): string {
@@ -119,7 +138,10 @@ export class NoteDocRegistry<D extends RegistryDoc> {
       lastSentVV: null,
       lastAckedVV: null,
       dirty: false,
+      localMutationVersion: 0,
       flushHandle: null,
+      barrierHolds: 0,
+      requiresBarrierAck: false,
     };
     this.#entries.set(slug, entry);
     // Baseline the outbound cursor at the doc's post-bootstrap version so the
@@ -139,18 +161,27 @@ export class NoteDocRegistry<D extends RegistryDoc> {
   /** Ref-counted close. Flushes pending outbound ops before the final close.
    *  If that flush cannot hand off (WS down), the entry is PARKED at zero refs
    *  instead of closed — its ops are the only copy of the user's last edits —
-   *  and drained by the next flushAll (the layout calls it on WS reconnect). */
+   *  and drained by the next flushAll (the layout calls it on WS reconnect).
+   *  An unsettled barrier likewise retains the zero-ref entry until its ack or
+   *  rollback resumes this same flush/close path. */
   release(slug: string): void {
     const entry = this.#entries.get(slug);
     if (!entry) return;
     entry.refs -= 1;
     if (entry.refs > 0) return;
+    this.#settleReleasedEntry(slug, entry);
+  }
+
+  #settleReleasedEntry(slug: string, entry: Entry<D>): void {
+    if (entry.refs > 0 || this.#entries.get(slug) !== entry) return;
     if (entry.flushHandle !== null) {
       this.#deps.cancelFlush(entry.flushHandle);
       entry.flushHandle = null;
     }
+    if (entry.barrierHolds > 0) return;
     this.#flushEntry(entry);
     if (entry.dirty) return; // parked: unsent local ops survive until reconnect
+    if (entry.requiresBarrierAck) return;
     this.#closeEntry(slug, entry);
   }
 
@@ -187,6 +218,7 @@ export class NoteDocRegistry<D extends RegistryDoc> {
     if (!entry) return false;
     const ok = entry.doc.spliceBlock(bid, utf16Offset, utf16DeleteLen, insert);
     if (ok) {
+      entry.localMutationVersion += 1;
       entry.dirty = true;
       this.#scheduleFlush(slug, entry);
     }
@@ -232,7 +264,13 @@ export class NoteDocRegistry<D extends RegistryDoc> {
     const handedOff = this.#flushEntry(entry);
     // A parked entry (zero refs, kept alive only for its unsent ops) closes
     // as soon as a flush finally hands its ops off.
-    if (!entry.dirty && entry.refs <= 0 && this.#entries.get(slug) === entry) {
+    if (
+      !entry.dirty
+      && entry.refs <= 0
+      && entry.barrierHolds === 0
+      && !entry.requiresBarrierAck
+      && this.#entries.get(slug) === entry
+    ) {
       this.#closeEntry(slug, entry);
     }
     return handedOff;
@@ -278,14 +316,22 @@ export class NoteDocRegistry<D extends RegistryDoc> {
    * Synchronously hand every affected note's cumulative unacknowledged Loro
    * history to one captured WebSocket. This cancels any scheduled rAF flush,
    * re-exports from the server-acknowledged checkpoint (not the optimistic
-   * handoff cursor), and returns a commit callback that MUST run only after a
-   * matching positive server barrier acknowledgement.
+   * handoff cursor), and returns a transaction that commits only after a
+   * matching positive server barrier acknowledgement or rolls back otherwise.
    */
   prepareServerBarrier(
     slugs: Iterable<string>,
     send: (update: RegistryUpdate) => boolean,
   ): RegistryBarrierPreparation | null {
-    const checkpoints: Array<{ entry: Entry<D>; version: unknown | null }> = [];
+    const checkpoints: Array<{
+      slug: string;
+      entry: Entry<D>;
+      version: unknown | null;
+      retryVV: unknown | null;
+      localMutationVersion: number;
+      noteId16: Uint8Array;
+      bytes: Uint8Array;
+    }> = [];
     for (const slug of new Set(slugs)) {
       const entry = this.#entries.get(slug);
       if (!entry) return null;
@@ -297,22 +343,103 @@ export class NoteDocRegistry<D extends RegistryDoc> {
       if (!noteId16) return null;
       const version = entry.doc.currentVersion();
       const bytes = entry.doc.exportSince(entry.lastAckedVV);
+      checkpoints.push({
+        slug,
+        entry,
+        version,
+        retryVV: entry.lastAckedVV,
+        localMutationVersion: entry.localMutationVersion,
+        noteId16,
+        bytes,
+      });
+    }
+
+    for (const { entry } of checkpoints) entry.barrierHolds += 1;
+
+    let settled = false;
+    const releaseHolds = () => {
+      for (const { entry } of checkpoints) entry.barrierHolds -= 1;
+      for (const { slug, entry } of checkpoints) this.#settleReleasedEntry(slug, entry);
+    };
+    const reject = () => {
+      if (settled) return;
+      settled = true;
+      const retrySlugs: string[] = [];
+      for (const { entry, retryVV, bytes, localMutationVersion } of checkpoints) {
+        const hasUnacknowledgedChanges = bytes.length > 0
+          || entry.localMutationVersion !== localMutationVersion
+          || entry.requiresBarrierAck;
+        // A WebSocket handoff is optimistic. Rewind to the version that the
+        // failed barrier was trying to prove so an ordinary flush re-exports
+        // the complete unacknowledged delta, including frames sent before
+        // this barrier attempt. Loro updates are idempotent on replay.
+        entry.lastSentVV = retryVV;
+        entry.dirty = hasUnacknowledgedChanges;
+        entry.requiresBarrierAck = hasUnacknowledgedChanges;
+      }
+      releaseHolds();
+      for (const { slug, entry } of checkpoints) {
+        if (!entry.requiresBarrierAck) continue;
+        retrySlugs.push(slug);
+        if (entry.refs > 0 && entry.dirty && this.#entries.get(slug) === entry) {
+          this.#scheduleFlush(slug, entry);
+        }
+      }
+      if (retrySlugs.length > 0) this.#deps.requestBarrierRetry?.(retrySlugs);
+    };
+
+    for (const { entry, version, noteId16, bytes } of checkpoints) {
       if (bytes.length > 0) {
-        if (!send({ doc: noteId16, updateBytes: bytes })) return null;
+        let handedOff = false;
+        try {
+          handedOff = send({ doc: noteId16, updateBytes: bytes });
+        } catch (error) {
+          reject();
+          throw error;
+        }
+        if (!handedOff) {
+          reject();
+          return null;
+        }
         // The bytes really entered the captured socket, so ordinary flushes
         // need not resend them. The ack checkpoint deliberately stays put.
         entry.lastSentVV = version;
         entry.dirty = false;
       }
-      checkpoints.push({ entry, version });
     }
-    let acknowledged = false;
+
     return {
       acknowledge: () => {
-        if (acknowledged) return;
-        acknowledged = true;
-        for (const { entry, version } of checkpoints) entry.lastAckedVV = version;
+        if (settled) return true;
+        settled = true;
+        let unchanged = true;
+        const retrySlugs: string[] = [];
+        const completedSlugs: string[] = [];
+        for (const { slug, entry, version, localMutationVersion } of checkpoints) {
+          entry.lastAckedVV = version;
+          const changedAfterCapture = entry.localMutationVersion !== localMutationVersion;
+          if (changedAfterCapture) {
+            entry.lastSentVV = version;
+            entry.dirty = true;
+            entry.requiresBarrierAck = true;
+            retrySlugs.push(slug);
+            unchanged = false;
+          } else {
+            entry.requiresBarrierAck = false;
+            completedSlugs.push(slug);
+          }
+        }
+        releaseHolds();
+        for (const { slug, entry } of checkpoints) {
+          if (entry.refs > 0 && entry.dirty && this.#entries.get(slug) === entry) {
+            this.#scheduleFlush(slug, entry);
+          }
+        }
+        if (completedSlugs.length > 0) this.#deps.completeBarrierRetry?.(completedSlugs);
+        if (retrySlugs.length > 0) this.#deps.requestBarrierRetry?.(retrySlugs);
+        return unchanged;
       },
+      reject,
     };
   }
 
@@ -376,6 +503,7 @@ export class NoteDocRegistry<D extends RegistryDoc> {
     // Ship the inverse ops immediately so the persisted note reflects the
     // undo even if the user navigates away right after.
     if (did) {
+      entry.localMutationVersion += 1;
       entry.dirty = true;
       this.flush(slug);
     }

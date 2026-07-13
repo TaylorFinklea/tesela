@@ -11,8 +11,10 @@ export function stableBlockKey(block: Pick<ParsedBlock, "id" | "bid">): string {
 
 export type FocusRestorationOptions<T> = {
   maxAttempts: number;
+  stableAttempts?: number;
   findTarget: () => T | null | Promise<T | null>;
   waitForRetry: () => Promise<void>;
+  isTargetFocused?: (target: T) => boolean;
   focusTarget: (target: T) => void;
 };
 
@@ -50,23 +52,32 @@ export function createFocusRestorationController(): FocusRestorationController {
       claim: FocusRestorationClaim,
       {
         maxAttempts,
+        stableAttempts = 1,
         findTarget,
         waitForRetry,
+        isTargetFocused,
         focusTarget,
       }: FocusRestorationOptions<T>,
     ): Promise<boolean> {
+      let stable = 0;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         if (!owns(claim)) return false;
         const target = await findTarget();
         if (target !== null) {
           if (!owns(claim)) return false;
-          focusTarget(target);
-          return true;
+          if (!isTargetFocused?.(target)) {
+            focusTarget(target);
+            stable = 1;
+          } else {
+            stable += 1;
+          }
+          if (stable >= stableAttempts) return true;
+        } else {
+          stable = 0;
         }
-        if (attempt + 1 < maxAttempts) {
-          if (!owns(claim)) return false;
-          await waitForRetry();
-        }
+        if (attempt + 1 >= maxAttempts) break;
+        if (!owns(claim)) return false;
+        await waitForRetry();
       }
       return false;
     },
@@ -88,6 +99,25 @@ export type BlockMoveRequest = {
   target_bid: string | null;
   placement: MovePlacement;
 };
+
+export function isBlockMoveRequest(value: unknown): value is BlockMoveRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const request = value as Partial<BlockMoveRequest>;
+  if (
+    typeof request.move_id !== "string"
+    || !UUID_PATTERN.test(request.move_id)
+    || typeof request.source_note_id !== "string"
+    || request.source_note_id.length === 0
+    || typeof request.root_bid !== "string"
+    || !UUID_PATTERN.test(request.root_bid)
+    || typeof request.destination_note_id !== "string"
+    || request.destination_note_id.length === 0
+    || !["before", "inside", "after", "append"].includes(request.placement ?? "")
+  ) return false;
+  return request.placement === "append"
+    ? request.target_bid === null
+    : typeof request.target_bid === "string" && UUID_PATTERN.test(request.target_bid);
+}
 
 export type BlockMoveSession = {
   phase: "idle" | "selecting" | "pending" | "retryable";
@@ -161,6 +191,55 @@ export type BlockMoveResponse<TNote extends { id: string }> = {
   move_id: string;
   notes: TNote[];
 };
+
+export type BlockMoveFailureClassification =
+  | { kind: "definitive"; message: string; blockingMoveId: null }
+  | { kind: "retryable"; message: string; blockingMoveId: null }
+  | { kind: "blocked-by-other"; message: string; blockingMoveId: string }
+  | { kind: "ambiguous"; message: string | null; blockingMoveId: null };
+
+export function classifyBlockMoveFailure(
+  status: number | undefined,
+  body: string | undefined,
+  expectedMoveId: string,
+): BlockMoveFailureClassification {
+  let parsed: { error?: unknown; move_id?: unknown; retry_safe?: unknown };
+  try {
+    parsed = JSON.parse(body ?? "") as typeof parsed;
+  } catch {
+    return { kind: "ambiguous", message: null, blockingMoveId: null };
+  }
+  const message = typeof parsed.error === "string" ? parsed.error : null;
+  if ((status === 400 || status === 404 || status === 409) && message) {
+    return { kind: "definitive", message, blockingMoveId: null };
+  }
+  if (
+    status === 503
+    && parsed.retry_safe === true
+    && typeof parsed.move_id === "string"
+    && UUID_PATTERN.test(parsed.move_id)
+  ) {
+    return parsed.move_id === expectedMoveId
+      ? {
+          kind: "retryable",
+          message: message ?? "Block move requires an exact-request retry",
+          blockingMoveId: null,
+        }
+      : {
+          kind: "blocked-by-other",
+          message: message ?? "An earlier block move requires recovery",
+          blockingMoveId: parsed.move_id,
+        };
+  }
+  return { kind: "ambiguous", message, blockingMoveId: null };
+}
+
+export function isDefinitiveBlockMoveRejection(
+  status: number | undefined,
+  body: string | undefined,
+): boolean {
+  return classifyBlockMoveFailure(status, body, "").kind === "definitive";
+}
 
 export type BlockMoveExecutorDependencies = {
   post: <T>(path: string, body: unknown, signal?: AbortSignal) => Promise<T>;

@@ -159,6 +159,19 @@ async fn live_bid_count(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16]) -
         .count()
 }
 
+async fn all_live_bid_count(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16]) -> usize {
+    let docs = engine.inner.docs.read().await;
+    let Some(doc) = docs.get(&note_id) else {
+        return 0;
+    };
+    let tree = doc.get_tree("blocks");
+    tree.nodes()
+        .into_iter()
+        .filter(|node| !matches!(tree.is_node_deleted(node), Ok(true)))
+        .filter(|node| read_meta_str(&tree, *node, "block_id") == Some(hex_id(&bid)))
+        .count()
+}
+
 async fn delete_live_bid(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16]) {
     let doc = engine.doc_for_note_mut(note_id).await;
     let tree = doc.get_tree("blocks");
@@ -220,6 +233,17 @@ async fn overwrite_relocation_proof(
     doc.commit();
 }
 
+async fn remove_relocation_subtree_proof(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16]) {
+    let doc = engine.doc_for_note_mut(note_id).await;
+    let tree = doc.get_tree("blocks");
+    let node = find_node_by_block_id(&tree, &hex_id(&bid)).unwrap();
+    tree.get_meta(node)
+        .unwrap()
+        .delete("relocation_subtree_bids")
+        .unwrap();
+    doc.commit();
+}
+
 async fn insert_duplicate_bid(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 16], text: &str) {
     let doc = engine.doc_for_note_mut(note_id).await;
     let tree = doc.get_tree("blocks");
@@ -230,6 +254,26 @@ async fn insert_duplicate_bid(engine: &LoroEngine, note_id: [u8; 16], bid: [u8; 
     meta.insert("parent", "").unwrap();
     write_block_text(&meta, text).unwrap();
     doc.commit();
+}
+
+async fn insert_nested_duplicate_bid(
+    engine: &LoroEngine,
+    note_id: [u8; 16],
+    parent_bid: [u8; 16],
+    bid: [u8; 16],
+    text: &str,
+) {
+    let doc = engine.doc_for_note_mut(note_id).await;
+    let tree = doc.get_tree("blocks");
+    let parent = find_node_by_block_id(&tree, &hex_id(&parent_bid)).unwrap();
+    let nested = tree.create(TreeParentId::Node(parent)).unwrap();
+    let meta = tree.get_meta(nested).unwrap();
+    meta.insert("block_id", hex_id(&bid)).unwrap();
+    meta.insert("indent_level", 1i64).unwrap();
+    meta.insert("parent", hex_id(&parent_bid)).unwrap();
+    write_block_text(&meta, text).unwrap();
+    doc.commit();
+    engine.refresh_note_derived(note_id, &doc).await;
 }
 
 async fn seed_duplicate_owner(
@@ -2416,7 +2460,7 @@ async fn same_note_retry_reorders_an_anchorless_captured_subtree() {
 }
 
 #[tokio::test]
-async fn same_note_retry_rebuilds_when_a_captured_bid_has_a_live_duplicate() {
+async fn same_note_destination_durable_retry_rejects_a_captured_bid_duplicate() {
     let root_dir = tempfile::tempdir().unwrap();
     let snapshot_dir = root_dir.path().join("snapshots");
     let materialize_dir = root_dir.path().join("notes");
@@ -2446,19 +2490,66 @@ async fn same_note_retry_rebuilds_when_a_captured_bid_has_a_live_duplicate() {
         engine.relocate_subtree(request.clone()).await.unwrap_err(),
         request.move_id,
     );
-    insert_duplicate_bid(&engine, note, root, "duplicate-root").await;
-    assert_eq!(live_bid_count(&engine, note, root).await, 2);
+    insert_nested_duplicate_bid(&engine, note, target, child, "hidden duplicate").await;
+    assert_eq!(all_live_bid_count(&engine, note, child).await, 2);
+    let rendered_before = engine.render_note_full(note).await;
+    let exported_before = engine.export_doc_update(note, None).await;
 
-    assert_eq!(
-        engine.relocate_subtree(request).await.unwrap().status,
-        BlockRelocationStatus::Replayed
+    for _ in 0..2 {
+        assert_recovery_required(
+            engine.relocate_subtree(request.clone()).await.unwrap_err(),
+            request.move_id,
+        );
+        assert_eq!(engine.render_note_full(note).await, rendered_before);
+        assert_eq!(engine.export_doc_update(note, None).await, exported_before);
+    }
+    assert_eq!(all_live_bid_count(&engine, note, child).await, 2);
+    assert!(engine.inner.relocation_tombstones.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn same_note_no_op_retry_rejects_a_captured_bid_duplicate() {
+    let device = DeviceId::from_bytes([0x56; 16]);
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note = [0xaa; 16];
+    let root = [0xab; 16];
+    let child = [0xac; 16];
+    let target = [0xad; 16];
+    seed_note(
+        &engine,
+        note,
+        "2026-07-12",
+        [
+            stamped_line(0, "moved-root", root),
+            stamped_line(1, "moved-child", child),
+            stamped_line(0, "target", target),
+        ]
+        .concat(),
+    )
+    .await;
+    let request = relocation_request(note, root, note, Some(target), MovePlacement::Before);
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterPrepared)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
     );
-    assert_eq!(live_bid_count(&engine, note, root).await, 1);
-    assert_eq!(live_bid_count(&engine, note, child).await, 1);
-    assert_eq!(
-        block_texts(&engine, note).await,
-        vec!["moved-root", "moved-child", "target"]
-    );
+    insert_nested_duplicate_bid(&engine, note, target, child, "hidden duplicate").await;
+    assert_eq!(all_live_bid_count(&engine, note, child).await, 2);
+    let rendered_before = engine.render_note_full(note).await;
+    let exported_before = engine.export_doc_update(note, None).await;
+
+    for _ in 0..2 {
+        assert_recovery_required(
+            engine.relocate_subtree(request.clone()).await.unwrap_err(),
+            request.move_id,
+        );
+        assert_eq!(engine.render_note_full(note).await, rendered_before);
+        assert_eq!(engine.export_doc_update(note, None).await, exported_before);
+    }
+    assert_eq!(all_live_bid_count(&engine, note, child).await, 2);
+    assert!(engine.inner.relocation_tombstones.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -2552,7 +2643,7 @@ async fn prepared_retry_reconciles_partial_destination_authoring_without_duplica
 }
 
 #[tokio::test]
-async fn pending_intent_rejects_an_overlapping_move_with_another_id() {
+async fn new_move_recovers_an_overlapping_pending_intent_before_applying() {
     let root_dir = tempfile::tempdir().unwrap();
     let snapshot_dir = root_dir.path().join("snapshots");
     let materialize_dir = root_dir.path().join("notes");
@@ -2560,18 +2651,31 @@ async fn pending_intent_rejects_an_overlapping_move_with_another_id() {
     let source = [0x26; 16];
     let first_destination = [0x27; 16];
     let second_destination = [0x28; 16];
-    let root = [0x29; 16];
-    let child = [0x2a; 16];
+    let first_root = [0x29; 16];
+    let first_child = [0x2a; 16];
+    let second_root = [0x2d; 16];
+    let second_child = [0x2e; 16];
     let first_target = [0x2b; 16];
     let second_target = [0x2c; 16];
     let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
-    seed_recovery_pair(
+    seed_note(
         &engine,
         source,
+        "2026-07-12",
+        [
+            stamped_line(0, "first-root", first_root),
+            stamped_line(1, "first-child", first_child),
+            stamped_line(0, "second-root", second_root),
+            stamped_line(1, "second-child", second_child),
+        ]
+        .concat(),
+    )
+    .await;
+    seed_note(
+        &engine,
         first_destination,
-        root,
-        child,
-        first_target,
+        "2026-07-11",
+        stamped_line(0, "first-target", first_target),
     )
     .await;
     seed_note(
@@ -2583,14 +2687,14 @@ async fn pending_intent_rejects_an_overlapping_move_with_another_id() {
     .await;
     let first = relocation_request(
         source,
-        root,
+        first_root,
         first_destination,
         Some(first_target),
         MovePlacement::After,
     );
     let mut second = relocation_request(
         source,
-        root,
+        second_root,
         second_destination,
         Some(second_target),
         MovePlacement::After,
@@ -2605,17 +2709,39 @@ async fn pending_intent_rejects_an_overlapping_move_with_another_id() {
         first.move_id,
     );
 
-    assert_recovery_required(
-        engine.relocate_subtree(second).await.unwrap_err(),
-        first.move_id,
+    assert_eq!(
+        engine
+            .relocate_subtree(second.clone())
+            .await
+            .unwrap()
+            .status,
+        BlockRelocationStatus::Applied
+    );
+    assert_eq!(block_texts(&engine, source).await, Vec::<String>::new());
+    assert_eq!(
+        block_texts(&engine, first_destination).await,
+        vec!["first-target", "first-root", "first-child"]
+    );
+    assert_eq!(
+        block_texts(&engine, second_destination).await,
+        vec!["second-target", "second-root", "second-child"]
+    );
+    assert_eq!(
+        engine.relocate_subtree(first).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert_eq!(
+        engine.relocate_subtree(second).await.unwrap().status,
+        BlockRelocationStatus::Replayed
     );
     drop(engine);
 
     let recovered =
         open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
-    assert!(!nested_block_is_live(&recovered, source, root).await);
-    assert!(nested_block_is_live(&recovered, first_destination, root).await);
-    assert!(!nested_block_is_live(&recovered, second_destination, root).await);
+    assert!(!nested_block_is_live(&recovered, source, first_root).await);
+    assert!(!nested_block_is_live(&recovered, source, second_root).await);
+    assert!(nested_block_is_live(&recovered, first_destination, first_root).await);
+    assert!(nested_block_is_live(&recovered, second_destination, second_root).await);
 }
 
 #[tokio::test]
@@ -2762,6 +2888,571 @@ async fn destination_only_peer_retry_finishes_source_deletion_durably() {
         open_persistent_relocation_engine(peer_device, &snapshot_dir, &materialize_dir).await;
     assert!(!nested_block_is_live(&reopened, source, root).await);
     assert!(nested_block_is_live(&reopened, destination, root).await);
+    assert_eq!(
+        reopened.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+}
+
+#[tokio::test]
+async fn proof_only_peer_replays_after_the_complete_subtree_converges() {
+    let origin_device = DeviceId::from_bytes([0xd0; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xd1; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xd2; 16];
+    let destination = [0xd3; 16];
+    let root = [0xd4; 16];
+    let child = [0xd5; 16];
+    let target = [0xd6; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xd7; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    for (note_id, version) in [(source, source_before), (destination, destination_before)] {
+        let delta = origin
+            .export_doc_update(note_id, Some(&version))
+            .await
+            .unwrap();
+        peer.import_doc_update(note_id, &delta).await.unwrap();
+    }
+
+    assert_eq!(
+        peer.relocate_subtree(request).await.unwrap().status,
+        BlockRelocationStatus::Replayed
+    );
+    assert!(!nested_block_is_live(&peer, source, root).await);
+    assert!(nested_block_is_live(&peer, destination, root).await);
+    assert!(nested_block_is_live(&peer, destination, child).await);
+}
+
+#[tokio::test]
+async fn destination_only_peer_retry_rejects_a_third_note_owner() {
+    let origin_device = DeviceId::from_bytes([0xa8; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xa9; 16]);
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let source = [0xaa; 16];
+    let destination = [0xab; 16];
+    let third = [0xac; 16];
+    let root = [0xad; 16];
+    let child = [0xae; 16];
+    let target = [0xaf; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    let peer =
+        open_persistent_relocation_engine(peer_device, &snapshot_dir, &materialize_dir).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xb0; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    let destination_delta = origin
+        .export_doc_update(destination, Some(&destination_before))
+        .await
+        .unwrap();
+    peer.import_doc_update(destination, &destination_delta)
+        .await
+        .unwrap();
+    seed_note(&peer, third, "third", stamped_line(0, "duplicate", root)).await;
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&root),
+        Some(&BTreeSet::from([source, destination, third]))
+    );
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert!(nested_block_is_live(&peer, source, root).await);
+    assert!(nested_block_is_live(&peer, destination, root).await);
+    assert!(nested_block_is_live(&peer, third, root).await);
+}
+
+#[tokio::test]
+async fn proof_only_replay_rejects_a_duplicate_descendant_after_source_root_deletion() {
+    let origin_device = DeviceId::from_bytes([0xb1; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xb2; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xb3; 16];
+    let destination = [0xb4; 16];
+    let root = [0xb5; 16];
+    let child = [0xb6; 16];
+    let target = [0xb7; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xb8; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    for (note_id, version) in [(source, source_before), (destination, destination_before)] {
+        let delta = origin
+            .export_doc_update(note_id, Some(&version))
+            .await
+            .unwrap();
+        peer.import_doc_update(note_id, &delta).await.unwrap();
+    }
+    seed_note(
+        &peer,
+        source,
+        "2026-07-12",
+        stamped_line(0, "orphaned duplicate child", child),
+    )
+    .await;
+    assert!(!nested_block_is_live(&peer, source, root).await);
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&child),
+        Some(&BTreeSet::from([source, destination]))
+    );
+    let before = relocation_render_pair(&peer, source, destination).await;
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert_eq!(
+        relocation_render_pair(&peer, source, destination).await,
+        before
+    );
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&child),
+        Some(&BTreeSet::from([source, destination]))
+    );
+}
+
+#[tokio::test]
+async fn proof_only_replay_rejects_a_duplicate_descendant_moved_outside_the_root() {
+    let origin_device = DeviceId::from_bytes([0xb9; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xba; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xbb; 16];
+    let destination = [0xbc; 16];
+    let root = [0xbd; 16];
+    let child = [0xbe; 16];
+    let target = [0xbf; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xc0; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    for (note_id, version) in [(source, source_before), (destination, destination_before)] {
+        let delta = origin
+            .export_doc_update(note_id, Some(&version))
+            .await
+            .unwrap();
+        peer.import_doc_update(note_id, &delta).await.unwrap();
+    }
+    seed_note(
+        &peer,
+        source,
+        "2026-07-12",
+        stamped_line(0, "orphaned duplicate child", child),
+    )
+    .await;
+    set_block_structure(&peer, destination, child, 0, None).await;
+    assert!(!nested_block_is_live(&peer, source, root).await);
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&child),
+        Some(&BTreeSet::from([source, destination]))
+    );
+    let before = relocation_render_pair(&peer, source, destination).await;
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert_eq!(
+        relocation_render_pair(&peer, source, destination).await,
+        before
+    );
+    assert_eq!(
+        peer.inner.block_index.read().await.get(&child),
+        Some(&BTreeSet::from([source, destination]))
+    );
+}
+
+#[tokio::test]
+async fn proof_only_replay_rejects_a_nested_duplicate_inside_the_destination_note() {
+    let origin_device = DeviceId::from_bytes([0xd8; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xd9; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xda; 16];
+    let destination = [0xdb; 16];
+    let root = [0xdc; 16];
+    let child = [0xdd; 16];
+    let target = [0xde; 16];
+    let spare = [0xdf; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xe0; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    for (note_id, version) in [(source, source_before), (destination, destination_before)] {
+        let delta = origin
+            .export_doc_update(note_id, Some(&version))
+            .await
+            .unwrap();
+        peer.import_doc_update(note_id, &delta).await.unwrap();
+    }
+    upsert_block(&peer, destination, spare, "spare", None).await;
+    insert_nested_duplicate_bid(
+        &peer,
+        destination,
+        spare,
+        child,
+        "hidden destination duplicate",
+    )
+    .await;
+    assert_eq!(all_live_bid_count(&peer, destination, child).await, 2);
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert_eq!(all_live_bid_count(&peer, destination, child).await, 2);
+}
+
+#[tokio::test]
+async fn source_present_proof_recovery_rejects_a_nested_source_duplicate() {
+    let origin_device = DeviceId::from_bytes([0xe1; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xe2; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xe3; 16];
+    let destination = [0xe4; 16];
+    let root = [0xe5; 16];
+    let child = [0xe6; 16];
+    let target = [0xe7; 16];
+    let spare = [0xe8; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xe9; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    let destination_delta = origin
+        .export_doc_update(destination, Some(&destination_before))
+        .await
+        .unwrap();
+    peer.import_doc_update(destination, &destination_delta)
+        .await
+        .unwrap();
+    upsert_block(&peer, source, spare, "spare", None).await;
+    insert_nested_duplicate_bid(&peer, source, spare, child, "hidden source duplicate").await;
+    assert_eq!(all_live_bid_count(&peer, source, child).await, 2);
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert!(nested_block_is_live(&peer, source, root).await);
+    assert_eq!(all_live_bid_count(&peer, source, child).await, 2);
+}
+
+#[tokio::test]
+async fn fresh_relocation_rejects_a_nested_duplicate_inside_the_source_note() {
+    let device = DeviceId::from_bytes([0xea; 16]);
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let source = [0xeb; 16];
+    let destination = [0xec; 16];
+    let root = [0xed; 16];
+    let child = [0xee; 16];
+    let target = [0xef; 16];
+    let spare = [0xf0; 16];
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xf1; 16];
+
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    upsert_block(&engine, source, spare, "spare", None).await;
+    insert_nested_duplicate_bid(&engine, source, spare, child, "hidden source duplicate").await;
+    assert_eq!(all_live_bid_count(&engine, source, child).await, 2);
+    let before = relocation_render_pair(&engine, source, destination).await;
+
+    let error = engine.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(error, SyncError::RelocationRejected(_)));
+    assert_eq!(
+        relocation_render_pair(&engine, source, destination).await,
+        before
+    );
+    assert_eq!(all_live_bid_count(&engine, source, child).await, 2);
+    assert_eq!(all_live_bid_count(&engine, destination, child).await, 0);
+}
+
+#[tokio::test]
+async fn durable_retry_rejects_a_nested_duplicate_inside_the_source_note() {
+    for (case, failpoint, destination_has_subtree) in [
+        (0xf2, RelocationFailpoint::AfterPrepared, false),
+        (0xf3, RelocationFailpoint::AfterDestinationDurable, true),
+    ] {
+        let device = DeviceId::from_bytes([case; 16]);
+        let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+        let source = [0xf4; 16];
+        let destination = [0xf5; 16];
+        let root = [0xf6; 16];
+        let child = [0xf7; 16];
+        let target = [0xf8; 16];
+        let spare = [0xf9; 16];
+        let mut request = relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::After,
+        );
+        request.move_id = [case.wrapping_add(1); 16];
+
+        seed_recovery_pair(&engine, source, destination, root, child, target).await;
+        upsert_block(&engine, source, spare, "spare", None).await;
+        engine.inject_relocation_failure_once(failpoint).await;
+        assert_recovery_required(
+            engine.relocate_subtree(request.clone()).await.unwrap_err(),
+            request.move_id,
+        );
+        insert_nested_duplicate_bid(&engine, source, spare, child, "hidden source duplicate").await;
+        assert_eq!(all_live_bid_count(&engine, source, child).await, 2);
+        assert_eq!(
+            all_live_bid_count(&engine, destination, child).await,
+            usize::from(destination_has_subtree),
+        );
+        let before = relocation_render_pair(&engine, source, destination).await;
+
+        for _ in 0..2 {
+            assert_recovery_required(
+                engine.relocate_subtree(request.clone()).await.unwrap_err(),
+                request.move_id,
+            );
+            assert_eq!(
+                relocation_render_pair(&engine, source, destination).await,
+                before
+            );
+        }
+        assert_eq!(all_live_bid_count(&engine, source, child).await, 2);
+        assert_eq!(
+            all_live_bid_count(&engine, destination, child).await,
+            usize::from(destination_has_subtree),
+        );
+    }
+}
+
+#[tokio::test]
+async fn durable_retry_rejects_a_nested_duplicate_inside_the_destination_note() {
+    for (case, failpoint, destination_count) in [
+        (0xfa, RelocationFailpoint::AfterPrepared, 1),
+        (0xfb, RelocationFailpoint::AfterDestinationDurable, 2),
+    ] {
+        let device = DeviceId::from_bytes([case; 16]);
+        let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+        let source = [0xc1; 16];
+        let destination = [0xc2; 16];
+        let root = [0xc3; 16];
+        let child = [0xc4; 16];
+        let target = [0xc5; 16];
+        let spare = [0xc6; 16];
+        let mut request = relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::After,
+        );
+        request.move_id = [case.wrapping_add(1); 16];
+
+        seed_recovery_pair(&engine, source, destination, root, child, target).await;
+        upsert_block(&engine, destination, spare, "spare", None).await;
+        engine.inject_relocation_failure_once(failpoint).await;
+        assert_recovery_required(
+            engine.relocate_subtree(request.clone()).await.unwrap_err(),
+            request.move_id,
+        );
+        insert_nested_duplicate_bid(
+            &engine,
+            destination,
+            spare,
+            child,
+            "hidden destination duplicate",
+        )
+        .await;
+        assert_eq!(all_live_bid_count(&engine, source, child).await, 1);
+        assert_eq!(
+            all_live_bid_count(&engine, destination, child).await,
+            destination_count,
+        );
+        let rendered_before = relocation_render_pair(&engine, source, destination).await;
+        let exported_before = relocation_export_pair(&engine, source, destination).await;
+
+        for _ in 0..2 {
+            assert_recovery_required(
+                engine.relocate_subtree(request.clone()).await.unwrap_err(),
+                request.move_id,
+            );
+            assert_eq!(
+                relocation_render_pair(&engine, source, destination).await,
+                rendered_before,
+            );
+            assert_eq!(
+                relocation_export_pair(&engine, source, destination).await,
+                exported_before,
+            );
+        }
+        assert_eq!(all_live_bid_count(&engine, source, child).await, 1);
+        assert_eq!(
+            all_live_bid_count(&engine, destination, child).await,
+            destination_count,
+        );
+        assert!(engine.inner.relocation_tombstones.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn proof_only_replay_fails_closed_for_legacy_proof_without_subtree_bids() {
+    let origin_device = DeviceId::from_bytes([0xc1; 16]);
+    let origin = LoroEngine::new(origin_device, Arc::new(Hlc::new(origin_device)));
+    let peer_device = DeviceId::from_bytes([0xc2; 16]);
+    let peer = LoroEngine::new(peer_device, Arc::new(Hlc::new(peer_device)));
+    let source = [0xc3; 16];
+    let destination = [0xc4; 16];
+    let root = [0xc5; 16];
+    let child = [0xc6; 16];
+    let target = [0xc7; 16];
+    seed_recovery_pair(&origin, source, destination, root, child, target).await;
+    seed_relocation_peer_from(&origin, &peer, source, destination).await;
+    let source_before = origin.doc_version(source).await.unwrap();
+    let destination_before = origin.doc_version(destination).await.unwrap();
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xc8; 16];
+
+    origin.relocate_subtree(request.clone()).await.unwrap();
+    for (note_id, version) in [(source, source_before), (destination, destination_before)] {
+        let delta = origin
+            .export_doc_update(note_id, Some(&version))
+            .await
+            .unwrap();
+        peer.import_doc_update(note_id, &delta).await.unwrap();
+    }
+    remove_relocation_subtree_proof(&peer, destination, root).await;
+    let before = relocation_render_pair(&peer, source, destination).await;
+
+    let error = peer.relocate_subtree(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        SyncError::RelocationRecoveryRequired { .. }
+    ));
+    assert_eq!(
+        relocation_render_pair(&peer, source, destination).await,
+        before
+    );
+}
+
+#[tokio::test]
+async fn persisted_intent_recovers_with_a_legacy_destination_proof() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0xc9; 16]);
+    let source = [0xca; 16];
+    let destination = [0xcb; 16];
+    let root = [0xcc; 16];
+    let child = [0xcd; 16];
+    let target = [0xce; 16];
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    let mut request = relocation_request(
+        source,
+        root,
+        destination,
+        Some(target),
+        MovePlacement::After,
+    );
+    request.move_id = [0xcf; 16];
+    engine
+        .inject_relocation_failure_once(RelocationFailpoint::AfterDestinationDurable)
+        .await;
+    assert_recovery_required(
+        engine.relocate_subtree(request.clone()).await.unwrap_err(),
+        request.move_id,
+    );
+    remove_relocation_subtree_proof(&engine, destination, root).await;
+    engine
+        .save_snapshot_checked(&snapshot_dir, destination)
+        .await
+        .unwrap();
+    drop(engine);
+
+    let reopened = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    assert!(!nested_block_is_live(&reopened, source, root).await);
+    assert!(nested_block_is_live(&reopened, destination, root).await);
+    assert!(nested_block_is_live(&reopened, destination, child).await);
     assert_eq!(
         reopened.relocate_subtree(request).await.unwrap().status,
         BlockRelocationStatus::Replayed
