@@ -116,8 +116,8 @@ async function dragAcrossDaysToPlacement(
   targetRow: Locator,
   placement: "before" | "inside" | "after",
 ): Promise<void> {
-  await expect(sourceHandle).toBeVisible();
   await sourceHandle.scrollIntoViewIfNeeded();
+  await expect(sourceHandle).toBeVisible();
   const sourceBox = await sourceHandle.boundingBox();
   if (!sourceBox) throw new Error("Drag source has no bounding box");
 
@@ -282,21 +282,22 @@ async function startLeaderMove(page: Page, bid: string): Promise<void> {
 
 async function startPaletteMove(page: Page, bid: string): Promise<void> {
   await focusNormal(page, bid);
-  const snapshots = [await paletteMoveSnapshot(page, "after-focus", bid)];
   await page.keyboard.press("Meta+k");
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox").fill("Move block subtree");
   await expect(palette.getByRole("option").first()).toBeVisible();
-  snapshots.push(await paletteMoveSnapshot(page, "palette-filled", bid));
   await page.keyboard.press("Enter");
   await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "selecting");
-  const afterEnter = await paletteMoveSnapshot(page, "after-enter", bid);
-  snapshots.push(afterEnter);
-  if (!afterEnter.sourceBids.includes(bid)) {
-    throw new Error(`Palette move source mismatch: ${JSON.stringify(snapshots)}`);
+  try {
+    await expect(row(page, bid)).toHaveAttribute("data-move-source", "true");
+  } catch (error) {
+    const snapshot = await paletteMoveSnapshot(page, "source-mismatch", bid);
+    const assertion = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Palette move source mismatch: ${JSON.stringify(snapshot)}; assertion: ${assertion}`,
+    );
   }
-  await expect(row(page, bid)).toHaveAttribute("data-move-source", "true");
 }
 
 type PaletteMoveSnapshot = {
