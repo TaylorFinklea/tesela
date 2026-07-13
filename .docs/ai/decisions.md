@@ -645,6 +645,18 @@ execute the move twice. Reliability wins over bounded metadata growth. Pruned
 matching requests fail closed as stale, while mismatched reuse conflicts
 forever. Active intents also reserve their source root until recovery/completion.
 
+**Same-note proof supersession (2026-07-13):** destination-root proof metadata
+is the latest durable relocation marker, not a permanent lock on that block.
+After a new intent is durable, a different move's proof may be superseded only
+when it is attached to the uniquely live captured source `TreeID` of a
+same-note move; it is inherited source lineage, so the new move treats its
+destination as incomplete and overwrites the marker while applying. A proof on
+another node or note, or the current `move_id` with a different request hash,
+still fails closed. This gate is structural rather than tombstone-based because
+the proof syncs in the Loro document while relocation tombstones are local; a
+local-tombstone requirement would reject legitimate sequential moves on a
+converged peer.
+
 **Deterministic daily seed (2026-07-13):** retain the seed in the canonical
 request hash. The server attaches the same slug-derived seed to every
 cross-note ISO-daily append, whether or not that daily already exists. The
