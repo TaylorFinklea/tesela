@@ -291,3 +291,38 @@ test("a text-binding lease rejects view, container, slug, and bid mismatches", (
   assert.equal(lease?.owns({ ...identity, noteSlug: "2026-07-13" }), false);
   assert.equal(lease?.owns({ ...identity, bid: "22222222-2222-4222-8222-222222222222" }), false);
 });
+
+function publishCanonicalTextIfChanged(mirrorText, canonicalText, publish) {
+  return textDelta.publishCanonicalTextIfChanged?.(mirrorText, canonicalText, publish);
+}
+
+test("an equal parent mirror publishes no canonical text", () => {
+  const published = [];
+
+  const changed = publishCanonicalTextIfChanged("same", "same", (text) => published.push(text));
+
+  assert.equal(changed, false);
+  assert.deepEqual(published, []);
+});
+
+test("a stale parent mirror publishes canonical text exactly once", () => {
+  const published = [];
+
+  const changed = publishCanonicalTextIfChanged("stale", "canonical", (text) => published.push(text));
+
+  assert.equal(changed, true);
+  assert.deepEqual(published, ["canonical"]);
+});
+
+test("publishing canonical text reaches a fixed point on the next comparison", () => {
+  let mirrorText = "stale";
+  let publishCount = 0;
+  const publish = (text) => {
+    mirrorText = text;
+    publishCount += 1;
+  };
+
+  assert.equal(publishCanonicalTextIfChanged(mirrorText, "canonical", publish), true);
+  assert.equal(publishCanonicalTextIfChanged(mirrorText, "canonical", publish), false);
+  assert.equal(publishCount, 1);
+});

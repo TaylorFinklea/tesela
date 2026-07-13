@@ -417,7 +417,7 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { Annotation, Compartment, EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
 
   // Tags transactions dispatched by the prop→cm6 sync $effect (e.g. when
@@ -486,6 +486,7 @@
   import {
     createTextBindingGenerationOwner,
     planTextReconciliation,
+    publishCanonicalTextIfChanged,
     type TextBindingGenerationLease,
     type TextDeltaOp,
   } from "$lib/loro/text-delta";
@@ -1737,7 +1738,14 @@
       dispatchCanonicalText(v, canonicalText);
     }
     if (!ownsGeneration()) return;
-    onLoroText?.(canonicalText);
+    publishCanonicalTextIfChanged(
+      untrack(() => initialText),
+      canonicalText,
+      (text) => {
+        if (!ownsGeneration()) return;
+        onLoroText?.(text);
+      },
+    );
   }
 
   /** C2.3 read path. Remote/import event deltas are a caret-preserving fast

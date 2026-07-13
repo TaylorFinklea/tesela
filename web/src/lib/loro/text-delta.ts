@@ -50,6 +50,17 @@ export type TextBindingGenerationLease<View, Container> = Readonly<{
   revoke(): void;
 }>;
 
+/** Publish a canonical value only while its parent mirror is stale. */
+export function publishCanonicalTextIfChanged(
+  mirrorText: string,
+  canonicalText: string,
+  publish: (text: string) => void,
+): boolean {
+  if (mirrorText === canonicalText) return false;
+  publish(canonicalText);
+  return true;
+}
+
 /**
  * Single-owner lease for a component's reactive text-binding generations.
  * Captured callbacks must present the exact view/container/note/block identity

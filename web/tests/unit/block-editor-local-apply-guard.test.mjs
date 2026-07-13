@@ -43,7 +43,14 @@ test("remote text projection is anchored to the exact subscribed LoroText", () =
   assert.match(reconcile, /const canonicalText = container\.toString\(\);/);
   assert.match(reconcile, /planTextReconciliation\(/);
   assert.match(reconcile, /v\.state\.doc\.toString\(\) !== canonicalText/);
-  assert.match(reconcile, /onLoroText\?\.\(canonicalText\)/);
+  assert.match(source, /import \{ onMount, untrack \} from "svelte";/);
+  assert.match(reconcile, /publishCanonicalTextIfChanged\(/);
+  assert.match(reconcile, /untrack\(\(\) => initialText\)/);
+  assert.match(
+    reconcile,
+    /\(text\) => \{[\s\S]*?if \(!ownsGeneration\(\)\) return;[\s\S]*?onLoroText\?\.\(text\)/,
+  );
+  assert.doesNotMatch(reconcile, /onLoroText\?\.\(canonicalText\)/);
   assert.ok(
     (reconcile.match(/if \(!ownsGeneration\(\)\) return;/g) ?? []).length >= 4,
     "every dispatch path and notification must be generation-owned",
