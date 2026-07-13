@@ -574,8 +574,11 @@ git commit -m "feat(server): expose recoverable subtree relocation"
 - Modify: `web/src/lib/api-client.ts`
 - Modify: `web/src/lib/commands/index.ts`
 - Modify: `web/src/lib/command-manifest.json` through `pnpm --dir web generate:commands`
+- Modify: `web/src/lib/graphite/shell/GrCommandPalette.svelte`
+- Create: `web/src/lib/graphite/shell/palette-command-context.ts`
 - Create: `web/tests/unit/block-relocation-api.test.mjs`
 - Modify: `web/tests/unit/command-manifest-file.test.mjs`
+- Create: `web/tests/unit/command-palette-context.test.mjs`
 
 **Interfaces:**
 
@@ -584,7 +587,9 @@ git commit -m "feat(server): expose recoverable subtree relocation"
 
 - [ ] **Step 1: Write failing API and manifest tests**
 
-In `block-relocation-api.test.mjs`, read `api-client.ts` following `block-editor-attachments.test.mjs` and assert the typed method posts `/blocks/move-subtree` and calls `recordLocalSave` for both request slugs and returned note ids. In `command-manifest-file.test.mjs` add:
+In `block-relocation-api.test.mjs`, invoke the same dependency-injected relocation executor that `api.relocateBlockSubtree` uses. With fake POST and `recordLocalSave` dependencies, assert `/blocks/move-subtree`, the exact request object, identical `AbortSignal`, source/destination saves before transport, every returned note id afterward, the exact returned response, and rejected transport propagation. A source-text scan is not sufficient.
+
+In `command-palette-context.test.mjs`, prove an opening context with `editorFocused: true` remains the palette's availability context after its input blurs the editor while the last `focusedBlock` remains, then resets on close/reopen. In `command-manifest-file.test.mjs` add:
 
 ```js
 test("manifest exposes Move block subtree on the free a m chord", () => {
@@ -593,6 +598,7 @@ test("manifest exposes Move block subtree on the free a m chord", () => {
   assert.equal(entry.label, "Move block subtree");
   assert.deepEqual(entry.chord, ["a", "m"]);
   assert.deepEqual(entry.surfaces, ["leader", "palette"]);
+  assert.equal(manifest.filter((item) => item.chord?.join(" ") === "a m").length, 1);
 });
 ```
 
@@ -621,7 +627,9 @@ Expected: FAIL because the API method and manifest entry are absent.
 
 Keep `surface: "editor"` as the runtime focused-editor context gate, and add `surfaces?: RegistryCommand["surfaces"]` to `BuiltinCommand` so the explicit palette/leader visibility set is typed. `editor` is not a manifest surface; the registry's valid surfaces are slash, colon, leader, and palette.
 
-Add `api.relocateBlockSubtree(req: BlockMoveRequest, signal?: AbortSignal)` returning `Promise<{ move_id: string; notes: Note[] }>` and posting to `/blocks/move-subtree`. Call `recordLocalSave` for source/destination before POST and each returned id after. Add the command to the canonical registry, then generate the manifest; never hand-edit JSON.
+Factor the relocation request sequence into a small dependency-injected executor in `block-tree-move.ts`, and have `api.relocateBlockSubtree(req: BlockMoveRequest, signal?: AbortSignal)` use that executor with the real JSON POST helper and `recordLocalSave`. It returns `Promise<{ move_id: string; notes: Note[] }>` from `/blocks/move-subtree`, opens source/destination echo windows before POST, and records each returned id after.
+
+`GrCommandPalette` must snapshot its `CommandContext` on the closed-to-open transition, use that snapshot for command availability and execution until close, and clear it on close. This prevents the palette's own delayed input focus from clearing `editorFocused` and removing the command it was opened to run. Keep the snapshot transition in a pure helper so the blur/close/reopen lifecycle is unit-testable. Add the command to the canonical registry, then generate the manifest; never hand-edit JSON.
 
 - [ ] **Step 4: Generate and verify green**
 
@@ -637,7 +645,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit Task 6**
 
 ```bash
-git add web/src/lib/block-tree-move.ts web/src/lib/api-client.ts web/src/lib/commands/index.ts web/src/lib/command-manifest.json web/tests/unit/block-relocation-api.test.mjs web/tests/unit/command-manifest-file.test.mjs
+git add web/src/lib/block-tree-move.ts web/src/lib/api-client.ts web/src/lib/commands/index.ts web/src/lib/command-manifest.json web/src/lib/graphite/shell/GrCommandPalette.svelte web/src/lib/graphite/shell/palette-command-context.ts web/tests/unit/block-relocation-api.test.mjs web/tests/unit/command-manifest-file.test.mjs web/tests/unit/command-palette-context.test.mjs
 git commit -m "feat(web): add block relocation command contract"
 ```
 
