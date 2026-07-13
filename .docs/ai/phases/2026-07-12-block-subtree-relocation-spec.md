@@ -72,6 +72,11 @@ Rules:
   inside the destination-durable phase, not by calling the ordinary create
   route during preflight; a rejected drop therefore leaves no empty daily.
   Missing non-daily destinations fail without changing the source.
+- For every cross-note ISO-daily `append`, derive that seed deterministically
+  from immutable transport fields even when the destination already exists.
+  The engine uses it only when the destination is absent and otherwise ignores
+  it; a same-note request carrying a seed remains invalid. This keeps the
+  engine request hash identical across creation and HTTP replay.
 - A retry with the same `move_id` and byte-equivalent request returns the same
   success. Reusing a `move_id` with different arguments is a conflict.
 - Success returns refreshed source and destination notes (one note for a

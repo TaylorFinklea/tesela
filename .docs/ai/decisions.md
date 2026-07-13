@@ -644,3 +644,13 @@ random move UUID after the same root moves away and back; forgetting it could
 execute the move twice. Reliability wins over bounded metadata growth. Pruned
 matching requests fail closed as stale, while mismatched reuse conflicts
 forever. Active intents also reserve their source root until recovery/completion.
+
+**Deterministic daily seed (2026-07-13):** retain the seed in the canonical
+request hash. The server attaches the same slug-derived seed to every
+cross-note ISO-daily append, whether or not that daily already exists. The
+engine consumes it only when creating an absent destination and permits but
+ignores it for an existing cross-note destination; same-note seeds remain
+invalid. A state-dependent `Some` on first apply and `None` after creation would
+turn an identical HTTP retry into a false move-id conflict. Excluding the seed
+from the hash would weaken mismatch detection, so the stable-input contract is
+preferred.

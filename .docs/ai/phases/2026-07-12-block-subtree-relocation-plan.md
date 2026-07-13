@@ -345,7 +345,7 @@ assert_eq!(
 
 - [ ] **Step 2: Run the focused tests and observe red**
 
-Run: `cargo test -p tesela-sync engine::loro_engine::tests::relocation`  
+Run: `cargo test -p tesela-sync engine::loro_engine::tests::relocation`
 Expected: compile FAIL for missing `BlockRelocationRequest`/`relocate_subtree`.
 
 - [ ] **Step 3: Implement the minimal in-memory engine operation**
@@ -473,6 +473,8 @@ git commit -m "feat(sync): recover interrupted subtree relocations"
 - Modify: `crates/tesela-server/src/routes/mod.rs`
 - Modify: `crates/tesela-server/src/routes/notes.rs`
 - Create: `crates/tesela-server/tests/block_subtree_move.rs`
+- Modify: `crates/tesela-sync/src/engine/loro_engine/relocation.rs`
+- Modify: `crates/tesela-sync/src/engine/loro_engine/tests/relocation.rs`
 
 **Interfaces:**
 
@@ -481,7 +483,7 @@ git commit -m "feat(sync): recover interrupted subtree relocations"
 
 - [ ] **Step 1: Write failing route and error-mapping tests**
 
-Create a spawned-server suite mirroring `block_granular_write.rs` and real WebSocket tests. Set `TESELA_DISABLE_MDNS=1`, `TESELA_DISABLE_PEER_SYNC=1`, and `TESELA_GROUP_KEY_FILE_STORE=1`. Cover malformed UUID/target rules; self/descendant targets; missing non-daily; rejected absent daily with no file; successful absent-daily append with no blank sibling; cross-note bids/properties/search/links/versions/events/two TLR2 deltas; same-note one result/event/delta; identical retry; and changed move-id reuse 409. Include:
+Create a spawned-server suite mirroring `block_granular_write.rs` and real WebSocket tests. Set `TESELA_DISABLE_MDNS=1`, `TESELA_DISABLE_PEER_SYNC=1`, and `TESELA_GROUP_KEY_FILE_STORE=1`. Cover malformed UUID/target rules; self/descendant targets; missing non-daily; rejected absent daily with no file; successful absent-daily append with no blank sibling followed by an identical successful HTTP replay; relay-only destination bootstrap; cross-note bids/properties/search/links/versions/events/two TLR2 deltas; same-note one result/event/delta; identical retry; and changed move-id reuse 409. Include:
 
 ```rust
 let response = client
@@ -536,8 +538,8 @@ struct MoveBlockSubtreeResp {
 
 Convert UUID fields to bytes and slugs with `stable_uuid_from_slug` only at the sync boundary. Handler sequence:
 
-1. Bootstrap existing source/destination relay state with `bootstrap_note_if_needed` and re-read.
-2. Missing destination: accept only ISO `%Y-%m-%d` + append + null target. Build inert `RelocationNoteSeed` from `daily_note_content`; do not call a writing create/daily route.
+1. Bootstrap both source and destination relay state with `bootstrap_note_if_needed` and re-read before classifying either as absent.
+2. Missing destination: accept only ISO `%Y-%m-%d` + append + null target. For every cross-note ISO-daily append, build the same inert `RelocationNoteSeed` from `daily_note_content` regardless of current destination existence; do not call a writing create/daily route. The engine must continue rejecting same-note seeds, but permit and ignore the deterministic seed when the cross-note destination already exists so the canonical request hash remains stable across replay.
 3. Call engine and map typed rejection, conflict (409), and recovery-required (`AppError::RetrySafe`/503).
 4. Per distinct outcome note, source then destination: re-read, reindex, links, version only for first-apply changed existing notes, tags, `NoteUpdated`, one cursor-free TLR2 export from engine-captured `pre_version`.
 5. Return `{ move_id, notes }`, deduplicated for same-note.
@@ -549,13 +551,16 @@ On replay, repeat repairable read/index/link/tag/event/delta tail but do not dup
 Run: `cargo test -p tesela-server --test block_subtree_move`  
 Expected: PASS for validation, daily creation, indexes/history, events/deltas, same-note, and retries.
 
+Run: `cargo test -p tesela-sync engine::loro_engine::tests::relocation`.
+Expected: PASS, including an existing cross-note destination with an ignored deterministic seed and continued same-note seed rejection.
+
 Run: `cargo test -p tesela-server`  
 Expected: PASS, including `error::tests`.
 
 - [ ] **Step 5: Commit Task 5**
 
 ```bash
-git add crates/tesela-server/src/error.rs crates/tesela-server/src/routes/mod.rs crates/tesela-server/src/routes/notes.rs crates/tesela-server/tests/block_subtree_move.rs
+git add crates/tesela-server/src/error.rs crates/tesela-server/src/routes/mod.rs crates/tesela-server/src/routes/notes.rs crates/tesela-server/tests/block_subtree_move.rs crates/tesela-sync/src/engine/loro_engine/relocation.rs crates/tesela-sync/src/engine/loro_engine/tests/relocation.rs
 git commit -m "feat(server): expose recoverable subtree relocation"
 ```
 
