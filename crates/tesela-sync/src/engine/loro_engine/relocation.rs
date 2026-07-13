@@ -41,6 +41,7 @@ impl RelocationReservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RelocationFailpoint {
     AfterPrepared,
+    DuringDestinationAuthoring,
     AfterDestinationDurable,
     AfterSourceDurable,
 }
@@ -418,6 +419,114 @@ fn final_order(
     result
 }
 
+fn destination_order_without_captured(
+    tree: &LoroTree,
+    blocks: &[RelocatedBlockSnapshot],
+) -> Vec<TreeID> {
+    let captured_bids: HashSet<[u8; 16]> = blocks.iter().map(|block| block.bid).collect();
+    live_root_nodes(tree)
+        .into_iter()
+        .filter(|node| {
+            node_bid(tree, *node)
+                .map(|bid| !captured_bids.contains(&bid))
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+fn captured_source_nodes_are_unique(tree: &LoroTree, blocks: &[RelocatedBlockSnapshot]) -> bool {
+    let order = live_root_nodes(tree);
+    blocks.iter().all(|block| {
+        if !matches!(tree.is_node_deleted(&block.source_node), Ok(false)) {
+            return false;
+        }
+        let mut matching = order
+            .iter()
+            .copied()
+            .filter(|node| node_bid(tree, *node) == Some(block.bid));
+        matching.next() == Some(block.source_node) && matching.next().is_none()
+    })
+}
+
+struct CurrentDestinationPlacement {
+    insertion_index: usize,
+    new_indents: Vec<u16>,
+    new_parents: Vec<Option<[u8; 16]>>,
+}
+
+fn relocated_snapshot_ancestry(
+    blocks: &[RelocatedBlockSnapshot],
+    new_root_indent: u16,
+    new_root_parent: Option<[u8; 16]>,
+) -> SyncResult<(Vec<u16>, Vec<Option<[u8; 16]>>)> {
+    let old_root_indent = blocks
+        .first()
+        .ok_or_else(|| rejected("relocation subtree is empty"))?
+        .indent;
+    let mut new_indents = Vec::with_capacity(blocks.len());
+    let mut new_parents = Vec::with_capacity(blocks.len());
+    for (index, block) in blocks.iter().enumerate() {
+        let relative = block
+            .indent
+            .checked_sub(old_root_indent)
+            .ok_or_else(|| rejected("source subtree indentation is inconsistent"))?;
+        new_indents.push(
+            new_root_indent
+                .checked_add(relative)
+                .ok_or_else(|| rejected("relocated subtree indentation is too deep"))?,
+        );
+        new_parents.push(if index == 0 {
+            new_root_parent
+        } else {
+            block.parent
+        });
+    }
+    Ok((new_indents, new_parents))
+}
+
+fn current_destination_placement(
+    tree: &LoroTree,
+    prepared: &PreparedRelocation,
+    order_without_captured: &[TreeID],
+) -> SyncResult<CurrentDestinationPlacement> {
+    let (insertion_index, new_root_indent, new_root_parent) =
+        if prepared.request.placement == MovePlacement::Append {
+            (order_without_captured.len(), 0, None)
+        } else {
+            let target_bid = prepared
+                .request
+                .target_bid
+                .ok_or_else(|| recovery_required(prepared.request.move_id, "target is missing"))?;
+            if !order_without_captured
+                .iter()
+                .any(|node| node_bid(tree, *node) == Some(target_bid))
+            {
+                return Err(recovery_required(
+                    prepared.request.move_id,
+                    format!(
+                        "destination target {} vanished during relocation recovery",
+                        hex_id(&target_bid)
+                    ),
+                ));
+            }
+            target_placement(
+                tree,
+                order_without_captured,
+                Some(target_bid),
+                prepared.request.placement,
+            )
+            .map_err(|error| recovery_required(prepared.request.move_id, error))?
+        };
+    let (new_indents, new_parents) =
+        relocated_snapshot_ancestry(&prepared.blocks, new_root_indent, new_root_parent)
+            .map_err(|error| recovery_required(prepared.request.move_id, error))?;
+    Ok(CurrentDestinationPlacement {
+        insertion_index,
+        new_indents,
+        new_parents,
+    })
+}
+
 fn apply_snapshot_metadata(
     tree: &LoroTree,
     node: TreeID,
@@ -440,20 +549,23 @@ fn apply_snapshot_metadata(
     Ok(())
 }
 
-fn author_snapshot_block(
-    tree: &LoroTree,
-    node: TreeID,
-    block: &RelocatedBlockSnapshot,
-    indent: u16,
-    parent: Option<[u8; 16]>,
+fn persisted_properties(meta: &loro::LoroMap) -> Vec<(String, PersistedPropertyValue)> {
+    prop_containers::read_node_prop_containers(meta)
+        .map(|(props, prop_keys)| {
+            prop_containers::read_props_typed(&props, &prop_keys)
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_snapshot_properties(
+    meta: &loro::LoroMap,
+    properties: &[(String, PersistedPropertyValue)],
 ) -> SyncResult<()> {
-    apply_snapshot_metadata(tree, node, block, indent, parent)?;
-    let meta = tree
-        .get_meta(node)
-        .map_err(|error| SyncError::Storage(format!("loro relocation get_meta: {error}")))?;
-    write_block_text(&meta, &block.text)?;
-    let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
-    for (key, value) in &block.props {
+    let (props, prop_keys) = prop_containers::node_prop_containers(meta)?;
+    for (key, value) in properties {
         match value {
             PersistedPropertyValue::Scalar(value) => {
                 prop_containers::prop_set_scalar(&props, &prop_keys, key, value)?;
@@ -468,6 +580,44 @@ fn author_snapshot_block(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn author_snapshot_block(
+    tree: &LoroTree,
+    node: TreeID,
+    block: &RelocatedBlockSnapshot,
+    indent: u16,
+    parent: Option<[u8; 16]>,
+) -> SyncResult<()> {
+    apply_snapshot_metadata(tree, node, block, indent, parent)?;
+    let meta = tree
+        .get_meta(node)
+        .map_err(|error| SyncError::Storage(format!("loro relocation get_meta: {error}")))?;
+    write_block_text(&meta, &block.text)?;
+    write_snapshot_properties(&meta, &block.props)
+}
+
+fn reconcile_snapshot_block(
+    tree: &LoroTree,
+    node: TreeID,
+    block: &RelocatedBlockSnapshot,
+    indent: u16,
+    parent: Option<[u8; 16]>,
+) -> SyncResult<()> {
+    apply_snapshot_metadata(tree, node, block, indent, parent)?;
+    let meta = tree
+        .get_meta(node)
+        .map_err(|error| SyncError::Storage(format!("loro relocation get_meta: {error}")))?;
+    write_block_text(&meta, &block.text)?;
+    let current = persisted_properties(&meta);
+    if current != block.props {
+        let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
+        for (key, _) in current {
+            prop_containers::prop_clear(&props, &prop_keys, &key)?;
+        }
+        write_snapshot_properties(&meta, &block.props)?;
     }
     Ok(())
 }
@@ -775,6 +925,13 @@ impl LoroEngine {
         Ok(())
     }
 
+    async fn checkpoint_during_destination_authoring(&self, _move_id: [u8; 16]) -> SyncResult<()> {
+        #[cfg(test)]
+        self.fail_relocation_at(RelocationFailpoint::DuringDestinationAuthoring, _move_id)
+            .await?;
+        Ok(())
+    }
+
     async fn checkpoint_after_destination_durable(&self, _move_id: [u8; 16]) -> SyncResult<()> {
         #[cfg(test)]
         self.fail_relocation_at(RelocationFailpoint::AfterDestinationDurable, _move_id)
@@ -890,34 +1047,37 @@ impl LoroEngine {
             ));
         }
         let order = live_root_nodes(&tree);
-        let actual_start = order
-            .iter()
-            .position(|node| *node == root_node)
-            .ok_or_else(|| {
-                recovery_required(
-                    prepared.request.move_id,
-                    "destination proof root is not in live order",
-                )
-            })?;
+        let Some(actual_start) = order.iter().position(|node| *node == root_node) else {
+            return Ok(false);
+        };
         if actual_start + prepared.blocks.len() > order.len() {
-            return Err(recovery_required(
-                prepared.request.move_id,
-                "destination proof exists but subtree is incomplete",
-            ));
+            return Ok(false);
+        }
+        for block in &prepared.blocks {
+            if order
+                .iter()
+                .filter(|node| node_bid(&tree, **node) == Some(block.bid))
+                .count()
+                != 1
+            {
+                return Ok(false);
+            }
+        }
+        let order_without_captured = destination_order_without_captured(&tree, &prepared.blocks);
+        let placement = current_destination_placement(&tree, prepared, &order_without_captured)?;
+        if actual_start != placement.insertion_index {
+            return Ok(false);
         }
         for (offset, block) in prepared.blocks.iter().enumerate() {
             let node = order[actual_start + offset];
             if node_bid(&tree, node) != Some(block.bid)
                 || read_block_text(&tree, node).as_deref() != Some(block.text.as_str())
-                || read_indent_level(&tree, node) != Some(prepared.new_indents[offset])
+                || read_indent_level(&tree, node) != Some(placement.new_indents[offset])
                 || read_meta_str(&tree, node, "parent")
                     .and_then(|value| parse_note_id_from_hex(&value))
-                    != prepared.new_parents[offset]
+                    != placement.new_parents[offset]
             {
-                return Err(recovery_required(
-                    prepared.request.move_id,
-                    "destination proof exists but subtree semantics differ",
-                ));
+                return Ok(false);
             }
             let meta = tree.get_meta(node).map_err(|error| {
                 recovery_required(
@@ -925,20 +1085,9 @@ impl LoroEngine {
                     format!("read destination block metadata: {error}"),
                 )
             })?;
-            let props: Vec<(String, PersistedPropertyValue)> =
-                prop_containers::read_node_prop_containers(&meta)
-                    .map(|(props, prop_keys)| {
-                        prop_containers::read_props_typed(&props, &prop_keys)
-                            .into_iter()
-                            .map(|(key, value)| (key, value.into()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+            let props = persisted_properties(&meta);
             if props != block.props {
-                return Err(recovery_required(
-                    prepared.request.move_id,
-                    "destination proof exists but typed properties differ",
-                ));
+                return Ok(false);
             }
         }
         if same_note && node_bid(&tree, root_node) != Some(prepared.request.root_bid) {
@@ -1081,25 +1230,8 @@ impl LoroEngine {
             }
         };
 
-        let old_root_indent = blocks[0].indent;
-        let mut new_indents = Vec::with_capacity(blocks.len());
-        let mut new_parents = Vec::with_capacity(blocks.len());
-        for (index, block) in blocks.iter().enumerate() {
-            let relative = block
-                .indent
-                .checked_sub(old_root_indent)
-                .ok_or_else(|| rejected("source subtree indentation is inconsistent"))?;
-            new_indents.push(
-                new_root_indent
-                    .checked_add(relative)
-                    .ok_or_else(|| rejected("relocated subtree indentation is too deep"))?,
-            );
-            new_parents.push(if index == 0 {
-                new_root_parent
-            } else {
-                block.parent
-            });
-        }
+        let (new_indents, new_parents) =
+            relocated_snapshot_ancestry(&blocks, new_root_indent, new_root_parent)?;
 
         let source_pre_version = source_doc.oplog_vv().encode();
         let destination_pre_version = if same_note {
@@ -1166,34 +1298,76 @@ impl LoroEngine {
         request_hash: [u8; 32],
     ) -> SyncResult<()> {
         let tree = prepared.source_doc.get_tree("blocks");
-        if prepared.insertion_index < prepared.destination_order_without_source.len() {
-            let anchor = prepared.destination_order_without_source[prepared.insertion_index];
-            for block in &prepared.blocks {
-                tree.mov_before(block.source_node, anchor)
-                    .map_err(|error| {
-                        SyncError::Storage(format!("loro relocation move before: {error}"))
+        let captured_nodes_are_live_and_unique =
+            captured_source_nodes_are_unique(&tree, &prepared.blocks);
+        let order_without_captured = destination_order_without_captured(&tree, &prepared.blocks);
+        let placement = current_destination_placement(&tree, prepared, &order_without_captured)?;
+        let destination_root = if captured_nodes_are_live_and_unique {
+            if placement.insertion_index < order_without_captured.len() {
+                let anchor = order_without_captured[placement.insertion_index];
+                for block in &prepared.blocks {
+                    tree.mov_before(block.source_node, anchor)
+                        .map_err(|error| {
+                            SyncError::Storage(format!("loro relocation move before: {error}"))
+                        })?;
+                }
+            } else if let Some(mut anchor) = order_without_captured.last().copied() {
+                for block in &prepared.blocks {
+                    tree.mov_after(block.source_node, anchor).map_err(|error| {
+                        SyncError::Storage(format!("loro relocation move after: {error}"))
                     })?;
+                    anchor = block.source_node;
+                }
+            } else {
+                for (offset, block) in prepared.blocks.iter().enumerate() {
+                    tree.mov_to(
+                        block.source_node,
+                        TreeParentId::Root,
+                        placement.insertion_index + offset,
+                    )
+                    .map_err(|error| {
+                        SyncError::Storage(format!("loro relocation anchorless move: {error}"))
+                    })?;
+                }
             }
-        } else if let Some(mut anchor) = prepared.destination_order_without_source.last().copied() {
-            for block in &prepared.blocks {
-                tree.mov_after(block.source_node, anchor).map_err(|error| {
-                    SyncError::Storage(format!("loro relocation move after: {error}"))
-                })?;
-                anchor = block.source_node;
+            for (index, block) in prepared.blocks.iter().enumerate() {
+                reconcile_snapshot_block(
+                    &tree,
+                    block.source_node,
+                    block,
+                    placement.new_indents[index],
+                    placement.new_parents[index],
+                )?;
             }
-        }
-        for (index, block) in prepared.blocks.iter().enumerate() {
-            apply_snapshot_metadata(
-                &tree,
-                block.source_node,
-                block,
-                prepared.new_indents[index],
-                prepared.new_parents[index],
-            )?;
-        }
+            prepared.blocks[0].source_node
+        } else {
+            self.delete_captured_destination_nodes(&tree, &prepared.blocks)?;
+            let mut destination_root = None;
+            for (offset, block) in prepared.blocks.iter().enumerate() {
+                let node = tree
+                    .create_at(TreeParentId::Root, placement.insertion_index + offset)
+                    .map_err(|error| {
+                        SyncError::Storage(format!("loro relocation same-note rebuild: {error}"))
+                    })?;
+                author_snapshot_block(
+                    &tree,
+                    node,
+                    block,
+                    placement.new_indents[offset],
+                    placement.new_parents[offset],
+                )?;
+                destination_root.get_or_insert(node);
+            }
+            destination_root.ok_or_else(|| {
+                recovery_required(
+                    prepared.request.move_id,
+                    "captured relocation subtree is empty",
+                )
+            })?
+        };
         Self::write_destination_proof(
             &tree,
-            prepared.blocks[0].source_node,
+            destination_root,
             prepared.request.move_id,
             request_hash,
         )?;
@@ -1211,9 +1385,14 @@ impl LoroEngine {
             None => self.seeded_destination_doc(&prepared.request)?,
         };
         let destination_tree = destination_doc.get_tree("blocks");
+        let order_without_captured =
+            destination_order_without_captured(&destination_tree, &prepared.blocks);
+        let placement =
+            current_destination_placement(&destination_tree, prepared, &order_without_captured)?;
+        self.delete_captured_destination_nodes(&destination_tree, &prepared.blocks)?;
         for (offset, block) in prepared.blocks.iter().enumerate() {
             let node = destination_tree
-                .create_at(TreeParentId::Root, prepared.insertion_index + offset)
+                .create_at(TreeParentId::Root, placement.insertion_index + offset)
                 .map_err(|error| {
                     SyncError::Storage(format!("loro relocation destination create: {error}"))
                 })?;
@@ -1221,9 +1400,11 @@ impl LoroEngine {
                 &destination_tree,
                 node,
                 block,
-                prepared.new_indents[offset],
-                prepared.new_parents[offset],
+                placement.new_indents[offset],
+                placement.new_parents[offset],
             )?;
+            self.checkpoint_during_destination_authoring(prepared.request.move_id)
+                .await?;
         }
         let destination_root =
             find_node_by_block_id(&destination_tree, &hex_id(&prepared.request.root_bid))
@@ -1244,6 +1425,72 @@ impl LoroEngine {
             );
         }
         Ok(destination_doc)
+    }
+
+    fn delete_captured_destination_nodes(
+        &self,
+        tree: &LoroTree,
+        blocks: &[RelocatedBlockSnapshot],
+    ) -> SyncResult<()> {
+        let captured_bids: HashSet<[u8; 16]> = blocks.iter().map(|block| block.bid).collect();
+        let captured_nodes: Vec<TreeID> = live_root_nodes(tree)
+            .into_iter()
+            .filter(|node| {
+                node_bid(tree, *node)
+                    .map(|bid| captured_bids.contains(&bid))
+                    .unwrap_or(false)
+            })
+            .collect();
+        for node in captured_nodes {
+            tree.delete(node).map_err(|error| {
+                SyncError::Storage(format!("loro relocation destination reconcile: {error}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_destination_snapshot(
+        &self,
+        prepared: &mut PreparedRelocation,
+        request_hash: [u8; 32],
+    ) -> SyncResult<bool> {
+        if self.destination_snapshot_complete(prepared, request_hash)? {
+            return Ok(false);
+        }
+        let same_note = prepared.request.source_note_id == prepared.request.destination_note_id;
+        if same_note {
+            self.apply_same_note_relocation(prepared, request_hash)?;
+            prepared.destination_doc = Some(prepared.source_doc.clone());
+        } else {
+            let destination_doc = self
+                .apply_cross_note_destination(prepared, request_hash)
+                .await?;
+            prepared.destination_doc = Some(destination_doc);
+        }
+        if !self.destination_snapshot_complete(prepared, request_hash)? {
+            return Err(recovery_required(
+                prepared.request.move_id,
+                "destination subtree reconciliation did not restore the captured snapshot",
+            ));
+        }
+        Ok(true)
+    }
+
+    fn captured_source_deleted(&self, prepared: &PreparedRelocation) -> SyncResult<bool> {
+        let tree = prepared.source_doc.get_tree("blocks");
+        for block in &prepared.blocks {
+            match tree.is_node_deleted(&block.source_node) {
+                Ok(true) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => {
+                    return Err(recovery_required(
+                        prepared.request.move_id,
+                        format!("inspect captured source node deletion: {error}"),
+                    ))
+                }
+            }
+        }
+        Ok(true)
     }
 
     fn delete_captured_source(&self, prepared: &PreparedRelocation) -> SyncResult<()> {
@@ -1330,19 +1577,9 @@ impl LoroEngine {
         let mut prepared = self.prepared_from_intent(&intent).await?;
         let same_note = intent.request.source_note_id == intent.request.destination_note_id;
         if intent.phase == RelocationPhase::Prepared {
-            if !self.destination_snapshot_complete(&prepared, intent.request_hash)? {
-                if same_note {
-                    self.apply_same_note_relocation(&prepared, intent.request_hash)
-                        .map_err(|error| preserve_recovery_error(move_id, error))?;
-                    prepared.destination_doc = Some(prepared.source_doc.clone());
-                } else {
-                    let destination_doc = self
-                        .apply_cross_note_destination(&prepared, intent.request_hash)
-                        .await
-                        .map_err(|error| preserve_recovery_error(move_id, error))?;
-                    prepared.destination_doc = Some(destination_doc);
-                }
-            }
+            self.ensure_destination_snapshot(&mut prepared, intent.request_hash)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?;
             self.persist_note_boundary(intent.request.destination_note_id)
                 .await
                 .map_err(|error| preserve_recovery_error(move_id, error))?;
@@ -1354,18 +1591,69 @@ impl LoroEngine {
         }
 
         if intent.phase == RelocationPhase::DestinationDurable {
+            if self
+                .ensure_destination_snapshot(&mut prepared, intent.request_hash)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?
+            {
+                self.persist_note_boundary(intent.request.destination_note_id)
+                    .await
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+            }
             if !same_note {
                 self.delete_captured_source(&prepared)
                     .map_err(|error| preserve_recovery_error(move_id, error))?;
                 self.persist_note_boundary(intent.request.source_note_id)
                     .await
                     .map_err(|error| preserve_recovery_error(move_id, error))?;
+                if !self
+                    .captured_source_deleted(&prepared)
+                    .map_err(|error| preserve_recovery_error(move_id, error))?
+                {
+                    return Err(recovery_required(
+                        move_id,
+                        "captured source nodes remain live after checked deletion",
+                    ));
+                }
             }
             intent.phase = RelocationPhase::SourceDurable;
             self.persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
                 .await
                 .map_err(|error| preserve_recovery_error(move_id, error))?;
             self.checkpoint_after_source_durable(move_id).await?;
+        }
+
+        if intent.phase == RelocationPhase::SourceDurable {
+            if self
+                .ensure_destination_snapshot(&mut prepared, intent.request_hash)
+                .await
+                .map_err(|error| preserve_recovery_error(move_id, error))?
+            {
+                self.persist_note_boundary(intent.request.destination_note_id)
+                    .await
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+            }
+            if !same_note
+                && !self
+                    .captured_source_deleted(&prepared)
+                    .map_err(|error| preserve_recovery_error(move_id, error))?
+            {
+                self.delete_captured_source(&prepared)
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+                self.persist_note_boundary(intent.request.source_note_id)
+                    .await
+                    .map_err(|error| preserve_recovery_error(move_id, error))?;
+            }
+            if !same_note
+                && !self
+                    .captured_source_deleted(&prepared)
+                    .map_err(|error| preserve_recovery_error(move_id, error))?
+            {
+                return Err(recovery_required(
+                    move_id,
+                    "captured source nodes remain live before receipt finalization",
+                ));
+            }
         }
 
         self.refresh_note_derived_under_ownership(
@@ -1453,7 +1741,9 @@ impl LoroEngine {
                     "move id was already completed with different arguments".into(),
                 ));
             }
-            return Ok(self.metadata_replay_outcome(&request).await);
+            return Err(rejected(
+                "relocation receipt was pruned; move id is stale and cannot be replayed",
+            ));
         }
         if let Some(pending_move_id) = self.overlapping_pending_move(&request).await {
             return Err(recovery_required(
