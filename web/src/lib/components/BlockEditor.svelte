@@ -2531,6 +2531,7 @@
       focusLifecycle.teardown(target);
       clearVimCtxIfMine(mountedView);
       vimModeOff?.();
+      view = null;
       mountedView.destroy();
     };
   });

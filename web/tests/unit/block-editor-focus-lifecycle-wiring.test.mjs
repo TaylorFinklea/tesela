@@ -59,7 +59,7 @@ test("DOM handlers only update vim context synchronously and queue owned work", 
   assert.doesNotMatch(handlers, /onFocus|onBlur|onSetProperty/);
 });
 
-test("delayed blur uses captured props and teardown invalidates before destroy", () => {
+test("delayed blur uses captured props and teardown nulls the view before destroy", () => {
   const lifecycle = sourceBetween(
     "const focusOwnerId = createEditorFocusOwnerId",
     "const focusBlurHandler",
@@ -76,9 +76,16 @@ test("delayed blur uses captured props and teardown invalidates before destroy",
   assert.match(lifecycle, /if \(!target\.slashMenuOpen\) target\.onBlur\(\)/);
   assert.match(
     cleanup,
-    /focusLifecycle\.teardown\(target\);[\s\S]*clearVimCtxIfMine\(mountedView\);[\s\S]*mountedView\.destroy\(\)/,
+    /focusLifecycle\.teardown\(target\);\s*clearVimCtxIfMine\(mountedView\);\s*vimModeOff\?\.\(\);\s*view = null;\s*mountedView\.destroy\(\)/,
   );
   assert.doesNotMatch(cleanup, /clearFocusedEditor\(editorKey\)/);
   assert.doesNotMatch(cleanup, /clearFocusedNoteDoc\(editorKey\)/);
-  assert.doesNotMatch(cleanup, /view = null/);
+
+  const deferredFocus = sourceBetween(
+    "if (focused && !autoFocused)",
+    "return () => {\n      if (presenceTimer)",
+  );
+  const asyncUpload = sourceBetween("async function uploadImage", "function imageFile");
+  assert.match(deferredFocus, /requestAnimationFrame\(\(\) => \{\s*if \(!view\) return;/);
+  assert.match(asyncUpload, /if \(!view \|\| !file\.type\.startsWith\("image\/"\)\) return;/);
 });
