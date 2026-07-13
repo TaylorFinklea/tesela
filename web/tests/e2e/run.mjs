@@ -49,6 +49,10 @@ const BIDS = {
   racePointerRoot: "20000000-0000-4000-8000-000000000018",
   raceAltRoot: "20000000-0000-4000-8000-000000000019",
   raceAltSibling: "20000000-0000-4000-8000-000000000020",
+  crossBeforeRoot: "20000000-0000-4000-8000-000000000021",
+  crossBeforeChild: "20000000-0000-4000-8000-000000000022",
+  crossAfterRoot: "20000000-0000-4000-8000-000000000023",
+  crossAfterChild: "20000000-0000-4000-8000-000000000024",
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
   existingEnd: "30000000-0000-4000-8000-000000000003",
@@ -59,9 +63,17 @@ const BIDS = {
   keyboardAfterTargetChild: "30000000-0000-4000-8000-000000000008",
   retryTarget: "30000000-0000-4000-8000-000000000009",
   racePointerTarget: "30000000-0000-4000-8000-000000000010",
+  crossBeforeTarget: "30000000-0000-4000-8000-000000000011",
+  crossBeforeTargetChild: "30000000-0000-4000-8000-000000000012",
+  crossAfterTarget: "30000000-0000-4000-8000-000000000013",
+  crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
 };
 
 const children = new Set();
+const PROCESS_TREE_GRACE_MS = 5_000;
+const PROCESS_TREE_KILL_MS = 5_000;
+let cleanupPromise;
+let requestedExitCode = null;
 
 function pickFreePort() {
   return new Promise((resolve, reject) => {
@@ -76,23 +88,76 @@ function pickFreePort() {
 }
 
 function run(cmd, args, options = {}) {
+  if (requestedExitCode !== null) {
+    throw new Error(`Refusing to start ${cmd} during shutdown`);
+  }
   const child = spawn(cmd, args, {
     cwd: options.cwd ?? repoRoot,
     env: { ...process.env, ...(options.env ?? {}) },
     stdio: options.stdio ?? "inherit",
+    detached: process.platform !== "win32",
   });
   children.add(child);
-  child.on("exit", () => children.delete(child));
   return child;
 }
 
 function runChecked(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = run(cmd, args, options);
-    child.on("exit", (code, signal) =>
+    child.once("error", reject);
+    child.once("exit", (code, signal) =>
       code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(" ")} exited ${code ?? signal}`)),
     );
   });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function processTreeAlive(child) {
+  if (!child.pid) return false;
+  if (process.platform === "win32") {
+    return child.exitCode === null && child.signalCode === null;
+  }
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "ESRCH") return false;
+    if (err?.code === "EPERM") return true;
+    throw err;
+  }
+}
+
+async function signalProcessTree(child, signal) {
+  if (!child.pid || !processTreeAlive(child)) return;
+  if (process.platform === "win32") {
+    await new Promise((resolve) => {
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.once("error", resolve);
+      killer.once("exit", resolve);
+    });
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch (err) {
+    if (err?.code !== "ESRCH") throw err;
+  }
+}
+
+async function waitForProcessTrees(childrenToWaitFor, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let live = childrenToWaitFor.filter(processTreeAlive);
+  while (live.length > 0 && Date.now() < deadline) {
+    await delay(50);
+    live = live.filter(processTreeAlive);
+  }
+  return live;
 }
 
 async function waitFor(url, timeoutMs) {
@@ -130,12 +195,41 @@ async function createDaily(apiBase, title, body) {
 }
 
 function cleanup() {
-  for (const child of children) child.kill("SIGTERM");
-  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  cleanupPromise ??= (async () => {
+    const tracked = [...children].reverse();
+    const live = tracked.filter(processTreeAlive);
+    await Promise.all(live.map((child) => signalProcessTree(child, "SIGTERM")));
+    let remaining = await waitForProcessTrees(live, PROCESS_TREE_GRACE_MS);
+    if (remaining.length > 0) {
+      await Promise.all(remaining.map((child) => signalProcessTree(child, "SIGKILL")));
+      remaining = await waitForProcessTrees(remaining, PROCESS_TREE_KILL_MS);
+    }
+    if (remaining.length > 0) {
+      const pids = remaining.map((child) => child.pid).join(", ");
+      throw new Error(`process trees did not exit before cleanup: ${pids}`);
+    }
+    children.clear();
+    rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  })();
+  return cleanupPromise;
 }
-process.on("SIGINT", () => { cleanup(); process.exit(130); });
-process.on("SIGTERM", () => { cleanup(); process.exit(143); });
 
+function handleSignal(exitCode) {
+  if (requestedExitCode !== null) return;
+  requestedExitCode = exitCode;
+  void cleanup().then(
+    () => process.exit(exitCode),
+    (err) => {
+      console.error(`[e2e] cleanup failed: ${err?.message ?? err}`);
+      process.exit(exitCode);
+    },
+  );
+}
+
+process.once("SIGINT", () => handleSignal(130));
+process.once("SIGTERM", () => handleSignal(143));
+
+let exitCode = 0;
 try {
   mkdirSync(tempRoot, { recursive: true });
   await runChecked("cargo", ["run", "-p", "tesela-fixtures-cli", "--", "--preset", "tiny", "--out", mosaic]);
@@ -201,12 +295,20 @@ try {
     `- RACE_POINTER_ROOT <!-- bid:${BIDS.racePointerRoot} -->`,
     `- RACE_ALT_ROOT <!-- bid:${BIDS.raceAltRoot} -->`,
     `- RACE_ALT_SIBLING <!-- bid:${BIDS.raceAltSibling} -->`,
+    `- CROSS_BEFORE_ROOT <!-- bid:${BIDS.crossBeforeRoot} -->`,
+    `  - CROSS_BEFORE_CHILD <!-- bid:${BIDS.crossBeforeChild} -->`,
+    `- CROSS_AFTER_ROOT <!-- bid:${BIDS.crossAfterRoot} -->`,
+    `  - CROSS_AFTER_CHILD <!-- bid:${BIDS.crossAfterChild} -->`,
     "",
   ].join("\n"));
 
   await createDaily(apiBase, DEST_DAILY, [
+    `- CROSS_BEFORE_TARGET <!-- bid:${BIDS.crossBeforeTarget} -->`,
+    `  - CROSS_BEFORE_TARGET_CHILD <!-- bid:${BIDS.crossBeforeTargetChild} -->`,
     `- CROSS_TARGET <!-- bid:${BIDS.crossTarget} -->`,
     `  - CROSS_TARGET_CHILD <!-- bid:${BIDS.crossTargetChild} -->`,
+    `- CROSS_AFTER_TARGET <!-- bid:${BIDS.crossAfterTarget} -->`,
+    `  - CROSS_AFTER_TARGET_CHILD <!-- bid:${BIDS.crossAfterTargetChild} -->`,
     `- EXISTING_END <!-- bid:${BIDS.existingEnd} -->`,
     `- KEYBOARD_BEFORE_TARGET <!-- bid:${BIDS.keyboardBeforeTarget} -->`,
     `- KEYBOARD_INSIDE_TARGET <!-- bid:${BIDS.keyboardInsideTarget} -->`,
@@ -269,10 +371,15 @@ try {
       TESELA_E2E_ABSENT_DAILY: ABSENT_DAILY,
     },
   });
-  cleanup();
-  process.exit(0);
 } catch (err) {
-  console.error(`[e2e] failed: ${err?.message ?? err}`);
-  cleanup();
-  process.exit(1);
+  exitCode = requestedExitCode ?? 1;
+  if (requestedExitCode === null) console.error(`[e2e] failed: ${err?.message ?? err}`);
 }
+
+try {
+  await cleanup();
+} catch (err) {
+  console.error(`[e2e] cleanup failed: ${err?.message ?? err}`);
+  exitCode = requestedExitCode ?? 1;
+}
+process.exit(exitCode);

@@ -41,6 +41,10 @@ const BIDS = {
   racePointerRoot: "20000000-0000-4000-8000-000000000018",
   raceAltRoot: "20000000-0000-4000-8000-000000000019",
   raceAltSibling: "20000000-0000-4000-8000-000000000020",
+  crossBeforeRoot: "20000000-0000-4000-8000-000000000021",
+  crossBeforeChild: "20000000-0000-4000-8000-000000000022",
+  crossAfterRoot: "20000000-0000-4000-8000-000000000023",
+  crossAfterChild: "20000000-0000-4000-8000-000000000024",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -52,6 +56,10 @@ const BIDS = {
   keyboardAfterTargetChild: "30000000-0000-4000-8000-000000000008",
   retryTarget: "30000000-0000-4000-8000-000000000009",
   racePointerTarget: "30000000-0000-4000-8000-000000000010",
+  crossBeforeTarget: "30000000-0000-4000-8000-000000000011",
+  crossBeforeTargetChild: "30000000-0000-4000-8000-000000000012",
+  crossAfterTarget: "30000000-0000-4000-8000-000000000013",
+  crossAfterTargetChild: "30000000-0000-4000-8000-000000000014",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
@@ -98,6 +106,50 @@ async function dragToPlacement(
   await sourceHandle.dragTo(targetRow, {
     targetPosition: { x: Math.min(24, Math.max(2, size.width / 2)), y },
   });
+}
+
+async function dragAcrossDaysToPlacement(
+  page: Page,
+  sourceHandle: Locator,
+  targetRow: Locator,
+  placement: "before" | "inside" | "after",
+): Promise<void> {
+  await expect(sourceHandle).toBeVisible();
+  await sourceHandle.scrollIntoViewIfNeeded();
+  const sourceBox = await sourceHandle.boundingBox();
+  if (!sourceBox) throw new Error("Drag source has no bounding box");
+
+  const sourcePoint = {
+    x: sourceBox.x + sourceBox.width / 2,
+    y: sourceBox.y + sourceBox.height / 2,
+  };
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down();
+  let mouseDown = true;
+  try {
+    // Cross the browser's native drag threshold before scrolling the distant
+    // target into view. Locator.dragTo scrolls first, which can move the
+    // pressed source off-screen before Chromium emits dragstart.
+    await page.mouse.move(sourcePoint.x + 8, sourcePoint.y + 2, { steps: 4 });
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "selecting");
+    await targetRow.scrollIntoViewIfNeeded();
+    const targetBox = await targetRow.boundingBox();
+    if (!targetBox) throw new Error("Drop target has no bounding box");
+    const y = placement === "before"
+      ? targetBox.y + 2
+      : placement === "inside"
+        ? targetBox.y + targetBox.height / 2
+        : targetBox.y + Math.max(2, targetBox.height - 2);
+    await page.mouse.move(
+      targetBox.x + Math.min(24, Math.max(2, targetBox.width / 2)),
+      y,
+      { steps: 12 },
+    );
+    await page.mouse.up();
+    mouseDown = false;
+  } finally {
+    if (mouseDown) await page.mouse.up();
+  }
 }
 
 async function dispatchToPlacement(
@@ -242,7 +294,6 @@ async function startPaletteMove(page: Page, bid: string): Promise<void> {
   if (!afterEnter.sourceBids.includes(bid)) {
     throw new Error(`Palette move source mismatch: ${JSON.stringify(snapshots)}`);
   }
-  console.log(`palette move snapshots: ${JSON.stringify(snapshots)}`);
   await expect(row(page, bid)).toHaveAttribute("data-move-source", "true");
 }
 
@@ -298,6 +349,15 @@ async function navigateMoveTo(page: Page, bid: string): Promise<void> {
     await page.keyboard.press("j");
   }
   throw new Error(`Move mode did not reach target ${bid}`);
+}
+
+async function navigateMoveToDay(page: Page, date: string): Promise<void> {
+  const target = day(page, date);
+  for (let presses = 0; presses < 80; presses++) {
+    if (await target.getAttribute("data-drop-placement") === "append") return;
+    await page.keyboard.press("j");
+  }
+  throw new Error(`Move mode did not reach day ${date}`);
 }
 
 async function keyboardMove(
@@ -495,35 +555,94 @@ test.describe("block subtree relocation", () => {
     ]);
   });
 
-  test("nested cross-day drag preserves identity, property, focus, and reload", async ({ page, request }) => {
+  test("cross-day pointer moves honor before, inside, and after with exact hierarchy", async ({ page, request }) => {
     const { source, destination } = await openJournal(page);
-    await dispatchToPlacement(
+    let moveRequests = 0;
+    page.on("request", (outbound) => {
+      if (outbound.url().includes("/api/blocks/move-subtree")) moveRequests++;
+    });
+    const expectMoveRequestCount = async (expected: number) => {
+      if (moveRequests === expected) return;
+      throw new Error(`Cross-day pointer move issued ${moveRequests}/${expected} requests`);
+    };
+
+    await dragAcrossDaysToPlacement(
+      page,
+      row(page, BIDS.crossBeforeRoot).locator("[data-move-handle]"),
+      row(page, BIDS.crossBeforeTarget),
+      "before",
+    );
+    await waitForMoveIdle(page);
+    await expectMoveRequestCount(1);
+    await expect(row(page, BIDS.crossBeforeRoot).locator(".cm-content")).toBeFocused();
+
+    await dragAcrossDaysToPlacement(
       page,
       row(page, BIDS.crossRoot).locator("[data-move-handle]"),
       row(page, BIDS.crossTarget),
       "inside",
     );
     await waitForMoveIdle(page);
-
-    await expect(source.locator(`[data-block-bid="${BIDS.crossRoot}"]`)).toHaveCount(0);
-    await expect(destination.locator(`[data-block-bid="${BIDS.crossRoot}"]`)).toBeVisible();
-    await expect(destination.locator(`[data-block-bid="${BIDS.crossChild}"]`)).toBeVisible();
-    await expect(destination.locator(`[data-block-bid="${BIDS.crossGrandchild}"]`)).toBeVisible();
+    await expectMoveRequestCount(2);
     await expect(row(page, BIDS.crossRoot).locator(".cm-content")).toBeFocused();
 
+    await dragAcrossDaysToPlacement(
+      page,
+      row(page, BIDS.crossAfterRoot).locator("[data-move-handle]"),
+      row(page, BIDS.crossAfterTarget),
+      "after",
+    );
+    await waitForMoveIdle(page);
+    await expectMoveRequestCount(3);
+    await expect(row(page, BIDS.crossAfterRoot).locator(".cm-content")).toBeFocused();
+
+    await expect(source.locator(`[data-block-bid="${BIDS.crossBeforeRoot}"]`)).toHaveCount(0);
+    await expect(source.locator(`[data-block-bid="${BIDS.crossRoot}"]`)).toHaveCount(0);
+    await expect(source.locator(`[data-block-bid="${BIDS.crossAfterRoot}"]`)).toHaveCount(0);
+    await expectOrdered(destination, [
+      BIDS.crossBeforeRoot,
+      BIDS.crossBeforeChild,
+      BIDS.crossBeforeTarget,
+      BIDS.crossBeforeTargetChild,
+      BIDS.crossTarget,
+      BIDS.crossTargetChild,
+      BIDS.crossRoot,
+      BIDS.crossChild,
+      BIDS.crossGrandchild,
+      BIDS.crossAfterTarget,
+      BIDS.crossAfterTargetChild,
+      BIDS.crossAfterRoot,
+      BIDS.crossAfterChild,
+    ]);
+    await expect(row(page, BIDS.crossBeforeRoot)).toHaveAttribute("style", /padding-left:\s*0px/);
+    await expect(row(page, BIDS.crossBeforeChild)).toHaveAttribute("style", /padding-left:\s*24px/);
+    await expect(row(page, BIDS.crossRoot)).toHaveAttribute("style", /padding-left:\s*24px/);
+    await expect(row(page, BIDS.crossChild)).toHaveAttribute("style", /padding-left:\s*48px/);
+    await expect(row(page, BIDS.crossGrandchild)).toHaveAttribute("style", /padding-left:\s*72px/);
+    await expect(row(page, BIDS.crossAfterRoot)).toHaveAttribute("style", /padding-left:\s*0px/);
+    await expect(row(page, BIDS.crossAfterChild)).toHaveAttribute("style", /padding-left:\s*24px/);
+
     let destinationContent = await noteContent(request, DESTINATION);
+    expect(occurrences(destinationContent, BIDS.crossBeforeRoot)).toBe(1);
+    expect(occurrences(destinationContent, BIDS.crossBeforeChild)).toBe(1);
     expect(occurrences(destinationContent, BIDS.crossRoot)).toBe(1);
     expect(occurrences(destinationContent, BIDS.crossChild)).toBe(1);
     expect(occurrences(destinationContent, BIDS.crossGrandchild)).toBe(1);
+    expect(occurrences(destinationContent, BIDS.crossAfterRoot)).toBe(1);
+    expect(occurrences(destinationContent, BIDS.crossAfterChild)).toBe(1);
     expect(destinationContent).toContain("status:: doing");
 
     await page.reload();
     await mountDay(page, SOURCE);
     await mountDay(page, DESTINATION);
+    await expect(row(page, BIDS.crossBeforeRoot)).toBeVisible();
     await expect(row(page, BIDS.crossRoot)).toBeVisible();
+    await expect(row(page, BIDS.crossAfterRoot)).toBeVisible();
     await expect(day(page, SOURCE).locator(`[data-block-bid="${BIDS.crossRoot}"]`)).toHaveCount(0);
     destinationContent = await noteContent(request, DESTINATION);
+    expect(occurrences(destinationContent, BIDS.crossBeforeRoot)).toBe(1);
     expect(occurrences(destinationContent, BIDS.crossRoot)).toBe(1);
+    expect(occurrences(destinationContent, BIDS.crossAfterRoot)).toBe(1);
   });
 
   test("existing and untouched synthetic date headers append without a phantom blank", async ({ page, request }) => {
@@ -540,6 +659,21 @@ test.describe("block subtree relocation", () => {
     const absentBefore = await request.get(`/api/notes/${ABSENT}`);
     expect(absentBefore.status()).toBe(404);
     const absent = await mountDay(page, ABSENT);
+    const absentAfterMount = await request.get(`/api/notes/${ABSENT}`);
+    expect(absentAfterMount.status()).toBe(404);
+
+    const rejectedTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.setData("text/plain", "external text drop");
+      return transfer;
+    });
+    await absent.locator("[data-move-day-target='true']").dispatchEvent("drop", {
+      dataTransfer: rejectedTransfer,
+    });
+    await rejectedTransfer.dispose();
+    const absentAfterRejectedDrop = await request.get(`/api/notes/${ABSENT}`);
+    expect(absentAfterRejectedDrop.status()).toBe(404);
+
     await dispatchAppend(
       page,
       row(page, BIDS.absentAppendRoot).locator("[data-move-handle]"),
@@ -596,7 +730,7 @@ test.describe("block subtree relocation", () => {
   });
 
   test("palette Escape cancels and leader j/k plus b/i/a move across days", async ({ page, request }) => {
-    await openJournal(page);
+    const { source, destination } = await openJournal(page);
     let canceledRequests = 0;
     await page.route(MOVE_ROUTE, async (route) => {
       canceledRequests++;
@@ -607,6 +741,15 @@ test.describe("block subtree relocation", () => {
     await expect.poll(() => page.locator(".journal").getAttribute("data-move-mode")).toBeNull();
     expect(canceledRequests).toBe(0);
     await page.unroute(MOVE_ROUTE);
+
+    await startLeaderMove(page, BIDS.keyboardCancelRoot);
+    await navigateMoveToDay(page, DESTINATION);
+    await page.keyboard.press("a");
+    await waitForMoveIdle(page);
+    await assertCrossDayProjection(page, request, BIDS.keyboardCancelRoot);
+    await expect(source.locator(`[data-block-bid="${BIDS.keyboardCancelRoot}"]`)).toHaveCount(0);
+    await expect(destination.locator(`[data-block-bid="${BIDS.keyboardCancelRoot}"]`)).toBeVisible();
+    await expectOrdered(destination, [BIDS.racePointerTarget, BIDS.keyboardCancelRoot]);
 
     await keyboardMove(
       page,
@@ -660,8 +803,10 @@ test.describe("block subtree relocation", () => {
     expect(content).toMatch(new RegExp(`^  - ALT_MOVER .*${BIDS.altMover}`, "m"));
   });
 
-  test("retry-safe 503 retains the exact request, source, and frozen UI", async ({ page }) => {
+  test("retry-safe 503 retains the exact request, source, and frozen UI", async ({ page, request }) => {
     const { source, destination } = await openJournal(page);
+    const sourceBefore = await noteContent(request, SOURCE);
+    const destinationBefore = await noteContent(request, DESTINATION);
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let attempts = 0;
@@ -696,13 +841,24 @@ test.describe("block subtree relocation", () => {
     await expect(source.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
     await expect(destination.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
     await expect(source.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toBeVisible();
+    await expect(destination.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toHaveCount(0);
 
     releaseFirst();
     await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
     await expect(page.locator("[data-move-status='retryable']")).toContainText(/R or Enter/i);
     await expect(page.locator(".tesela-toast-warn")).toContainText(/retry safely/i);
+    const expectRetryFrozen = async () => {
+      await expect(source.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
+      await expect(destination.locator("[data-block-outliner]")).toHaveAttribute("inert", "");
+      await expect(source.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toBeVisible();
+      await expect(destination.locator(`[data-block-bid="${BIDS.retryRoot}"]`)).toHaveCount(0);
+      expect(await noteContent(request, SOURCE)).toBe(sourceBefore);
+      expect(await noteContent(request, DESTINATION)).toBe(destinationBefore);
+    };
+    await expectRetryFrozen();
     await page.keyboard.press("Escape");
     await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "retryable");
+    await expectRetryFrozen();
 
     await page.keyboard.press("r");
     await expect.poll(() => attempts).toBe(2);
