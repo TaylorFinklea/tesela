@@ -1110,6 +1110,26 @@ impl LoroEngine {
         }
     }
 
+    fn mismatched_proof_is_inherited_from_same_note_source(
+        tree: &LoroTree,
+        prepared: &PreparedRelocation,
+        proof_node: TreeID,
+    ) -> bool {
+        if prepared.request.source_note_id != prepared.request.destination_note_id {
+            return false;
+        }
+        let Some(source_root) = prepared.blocks.first().map(|block| block.source_node) else {
+            return false;
+        };
+        if proof_node != source_root {
+            return false;
+        }
+        let mut matching_roots = live_root_nodes(tree)
+            .into_iter()
+            .filter(|node| node_bid(tree, *node) == Some(prepared.request.root_bid));
+        matching_roots.next() == Some(source_root) && matching_roots.next().is_none()
+    }
+
     fn destination_snapshot_complete(
         &self,
         prepared: &PreparedRelocation,
@@ -1128,6 +1148,13 @@ impl LoroEngine {
             return Ok(false);
         };
         if proof.move_id != prepared.request.move_id || proof.request_hash != request_hash {
+            if proof.move_id != prepared.request.move_id
+                && Self::mismatched_proof_is_inherited_from_same_note_source(
+                    &tree, prepared, root_node,
+                )
+            {
+                return Ok(false);
+            }
             return Err(SyncError::RelocationConflict(
                 "destination root carries different relocation metadata".into(),
             ));
