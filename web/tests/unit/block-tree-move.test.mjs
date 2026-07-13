@@ -925,10 +925,13 @@ test("late move completions cannot publish UI after Journal teardown", () => {
     "durable response/cache work must finish before the success UI guard",
   );
   assert.ok((focus.match(/if \(componentDisposed\) return;/g) ?? []).length >= 2);
+  assert.doesNotMatch(showToast, /pageInactive/);
+  assert.doesNotMatch(execute, /pageInactive/);
+  assert.doesNotMatch(focus, /pageInactive/);
   assert.match(cleanup, /return \(\) => \{\s*componentDisposed = true;[\s\S]*clearMoveToast\(\)/);
 });
 
-test("Journal reports ensure-dailies failures only while the component is mounted", () => {
+test("Journal reports live ensure-dailies failures and queues inactive-page retries", () => {
   const ensureDailies = sourceBetween(
     journalViewSource,
     "let ensuredFor",
@@ -937,8 +940,8 @@ test("Journal reports ensure-dailies failures only while the component is mounte
 
   assert.match(
     ensureDailies,
-    /\.catch\(\(e\) => \{\s*if \(componentDisposed\) return;\s*console\.error\("Failed to ensure dailies:", e\);\s*\}\)/,
-    "teardown failures must be silent, while mounted failures still reach console.error",
+    /\.catch\(\(e\) => \{\s*if \(componentDisposed\) return;\s*if \(pageInactive\) \{\s*ensureDailiesRetryNeeded = true;\s*return;\s*\}\s*console\.error\("Failed to ensure dailies:", e\);\s*\}\)/,
+    "teardown and inactive-page failures must be silent, while live failures still reach console.error",
   );
 });
 
@@ -947,13 +950,14 @@ test("Journal page lifecycle owns async error reporting across unload and BFCach
 
   assert.match(
     lifecycle,
-    /const markComponentDisposed = \(\) => \{ componentDisposed = true; \};\s*const markComponentActive = \(\) => \{ componentDisposed = false; \};/,
+    /const markPageInactive = \(\) => \{ pageInactive = true; \};\s*const restorePageActivity = \(\) => \{\s*pageInactive = false;\s*if \(!ensureDailiesRetryNeeded\) return;\s*ensureDailiesRetryNeeded = false;\s*ensuredFor = "";\s*\};/,
   );
-  assert.match(lifecycle, /window\.addEventListener\("pagehide", markComponentDisposed\)/);
-  assert.match(lifecycle, /window\.addEventListener\("pageshow", markComponentActive\)/);
+  assert.match(lifecycle, /window\.addEventListener\("pagehide", markPageInactive\)/);
+  assert.match(lifecycle, /window\.addEventListener\("pageshow", restorePageActivity\)/);
+  assert.doesNotMatch(lifecycle, /componentDisposed = false/);
   assert.match(
     lifecycle,
-    /return \(\) => \{\s*componentDisposed = true;[\s\S]*window\.removeEventListener\("pagehide", markComponentDisposed\)[\s\S]*window\.removeEventListener\("pageshow", markComponentActive\)/,
+    /return \(\) => \{\s*componentDisposed = true;[\s\S]*window\.removeEventListener\("pagehide", markPageInactive\)[\s\S]*window\.removeEventListener\("pageshow", restorePageActivity\)/,
   );
 });
 
