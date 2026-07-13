@@ -615,3 +615,9 @@ Fable orchestrated a first full GPT-5.6 fleet (Taylor-directed 5.6-only, all thr
 **Decision:** declare `bundle.macOS.minimumSystemVersion` as `12.0`. Tauri otherwise targets macOS 10.13, but the bundled transcribe.cpp/ggml backend requires C++ `std::filesystem` (macOS 10.15) and calls Metal shared-event synchronization APIs introduced in macOS 12 without a compatibility guard. macOS 12 is therefore the first supportable deployment target, not merely a compiler workaround.
 
 An environment-only `MACOSX_DEPLOYMENT_TARGET` override was rejected: it would leave the canonical build script broken on a clean machine and let the app metadata overstate runtime compatibility. Keeping the minimum in `tauri.conf.json` makes Tauri apply the same boundary to compilation and the installed bundle's `LSMinimumSystemVersion`.
+
+### 2026-07-12 — A paired desktop embed activates the mosaic's relay configuration
+
+**Decision:** embedded desktop mode resolves its relay URL from `TESELA_EMBED_RELAY_URL` / `desktop.toml` first, then falls back to the selected mosaic's `[sync.relay]` configuration. Pairing writes that mosaic configuration and reports that a restart is required; the restarted app must therefore consume it rather than forcing `TESELA_DISABLE_RELAY` and remaining LAN-only.
+
+The earlier explicit-opt-in-only rule was meant to prevent a desktop embed and standalone server from joining the relay with the same device identity. That duplicate-writer state cannot occur through the supported embedded path because `serve()` holds the mosaic's exclusive server flock for the app lifetime; a standalone server on the same mosaic makes the app fail to start. Explicit desktop configuration remains the highest-precedence escape hatch, while an unpaired mosaic with no relay remains loopback/LAN-only.

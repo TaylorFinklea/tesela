@@ -32,6 +32,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 
+use tesela_core::config::Config;
 use tesela_server::{serve, ServeConfig};
 
 /// Owns the in-process server's shutdown trigger + join handle so the Exit
@@ -70,14 +71,33 @@ fn resolve_remote_url() -> Option<String> {
     desktop_config_value("TESELA_DESKTOP_REMOTE_URL", |c| c.remote_url.clone())
 }
 
-/// If the EMBEDDED server should JOIN the relay (the spine) directly — instead
-/// of the default loopback-only Loro-replica — return the relay base URL.
-/// Source: `TESELA_EMBED_RELAY_URL` env, else `relay_url = "..."` in
-/// desktop.toml. ⚠ Only opt in when this embed is the SOLE writer for the mosaic
-/// — never alongside a standalone server, or two relay participants share one
-/// device_id. `None` → embed stays loopback-only (default).
-fn resolve_embed_relay_url() -> Option<String> {
-    desktop_config_value("TESELA_EMBED_RELAY_URL", |c| c.relay_url.clone())
+/// If the embedded server should join the relay directly, return its base URL.
+/// An explicit desktop override wins; otherwise use the selected mosaic's
+/// persisted pairing config. The embedded server owns that mosaic's flock, so
+/// it is necessarily the sole writer while the app is running.
+fn resolve_embed_relay_url(mosaic: Option<&std::path::Path>) -> Option<String> {
+    resolve_embed_relay_url_from(
+        desktop_config_value("TESELA_EMBED_RELAY_URL", |c| c.relay_url.clone()),
+        mosaic,
+    )
+}
+
+fn resolve_embed_relay_url_from(
+    explicit: Option<String>,
+    mosaic: Option<&std::path::Path>,
+) -> Option<String> {
+    explicit
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| mosaic.and_then(mosaic_relay_url))
+}
+
+fn mosaic_relay_url(mosaic: &std::path::Path) -> Option<String> {
+    let config = Config::load(&mosaic.join(".tesela").join("config.toml")).ok()?;
+    config
+        .sync
+        .relay
+        .map(|relay| relay.url)
+        .filter(|url| !url.trim().is_empty())
 }
 
 /// Flat keys read from `desktop.toml`. Mirrors what `resolve_remote_url` /
@@ -104,7 +124,10 @@ fn desktop_config() -> DesktopConfig {
 /// Read a config value, with an `env_var` override (env wins — terminal
 /// launches; the file works for Finder/Dock launches that don't inherit
 /// shell env).
-fn desktop_config_value(env_var: &str, from_file: impl FnOnce(&DesktopConfig) -> Option<String>) -> Option<String> {
+fn desktop_config_value(
+    env_var: &str,
+    from_file: impl FnOnce(&DesktopConfig) -> Option<String>,
+) -> Option<String> {
     if let Ok(v) = std::env::var(env_var) {
         let v = v.trim().to_string();
         if !v.is_empty() {
@@ -127,7 +150,7 @@ fn static_dir() -> PathBuf {
 /// `spawn_server` set on the child — minus the parent-death watchdog vars (no
 /// child to orphan) and plus `TESELA_EMBEDDED` (lets the server disable the
 /// `/server/restart` re-exec, which would relaunch THIS binary, not a server).
-fn set_embed_env() {
+fn set_embed_env(config: &ServeConfig) {
     // Ephemeral loopback port; the real one comes back via `on_bound`.
     std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
     std::env::set_var("TESELA_STATIC_DIR", static_dir());
@@ -136,8 +159,10 @@ fn set_embed_env() {
     std::env::set_var("TESELA_DISABLE_PEER_SYNC", "1");
     // In-process: a UI-triggered server restart can't re-exec a child.
     std::env::set_var("TESELA_EMBEDDED", "1");
-    // Relay participation (see resolve_embed_relay_url). DEFAULT loopback-only.
-    match resolve_embed_relay_url() {
+    // Pairing persists the relay in the mosaic config. This is the same
+    // already-resolved config carried into serve(), so URL and mosaic cannot
+    // diverge if cwd/default configuration changes during startup.
+    match resolve_embed_relay_url(Some(config.mosaic.as_path())) {
         Some(url) => {
             std::env::remove_var("TESELA_DISABLE_RELAY");
             std::env::set_var("TESELA_RELAY_URL", url);
@@ -156,15 +181,17 @@ enum Mode {
     /// Wrap an external hub/relay's `/g` — no server, no flock.
     Remote(String),
     /// Default: a loopback Loro-replica node served in-process.
-    Embedded,
+    Embedded(ServeConfig),
 }
 
 fn main() {
     let mode = match resolve_remote_url() {
         Some(remote) => Mode::Remote(format!("{}/g", remote.trim_end_matches('/'))),
         None => {
-            set_embed_env();
-            Mode::Embedded
+            let config = ServeConfig::resolve(resolve_mosaic())
+                .expect("resolve mosaic for embedded Tesela desktop");
+            set_embed_env(&config);
+            Mode::Embedded(config)
         }
     };
     run(mode);
@@ -210,7 +237,7 @@ fn run(mode: Mode) {
         .setup(move |app| {
             let url = match mode {
                 Mode::Remote(url) => url,
-                Mode::Embedded => start_embedded_server(app, &setup_handle)?,
+                Mode::Embedded(config) => start_embedded_server(app, &setup_handle, config)?,
             };
             build_main_window(app, &url)?;
             build_tray(app)?;
@@ -273,9 +300,8 @@ fn run(mode: Mode) {
 fn start_embedded_server(
     app: &mut tauri::App,
     handle: &tokio::runtime::Handle,
+    config: ServeConfig,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let config =
-        ServeConfig::resolve(resolve_mosaic()).map_err(|e| format!("resolve mosaic: {e}"))?;
     let (bound_tx, bound_rx) = std::sync::mpsc::channel::<std::net::SocketAddr>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -506,4 +532,61 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_mosaic_relay_enables_embedded_relay_without_desktop_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tesela_dir = tmp.path().join(".tesela");
+        std::fs::create_dir_all(&tesela_dir).unwrap();
+        std::fs::write(
+            tesela_dir.join("config.toml"),
+            "[sync.relay]\nurl = \"https://relay.example.test\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_embed_relay_url_from(None, Some(tmp.path())).as_deref(),
+            Some("https://relay.example.test")
+        );
+    }
+
+    #[test]
+    fn explicit_desktop_relay_override_wins_over_mosaic_pairing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tesela_dir = tmp.path().join(".tesela");
+        std::fs::create_dir_all(&tesela_dir).unwrap();
+        std::fs::write(
+            tesela_dir.join("config.toml"),
+            "[sync.relay]\nurl = \"https://paired.example.test\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_embed_relay_url_from(
+                Some("https://override.example.test".to_string()),
+                Some(tmp.path()),
+            )
+            .as_deref(),
+            Some("https://override.example.test")
+        );
+    }
+
+    #[test]
+    fn embedded_mode_carries_the_already_resolved_serve_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = tmp.path().to_path_buf();
+        let mode = Mode::Embedded(ServeConfig {
+            mosaic: expected.clone(),
+        });
+
+        match mode {
+            Mode::Embedded(config) => assert_eq!(config.mosaic, expected),
+            Mode::Remote(_) => panic!("expected embedded mode"),
+        }
+    }
 }

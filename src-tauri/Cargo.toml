@@ -25,9 +25,13 @@ tauri-plugin-updater = { version = "2", features = [] }
 # runtime, instead of being spawned as a child binary. Pulls whisper-rs/objc2
 # into this binary's link (previously linked only into the child).
 tesela-server = { path = "../crates/tesela-server" }
+tesela-core = { path = "../crates/tesela-core" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
