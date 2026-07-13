@@ -656,10 +656,13 @@ git commit -m "feat(web): add block relocation command contract"
 **Files:**
 
 - Modify: `crates/tesela-server/src/routes/ws.rs`
+- Modify: `crates/tesela-server/src/lib.rs`
+- Modify: `web/src/lib/block-ops-saver.ts`
 - Modify: `web/src/lib/ws-client.svelte.ts`
 - Modify: `web/src/lib/loro/doc-registry.ts`
 - Modify: `web/src/lib/loro/note-doc-registry.svelte.ts`
 - Create: `web/src/lib/loro/server-barrier.ts`
+- Modify: `web/tests/unit/block-ops-saver.test.mjs`
 - Modify: `web/tests/unit/doc-registry.test.mjs`
 - Create: `web/tests/unit/loro-server-barrier.test.mjs`
 - Modify: `web/src/lib/components/BlockOutliner.svelte`
@@ -719,9 +722,11 @@ In `loro-server-barrier.test.mjs`, drive a dependency-injected tracker: an open 
 
 In `doc-registry.test.mjs`, prove a forced per-note flush cancels its scheduled callback, reports false when the socket cannot accept a dirty delta, reports true after a real handoff, and leaves no second frame for the old callback.
 
-Add Rust cases beside the current WS route tests for strict barrier control parsing/UUID validation and acknowledgement serialization. The ordering assertion is structural: `handle_socket` must await each binary frame's `route_inbound_binary` before it processes the following text barrier and enqueues the acknowledgement to that same connection.
+In `block-ops-saver.test.mjs`, prove `settle(noteId)` flushes and awaits a queued request; waits for an existing request without aborting it; loops through a newer enqueue; awaits the Promise-capable whole-body fallback; and rejects when that fallback fails.
 
-Run: `node --test web/tests/unit/loro-server-barrier.test.mjs web/tests/unit/doc-registry.test.mjs`
+Add Rust cases beside the current WS route tests for strict barrier control parsing/UUID validation and acknowledgement serialization. Add a real-socket test in `lib.rs` that sends a TLR2 edit then a barrier, observes the matching acknowledgement only after the engine render contains that edit, and proves an unresolved/failed frame produces `ok:false`. The ordering assertion is structural too: `handle_socket` must await each binary frame's `route_inbound_binary` before it processes the following text barrier and enqueues the acknowledgement to that same connection.
+
+Run: `node --test web/tests/unit/loro-server-barrier.test.mjs web/tests/unit/doc-registry.test.mjs web/tests/unit/block-ops-saver.test.mjs`
 Expected: FAIL for missing barrier tracker and flush result.
 
 Run: `cargo test -p tesela-server routes::ws::tests`
@@ -729,11 +734,13 @@ Expected: FAIL for missing barrier protocol helpers/cases.
 
 - [ ] **Step 4: Implement the server-applied Loro barrier**
 
-Keep acknowledgements connection-local rather than adding them to the global `WsEvent` broadcast. Give `handle_socket` a direct outbound text channel consumed by its existing send task. Accept only a strict `{"event":"loro_barrier","barrier_id":"<uuid>"}` inbound text frame. Because the receive loop handles messages sequentially and awaits binary apply/materialization, enqueue `{"event":"loro_barrier_ack","barrier_id":"<same uuid>"}` only when every earlier frame on that socket is server-durable.
+Keep acknowledgements connection-local rather than adding them to the global `WsEvent` broadcast. Give `handle_socket` a direct outbound text channel consumed by its existing send task. Accept only a strict `{"event":"loro_barrier","barrier_id":"<uuid>"}` inbound text frame. Because the receive loop handles messages sequentially and awaits binary apply/materialization, enqueue `{"event":"loro_barrier_ack","barrier_id":"<same uuid>","ok":true|false}` only after every earlier frame on that socket finishes. Track one cleanliness window per connection: presence is neutral; a valid TLR2 frame is clean only when every update reports `applied`; malformed, failed, or pending imports make the next barrier `ok:false` even if snapshot catch-up ran, then reset the window. A failed frame must be retried because a fetched snapshot is not proof it contained this browser edit.
 
-Factor the browser pending-request map into `server-barrier.ts`; `ws-client.svelte.ts` sends the control frame on the current open socket, resolves only the exact acknowledgement, and rejects every pending barrier on timeout/close/reconnect. In `doc-registry.ts`, make the forced per-note flush report whether all dirty outbound bytes were handed to `sendBinary`; do not advance or claim readiness while offline. `note-doc-registry.svelte.ts` flushes that note and then awaits the same-socket server barrier. Even a currently clean doc sends a barrier, because a prior rAF flush may have handed bytes to the socket without server acknowledgement.
+Factor the browser pending-request map into `server-barrier.ts`; `ws-client.svelte.ts` captures one open socket plus connection generation, synchronously runs the registry flush callback, verifies every binary handoff stayed on that captured socket, then sends the control frame on it. Resolve only the exact positive acknowledgement; reject mismatched/stale generations, `ok:false`, timeout, close/reconnect, or a dropped send. In `doc-registry.ts`, retain a server-acknowledged version checkpoint distinct from the optimistic handoff cursor. Barrier preparation re-exports every local op since that checkpoint for all unique affected notes; only a positive acknowledgement advances the captured checkpoints. A negative/timeout leaves them unchanged so retry re-exports the cumulative update. Serialize connection-wide barriers so overlapping panes cannot regress checkpoints. `note-doc-registry.svelte.ts` exposes one batch settle for source/destination notes. Even currently clean docs send a barrier, because a prior rAF flush may have handed bytes to the socket without server acknowledgement.
 
-Run: `node --test web/tests/unit/loro-server-barrier.test.mjs web/tests/unit/doc-registry.test.mjs`
+Add awaitable `BlockOpsSaver.settle(noteId)`: preserve and await the current request instead of aborting it, flush/await any queued successor, and loop until quiet. Make its failure fallback Promise-capable and await it; fallback rejection propagates. Existing fire-and-forget callers may ignore the returned completion, but relocation preparation may not.
+
+Run: `node --test web/tests/unit/loro-server-barrier.test.mjs web/tests/unit/doc-registry.test.mjs web/tests/unit/block-ops-saver.test.mjs`
 Expected: PASS.
 
 Run: `cargo test -p tesela-server routes::ws::tests`
@@ -760,17 +767,17 @@ Each row exposes `data-note-id`/`data-block-bid`, handle `data-move-handle`, and
 
 When relocation bindings are present, route Alt-Up, Alt-Down, and Alt-Right into the Journal-owned session and the same same-note API instead of `saveBlocks`/whole-note PUT. This keeps retry-safe 503 on the one exact-request retry path; a second Alt press must not mint a replacement move id for a retained retry. Leave the existing granular Alt-Shift-Left outdent path unchanged.
 
-Before an opted-in Dailies outliner submits any pointer or Alt relocation, freeze that move interaction and settle its local block-write queue. A queued batch with no live request may be flushed and its exact promise awaited. If a block upsert is already in flight, fail closed with retry feedback instead of calling `BlockOpsSaver.flush`: `flush` aborts the older request, and HTTP abort is not proof that the server stopped processing it. A client-minted source/target that has not round-tripped also fails closed. After HTTP queues settle, flush and await `settleNoteDocOnServer(noteId)` so any bound CodeMirror LoroText splice is applied before relocation. Outside the opt-in Journal relocation bindings, preserve the existing BlockOutliner Alt behavior.
+Before an opted-in Dailies outliner submits any pointer or Alt relocation, freeze that move interaction and settle its local block-write queue through `BlockOpsSaver.settle`; never use abort as an ordering barrier. Its whole-body fallback must finish before preparation resolves. A client-minted source/target that has not round-tripped remains inert. Outside the opt-in Journal relocation bindings, preserve the existing BlockOutliner Alt behavior.
 
 - [ ] **Step 6: Implement Journal pointer and keyboard orchestration**
 
 Own one session across outliners. Date header/empty body means append. Force-mount synthetic targets without `getDailyNote` and auto-scroll `closest(".gr-outline")`. Keep source rendered pending. Success seeds returned `["note", note.id]` caches, invalidates `["notes"]`, and restores the moved bid. 400/404/409 preserves source/focus; retry-safe 503 retains request/move id.
 
-Before POST, prepare the exact mounted source and destination outliners, deduplicated by root/note id; require source preparation and allow an absent destination preparer only when that day has no mounted editor queue. An untouched synthetic append target skips destination preparation so its local seed cannot pre-create or reject the atomic daily move; a synthetic day with a real save queue must settle/create or fail closed. Then settle each Journal whole-note queue without aborting an already-live request: await the live promise, flush/await any newer pending body, and loop until quiet. A rejected save/Loro barrier aborts relocation without optimistic mutation. Pointer `dragstart` still sets the custom MIME synchronously; preparation is awaited only after the drop transitions the session to pending.
+Before POST, enter `pending` and make the affected editors inert. Prepare exact mounted source/destination roots deduplicated by note id; require source preparation and allow an absent destination preparer only when that day has no mounted editor queue. An untouched synthetic append target skips destination preparation so its local seed cannot pre-create or reject the atomic daily move; a synthetic day with a real save queue must settle/create or fail closed. Per unique note, first settle the Journal whole-note queue, then the child `BlockOpsSaver`, then the Journal queue again to cover a block-op fallback. Journal save state tracks and awaits its live create/PUT Promise, flushes newer pending content without aborting that request, loops until quiet, and propagates failure. Finally run one batch NoteDocRegistry flush plus same-socket positive barrier for the affected real notes. A rejected save/Loro barrier aborts relocation without optimistic mutation. Pointer `dragstart` still sets the custom MIME synchronously; preparation is awaited only after the drop transitions the session to pending.
 
 Use document capture while active: `j`/`k` traverse rows/date headers; `b`/`i`/`a` commit; date header commits append; Escape cancels. In `retryable`, `Enter` or `r` resubmits the retained exact request/move id and Escape cancels. Render `data-move-mode` and suppress ordinary cross-day creation/navigation.
 
-Clear state on drop, drag-end, success, ordinary error, or Escape; preserve only a recoverable request for explicit retry.
+Clear native drag/hover state on drop/drag-end, but keep the frozen move session through `pending` and `retryable`. Success, ordinary error, or selecting-state Escape clears it. A retry-safe 503 is accepted only when its body says `retry_safe: true` and echoes the retained move id; `Enter`/`r` resends that exact frozen request without recomputing targets or rerunning preflight after a potentially partial relocation. Pending/retryable editors remain inert and Escape cannot cancel a submitted durable command.
 
 - [ ] **Step 7: Run web checks and observe green**
 
@@ -786,7 +793,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit Task 7**
 
 ```bash
-git add crates/tesela-server/src/routes/ws.rs web/src/lib/ws-client.svelte.ts web/src/lib/loro/doc-registry.ts web/src/lib/loro/note-doc-registry.svelte.ts web/src/lib/loro/server-barrier.ts web/tests/unit/doc-registry.test.mjs web/tests/unit/loro-server-barrier.test.mjs web/src/lib/components/BlockOutliner.svelte web/src/lib/components/JournalView.svelte web/src/lib/block-tree-move.ts web/tests/unit/block-tree-move.test.mjs
+git add crates/tesela-server/src/routes/ws.rs crates/tesela-server/src/lib.rs web/src/lib/block-ops-saver.ts web/src/lib/ws-client.svelte.ts web/src/lib/loro/doc-registry.ts web/src/lib/loro/note-doc-registry.svelte.ts web/src/lib/loro/server-barrier.ts web/tests/unit/block-ops-saver.test.mjs web/tests/unit/doc-registry.test.mjs web/tests/unit/loro-server-barrier.test.mjs web/src/lib/components/BlockOutliner.svelte web/src/lib/components/JournalView.svelte web/src/lib/block-tree-move.ts web/tests/unit/block-tree-move.test.mjs
 git commit -m "feat(web): move block subtrees across dailies"
 ```
 

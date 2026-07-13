@@ -663,8 +663,12 @@ Before relocation, Dailies freezes the move interaction, drains its HTTP save
 queues without aborting live requests, flushes each affected note's Loro
 registry entry, then sends a UUID-tagged barrier on that same WebSocket. The
 server's sequential receive loop acknowledges the barrier to that connection
-only after every earlier binary frame has applied/materialized. This is chosen
-over timing delays, socket `bufferedAmount`, and client-side aborts because none
-is a server-ordering proof. Offline, timed-out, client-minted, or already-live
-HTTP states fail closed with retry feedback; relocation never guesses that the
-source is current.
+only after every earlier binary frame has finished, and returns success only
+when each update applied cleanly. The client advances a separate acknowledged
+doc-version checkpoint only on that positive reply; pending/failed/timeout
+keeps the checkpoint so a retry re-exports the cumulative update. This is
+chosen over timing delays, socket `bufferedAmount`, and client-side aborts
+because none is a server-ordering proof. HTTP queues are awaited through live
+requests, successors, and Promise-capable fallbacks. Offline, timed-out, or
+client-minted states fail closed with retry feedback; relocation never guesses
+that the source is current.

@@ -242,10 +242,12 @@ roll back by writing note bodies.
   block writes and Journal whole-note writes in server order before POST, then
   flush outbound LoroText deltas and await a same-WebSocket server barrier.
   The barrier acknowledgement is connection-local and is emitted only after
-  every earlier binary frame on that socket has applied. If a block write is
-  already in flight, fail closed and ask the user to retry after it settles;
-  do not abort it and mistake client cancellation for a server ordering
-  barrier. Client-minted blocks that have not round-tripped are inert.
+  every earlier binary frame on that socket finishes; it is positive only when
+  every update applied cleanly. Pending/failed imports reject the barrier and
+  retain the client's acknowledged checkpoint so retry re-exports them. Await
+  already-live HTTP requests and every queued successor; do not abort one and
+  mistake client cancellation for a server ordering barrier. Client-minted
+  blocks that have not round-tripped are inert.
 - On success, seed returned note data and invalidate both note/list journal
   queries. Restore focus to the moved root at its destination.
 - On precondition failure, clear pending state, retain source focus, and toast
