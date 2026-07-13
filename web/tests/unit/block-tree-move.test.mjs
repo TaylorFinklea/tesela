@@ -978,7 +978,7 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
 
   assert.match(
     lifecycle,
-    /const revokeFocusRestoration = \(\) => focusRestoration\.revoke\(\);/,
+    /const revokeFocusRestoration = \(\) => \{\s*anchorAutofocusCanceled = true;\s*focusRestoration\.revoke\(\);\s*\};/,
     "the canceling input listener must not prevent or stop the user's event",
   );
   const pointerCancel = lifecycle.indexOf(
@@ -1003,6 +1003,42 @@ test("Journal focus restoration yields to later pointer and keyboard input", () 
   assert.match(
     lifecycle,
     /document\.removeEventListener\("keydown", revokeFocusRestoration, true\)/,
+  );
+});
+
+test("Journal anchor autofocus yields to real input until the anchor changes", () => {
+  const ensureDailies = sourceBetween(
+    journalViewSource,
+    "let ensuredFor",
+    "/**\n   * Append a bid-stamped empty bullet block",
+  );
+  const anchorFocus = sourceBetween(
+    journalViewSource,
+    "// ----- Anchor scroll -----",
+    "// ----- Cross-day j/k -----",
+  );
+
+  assert.match(
+    anchorFocus,
+    /let anchorAutofocusCanceled = false;\s*let anchorAutofocusAnchor = "";/,
+  );
+  assert.match(
+    anchorFocus,
+    /function ownsAnchorAutofocus\(anchor: string\): boolean \{\s*return !componentDisposed\s*&& !anchorAutofocusCanceled\s*&& anchorAutofocusAnchor === anchor;\s*\}/,
+  );
+  assert.match(
+    anchorFocus,
+    /if \(anchorAutofocusAnchor !== a\) \{\s*anchorAutofocusAnchor = a;\s*anchorAutofocusCanceled = false;\s*\}/,
+  );
+  assert.match(anchorFocus, /if \(anchorAutofocusCanceled\) return;/);
+  assert.ok(
+    (anchorFocus.match(/if \(!ownsAnchorAutofocus\(a\)\) return;/g) ?? []).length >= 3,
+    "scroll, editor focus, and synthetic insert must each retain anchor ownership",
+  );
+  assert.doesNotMatch(
+    ensureDailies,
+    /anchorAutofocusCanceled = false/,
+    "ensureTrailingEmpty may re-arm rendering but cannot renew canceled focus ownership",
   );
 });
 

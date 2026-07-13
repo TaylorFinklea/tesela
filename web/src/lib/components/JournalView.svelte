@@ -508,6 +508,14 @@
 
   let scrollContainer = $state<HTMLElement | undefined>();
   let scrolledForAnchor = $state<string>("");
+  let anchorAutofocusCanceled = false;
+  let anchorAutofocusAnchor = "";
+
+  function ownsAnchorAutofocus(anchor: string): boolean {
+    return !componentDisposed
+      && !anchorAutofocusCanceled
+      && anchorAutofocusAnchor === anchor;
+  }
 
   function selectorValue(value: string): string {
     return CSS.escape(value);
@@ -952,6 +960,8 @@
   }
 
   onMount(() => {
+    anchorAutofocusAnchor = anchorDate;
+    anchorAutofocusCanceled = false;
     const markPageInactive = () => { pageInactive = true; };
     const restorePageActivity = () => {
       pageInactive = false;
@@ -960,7 +970,10 @@
       ensuredFor = "";
     };
     const commandHandler = () => startCommandMove();
-    const revokeFocusRestoration = () => focusRestoration.revoke();
+    const revokeFocusRestoration = () => {
+      anchorAutofocusCanceled = true;
+      focusRestoration.revoke();
+    };
     const keyHandler = (event: KeyboardEvent) => {
       if (!moveActive) return;
       const key = event.key.toLowerCase();
@@ -1013,6 +1026,11 @@
   $effect(() => {
     const a = anchorDate;
     if (!a) return;
+    if (anchorAutofocusAnchor !== a) {
+      anchorAutofocusAnchor = a;
+      anchorAutofocusCanceled = false;
+    }
+    if (anchorAutofocusCanceled) return;
     if (scrolledForAnchor === a) return;
     if (visibleDailies.length === 0) return;
     if (!visibleDailies.some((n) => n.title === a)) return;
@@ -1020,12 +1038,14 @@
       scrolledForAnchor = a;
       // Defer to next paint so the section nodes exist.
       requestAnimationFrame(() => {
+        if (!ownsAnchorAutofocus(a)) return;
         const el = scrollContainer?.querySelector(`[data-daily="${a}"]`) as HTMLElement | null;
         el?.scrollIntoView({ block: "start", behavior: "auto" });
         // Phase 9.9 — also focus the section's cm-editor so the user can
         // start typing immediately without a mouse click. Two RAFs because
         // the cm6 editor mounts on the next tick after the section appears.
         requestAnimationFrame(() => {
+          if (!ownsAnchorAutofocus(a)) return;
           // Phase 10.1 follow-up — focus the LAST cm-editor in today's
           // section (the trailing empty bullet that `ensureTrailingEmpty`
           // guarantees). Landing at the end means the user can type new
@@ -1041,6 +1061,7 @@
           // through cm-content (the contenteditable) so cm-vim's keydown
           // handler — registered via domEventHandlers — sees it.
           requestAnimationFrame(() => {
+            if (!ownsAnchorAutofocus(a)) return;
             cm.dispatchEvent(new KeyboardEvent("keydown", {
               key: "i", code: "KeyI",
               bubbles: true, cancelable: true,
