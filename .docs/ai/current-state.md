@@ -1,17 +1,13 @@
 # Current State
-Branch: main (ahead 3, unpushed)
+Branch: main (ahead 5, unpushed)
 
 ## Plan
-- [ ] Fix tesela-73b (P0): relocation boot recovery must fail SOFT (quarantine, don't `?`-propagate into engine open). Verify: `cargo test -p tesela-sync` + new test asserting engine opens with an unrecoverable intent on disk
-- [ ] Fix tesela-9ut (P1): splice guard is dead code — pass noteId not slug; audit all reserve()/isReserved() key domains. Verify: `pnpm --dir web test:unit`
-- [ ] Taylor answers direction questions (widgets scope · properties parity priority · RTC gate acceptance)
-- [?] Taylor physically drags a parent plus children between days and verifies persistence after relaunch
+- [x] Fix tesela-73b (P0): relocation boot recovery fails SOFT. Verify: `cargo test -p tesela-sync -p tesela-server` — 292 + 107 green, clippy clean. Committed `afae5d02`
+- [ ] Week-1 correctness floor, in order: tesela-gqd + tesela-fdd + tesela-zip (one relay-durability train) → tesela-9ut → tesela-h8m + tesela-507 → tesela-6hu. Verify: each bead's `verify_cmd`
+- [?] Taylor physically drags a parent plus children between days and verifies persistence after relaunch (now unblocked — the P0 is fixed)
 
 ## Blockers
-- Human: physical desktop drag in installed `/Applications/Tesela.app`.
-- Human: 3 product questions from the 2026-07-14 audit (see roadmap Now).
+- Human: physical desktop drag in installed `/Applications/Tesela.app` (needs a rebuild to pick up `afae5d02`).
 
 ## Open questions
-- Widgets = in-app dashboard, OS/home-screen, or both? (Sol flagged the ambiguity; blocks widget scoping.)
-- Which properties gap hurts most (relations/backlinks · per-property color+icon · global registry UI · sets/collections)?
-- RTC ships dark behind a kill switch until durability gates pass — accept? (tesela-hx8)
+- None. Taylor's 2026-07-14 calls: perfected daily driver · desktop+iOS equally · RTC full build behind the tesela-hx8 dark-ship gate · widgets both (in-app first) · all four properties gaps · P0 first.
