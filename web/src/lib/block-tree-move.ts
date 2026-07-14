@@ -277,6 +277,8 @@ export type BlockMovePlan = {
 };
 
 export const BLOCK_MOVE_MIME = "application/x-tesela-block-move";
+const BLOCK_MOVE_TEXT_MIME = "text/plain";
+const BLOCK_MOVE_TEXT_PREFIX = "tesela-block-move:";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -457,6 +459,73 @@ export function decodeBlockMoveDragPayload(
     return isBlockMoveDragPayload(parsed) ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+type WritableBlockMoveDataTransfer = {
+  clearData: () => void;
+  setData: (format: string, data: string) => void;
+  effectAllowed: string;
+};
+
+export function seedBlockMoveDragData(
+  transfer: WritableBlockMoveDataTransfer,
+  payload: BlockMoveDragPayload,
+): boolean {
+  const encoded = encodeBlockMoveDragPayload(payload);
+  try {
+    transfer.clearData();
+  } catch {
+    // A writable drag store can still accept the two formats below.
+  }
+
+  let seeded = false;
+  for (const [format, data] of [
+    [BLOCK_MOVE_MIME, encoded],
+    [BLOCK_MOVE_TEXT_MIME, `${BLOCK_MOVE_TEXT_PREFIX}${payload.move_id}`],
+  ] as const) {
+    try {
+      transfer.setData(format, data);
+      seeded = true;
+    } catch {
+      // WKWebView may reject custom formats while accepting text/plain.
+    }
+  }
+  if (!seeded) return false;
+  try {
+    transfer.effectAllowed = "move";
+  } catch {
+    // The move session remains identified by its exact payload/marker.
+  }
+  return true;
+}
+
+export function blockMoveDragHasSupportedType(types: readonly string[]): boolean {
+  return types.includes(BLOCK_MOVE_MIME) || types.includes(BLOCK_MOVE_TEXT_MIME);
+}
+
+export function blockMoveDragMatchesRequest(
+  types: readonly string[],
+  readData: (format: string) => string,
+  request: Pick<BlockMoveRequest, "move_id" | "source_note_id" | "root_bid">,
+): boolean {
+  if (types.includes(BLOCK_MOVE_MIME)) {
+    try {
+      const payload = decodeBlockMoveDragPayload(types, readData(BLOCK_MOVE_MIME));
+      if (
+        payload?.move_id === request.move_id
+        && payload.source_note_id === request.source_note_id
+        && payload.root_bid === request.root_bid
+      ) return true;
+    } catch {
+      // Fall through to the text marker used by embedded WebKit.
+    }
+  }
+  if (!types.includes(BLOCK_MOVE_TEXT_MIME)) return false;
+  try {
+    return readData(BLOCK_MOVE_TEXT_MIME) === `${BLOCK_MOVE_TEXT_PREFIX}${request.move_id}`;
+  } catch {
+    return false;
   }
 }
 

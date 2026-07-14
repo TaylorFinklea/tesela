@@ -49,6 +49,8 @@ const BIDS = {
   ambiguousRoot: "20000000-0000-4000-8000-000000000026",
   propertyRaceRoot: "20000000-0000-4000-8000-000000000027",
   propertyFailureRoot: "20000000-0000-4000-8000-000000000028",
+  webkitFallbackRoot: "20000000-0000-4000-8000-000000000029",
+  webkitFallbackChild: "20000000-0000-4000-8000-000000000030",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -68,6 +70,7 @@ const BIDS = {
   ambiguousTarget: "30000000-0000-4000-8000-000000000016",
   propertyRaceTarget: "30000000-0000-4000-8000-000000000017",
   propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
+  webkitFallbackTarget: "30000000-0000-4000-8000-000000000019",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
@@ -178,6 +181,46 @@ async function dispatchToPlacement(
       ? box.y + box.height / 2
       : box.y + Math.max(2, box.height - 2);
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  const event = {
+    dataTransfer,
+    clientX: box.x + Math.min(24, Math.max(2, box.width / 2)),
+    clientY,
+  };
+  await sourceHandle.dispatchEvent("dragstart", { dataTransfer });
+  await target.dispatchEvent("dragover", event);
+  await expect(target).toHaveAttribute("data-drop-placement", placement);
+  await target.dispatchEvent("drop", event);
+  await sourceHandle.dispatchEvent("dragend", { dataTransfer });
+  await dataTransfer.dispose();
+}
+
+async function dispatchToPlacementWithoutCustomMime(
+  page: Page,
+  sourceHandle: Locator,
+  target: Locator,
+  placement: "before" | "inside" | "after",
+): Promise<void> {
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  if (!box) throw new Error("Drop target has no bounding box");
+  const clientY = placement === "before"
+    ? box.y + 2
+    : placement === "inside"
+      ? box.y + box.height / 2
+      : box.y + Math.max(2, box.height - 2);
+  const dataTransfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    const setData = transfer.setData.bind(transfer);
+    Object.defineProperty(transfer, "setData", {
+      value(type: string, value: string) {
+        if (type === "application/x-tesela-block-move") {
+          throw new DOMException("custom MIME unavailable");
+        }
+        setData(type, value);
+      },
+    });
+    return transfer;
+  });
   const event = {
     dataTransfer,
     clientX: box.x + Math.min(24, Math.max(2, box.width / 2)),
@@ -593,6 +636,26 @@ test.describe("block subtree relocation", () => {
       BIDS.sameAfterRoot,
       BIDS.sameAfterRootChild,
     ]);
+  });
+
+  test("pointer relocation survives WKWebView rejecting the custom drag MIME", async ({ page, request }) => {
+    const { source, destination } = await openJournal(page);
+
+    await dispatchToPlacementWithoutCustomMime(
+      page,
+      row(page, BIDS.webkitFallbackRoot).locator("[data-move-handle]"),
+      row(page, BIDS.webkitFallbackTarget),
+      "inside",
+    );
+    await waitForMoveIdle(page);
+
+    await expect(source.locator(`[data-block-bid="${BIDS.webkitFallbackRoot}"]`)).toHaveCount(0);
+    await expectOrdered(destination, [
+      BIDS.webkitFallbackTarget,
+      BIDS.webkitFallbackRoot,
+      BIDS.webkitFallbackChild,
+    ]);
+    expect(occurrences(await noteContent(request, DESTINATION), BIDS.webkitFallbackChild)).toBe(1);
   });
 
   test("cross-day pointer moves honor before, inside, and after with exact hierarchy", async ({ page, request }) => {

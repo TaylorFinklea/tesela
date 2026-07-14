@@ -1,12 +1,19 @@
 # Shipped relocation remediation report
 
-**Bead:** `tesela-8ig` · **Date:** 2026-07-14 · **Verdict:** the desktop and iOS no-op boundaries are repaired, the corrected desktop is installed, and TestFlight build 79 was accepted for processing; Taylor's real-device product test is the remaining gate.
+**Bead:** `tesela-8ig` · **Date:** 2026-07-14 · **Verdict:** Taylor verified iOS Move to on build 79. The first desktop remediation was necessary but incomplete; a WebKit-compatible drag locator fix now passes the full relocation suite and a signed worktree bundle is ready to merge/install. Physical desktop QA remains the gate.
 
 ## Root causes
 
-- **Desktop drag:** Tauri's default native file-drop handler intercepted WebKit
-  drag events before Graphite's Svelte handlers received them. Browser-only
-  testing did not exercise this shell boundary.
+- **Desktop drag, first boundary:** Tauri's native file-drop handler had to be
+  disabled so WKWebView could own HTML drag/drop, but the installed build proved
+  that setting alone was insufficient.
+- **Desktop drag, remaining boundary:** Graphite seeded only a custom MIME type,
+  immediately required WebKit to report that type back during `dragstart`, and
+  canceled otherwise. A rejected start still left the in-memory move session in
+  `selecting`, so every later attempt was refused. The corrected path seeds both
+  the exact custom payload and a `text/plain` move-id marker, validates either
+  against the active session at drop, and never starts a session when neither
+  format can be written.
 - **iOS `Move to...`:** Graphite and legacy context menus rendered the action
   but discarded `.moveTo`. The UniFFI surface exposed no relocation operation,
   so Swift had no durable engine path to call.
@@ -29,8 +36,15 @@
 
 - The Tauri main window disables only the native drag/drop handler with
   `.disable_drag_drop_handler()`. Tesela has no native file-drop product path to
-  preserve, and HTML drag events now reach the existing Graphite relocation
-  handlers.
+  preserve.
+- The Graphite drag path no longer treats immediate custom-MIME readback as the
+  authority. It carries an opaque move-id fallback in `text/plain`, retains the
+  full custom payload when available, and requires the locator to match the
+  already-active internal session before submitting a drop. Ordinary external
+  text/file drops cannot create that session.
+- Drag-data seeding completes before the session transition. If both formats
+  fail, the event is canceled while the move session remains idle, so one bad
+  attempt cannot latch every later drag.
 - A desktop regression test asserts the main window retains this setting.
   Complete-subtree semantics remain owned by the existing web request and Rust
   relocation engine.
@@ -112,8 +126,10 @@
 | `cargo test -p tesela-sync-ffi` | pass; includes complete nested relocation, replay/reopen/conflict, exact multi-note delta framing, strict ID parsing, and partial-export rejection |
 | Full Tesela iOS simulator suite | pass; 573/573 in the build-79 release run |
 | Focused iOS activation/admission regression set | pass; 7/7 |
-| `pnpm --dir web test:unit` | pass; 973/973 |
+| `pnpm --dir web test:unit` | pass; 976/976 |
 | `pnpm --dir web check` | pass; 0 errors, 48 pre-existing warnings |
+| Relocation Playwright spec | pass; 13/13, including custom-MIME rejection fallback with parent + child |
+| Worktree Tauri release bundle | pass; fresh web assets embedded, Apple Development signed, strict deep verification passed |
 
 ## Pre-existing quality-gate warnings
 
@@ -144,12 +160,12 @@ outside relocation delivery, did not reproduce in isolation, and is tracked as
 | Artifact / gate | Status |
 |---|---|
 | Remediation commit and merge to `main` | complete at `85d914ed` |
-| Corrected desktop production bundle | complete; release bundle rebuilt from merged `main` |
-| `/Applications` installation updated | complete; Apple Development signed and strict deep-signature verification passed |
-| Installed desktop health check | awaiting one-time user approval of the existing `tesela-sync-group-key` Keychain access prompt; the signed process launches and listens, but Keychain blocks request handling until **Always Allow** is clicked |
+| Corrected desktop production bundle | worktree bundle built and Apple Development signature verified; merge/install pending |
+| `/Applications` installation updated | pending merge |
+| Installed desktop health check | pending corrected install |
 | Real installed-shell parent-plus-children drag between days | pending manual QA |
 | iOS archive and TestFlight upload | complete; Tesela 1.1 build 79, `Upload succeeded` / `EXPORT SUCCEEDED` |
-| App Store Connect processing | accepted and processing; availability to testers not yet claimed |
+| iOS physical product test | passed; Taylor confirmed Move to works |
 | Harness-deck product-test report | refreshed in place for desktop + iOS device verification |
 
 Manual release QA must first click **Always Allow** on the installed desktop's

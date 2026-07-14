@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 
 import {
   BLOCK_MOVE_MIME,
+  blockMoveDragHasSupportedType,
+  blockMoveDragMatchesRequest,
   classifyBlockMoveFailure,
   classifyDropPlacement,
   decodeBlockMoveDragPayload,
@@ -14,6 +16,7 @@ import {
   moveSubtreeUp,
   outdentSubtreeToRoot,
   planBlockMove,
+  seedBlockMoveDragData,
 } from "../../src/lib/block-tree-move.ts";
 import * as blockTreeMove from "../../src/lib/block-tree-move.ts";
 
@@ -610,6 +613,113 @@ test("encodeBlockMoveDragPayload serializes only a valid internal locator", () =
     () => encodeBlockMoveDragPayload({ ...payload, move_id: "not-a-uuid" }),
     /valid block move drag payload/,
   );
+});
+
+test("block move drag data keeps a text fallback when WebKit hides custom MIME data", () => {
+  const payload = {
+    move_id: "11111111-1111-4111-8111-111111111111",
+    source_note_id: "2026-07-12",
+    root_bid: "22222222-2222-4222-8222-222222222222",
+  };
+  const data = new Map();
+  const transfer = {
+    effectAllowed: "uninitialized",
+    clearData: () => data.clear(),
+    setData: (type, value) => {
+      if (type === BLOCK_MOVE_MIME) throw new Error("custom MIME unavailable");
+      data.set(type, value);
+    },
+  };
+
+  assert.equal(seedBlockMoveDragData(transfer, payload), true);
+  assert.equal(transfer.effectAllowed, "move");
+  assert.equal(data.has(BLOCK_MOVE_MIME), false);
+  assert.equal(data.has("text/plain"), true);
+  assert.equal(blockMoveDragHasSupportedType(["text/plain"]), true);
+  assert.equal(
+    blockMoveDragMatchesRequest(
+      ["text/plain"],
+      (type) => data.get(type) ?? "",
+      requestForSession(),
+    ),
+    false,
+    "a fallback marker cannot authorize a different move id",
+  );
+  assert.equal(
+    blockMoveDragMatchesRequest(
+      ["text/plain"],
+      (type) => data.get(type) ?? "",
+      {
+        ...requestForSession(),
+        move_id: payload.move_id,
+        source_note_id: payload.source_note_id,
+        root_bid: payload.root_bid,
+      },
+    ),
+    true,
+  );
+});
+
+test("block move drag seeding fails closed without leaving a selectable session", () => {
+  const payload = {
+    move_id: "11111111-1111-4111-8111-111111111111",
+    source_note_id: "2026-07-12",
+    root_bid: "22222222-2222-4222-8222-222222222222",
+  };
+  const transfer = {
+    effectAllowed: "uninitialized",
+    clearData: () => {},
+    setData: () => { throw new Error("drag data unavailable"); },
+  };
+
+  assert.equal(seedBlockMoveDragData(transfer, payload), false);
+  assert.equal(transfer.effectAllowed, "uninitialized");
+});
+
+test("custom and fallback drag locators must match the active move exactly", () => {
+  const request = requestForSession();
+  const payload = {
+    move_id: request.move_id,
+    source_note_id: request.source_note_id,
+    root_bid: request.root_bid,
+  };
+  const data = new Map();
+  const transfer = {
+    effectAllowed: "uninitialized",
+    clearData: () => data.clear(),
+    setData: (type, value) => data.set(type, value),
+  };
+
+  assert.equal(seedBlockMoveDragData(transfer, payload), true);
+  assert.equal(blockMoveDragHasSupportedType([...data.keys()]), true);
+  assert.equal(
+    blockMoveDragMatchesRequest(
+      [...data.keys()],
+      (type) => data.get(type) ?? "",
+      request,
+    ),
+    true,
+  );
+  data.set(BLOCK_MOVE_MIME, "not-json");
+  assert.equal(
+    blockMoveDragMatchesRequest(
+      [BLOCK_MOVE_MIME, "text/plain"],
+      (type) => data.get(type) ?? "",
+      request,
+    ),
+    true,
+    "the exact text marker remains a valid fallback when custom data is unreadable",
+  );
+  data.set("text/plain", "external text");
+  assert.equal(
+    blockMoveDragMatchesRequest(
+      [BLOCK_MOVE_MIME, "text/plain"],
+      (type) => data.get(type) ?? "",
+      request,
+    ),
+    false,
+  );
+  assert.equal(blockMoveDragHasSupportedType(["text/html"]), false);
 });
 
 const MOVE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

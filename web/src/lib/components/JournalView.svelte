@@ -33,13 +33,13 @@
   import { previewLines } from "$lib/journal-preview";
   import { isClientMintedId } from "$lib/block-ops";
   import {
-    BLOCK_MOVE_MIME,
     IDLE_BLOCK_MOVE_SESSION,
+    blockMoveDragHasSupportedType,
+    blockMoveDragMatchesRequest,
     classifyBlockMoveFailure,
     createFocusRestorationController,
-    decodeBlockMoveDragPayload,
-    encodeBlockMoveDragPayload,
     reduceBlockMoveSession,
+    seedBlockMoveDragData,
     type BlockMoveRequest,
     type BlockMoveSession,
     type BlockMoveSessionAction,
@@ -611,37 +611,35 @@
   }
 
   function carriesInternalMove(event: DragEvent): boolean {
-    return Array.from(event.dataTransfer?.types ?? []).includes(BLOCK_MOVE_MIME);
+    return blockMoveDragHasSupportedType(Array.from(event.dataTransfer?.types ?? []));
   }
 
   function payloadMatchesSession(event: DragEvent): boolean {
     const transfer = event.dataTransfer;
     const request = moveSession.request;
     if (!transfer || !request) return false;
-    const payload = decodeBlockMoveDragPayload(
+    return blockMoveDragMatchesRequest(
       Array.from(transfer.types),
-      transfer.getData(BLOCK_MOVE_MIME),
+      (format) => transfer.getData(format),
+      request,
     );
-    return !!payload
-      && payload.move_id === request.move_id
-      && payload.source_note_id === request.source_note_id
-      && payload.root_bid === request.root_bid;
   }
 
-  function beginPointerMove(event: DragEvent, noteId: string, sourceBid: string) {
+  function beginPointerMove(event: DragEvent, noteId: string, sourceBid: string): boolean {
     const transfer = event.dataTransfer;
     if (!transfer || moveSession.phase !== "idle") {
       event.preventDefault();
-      return;
+      return false;
     }
     const moveId = crypto.randomUUID();
-    transfer.clearData();
-    transfer.setData(BLOCK_MOVE_MIME, encodeBlockMoveDragPayload({
+    if (!seedBlockMoveDragData(transfer, {
       move_id: moveId,
       source_note_id: noteId,
       root_bid: sourceBid,
-    }));
-    transfer.effectAllowed = "move";
+    })) {
+      event.preventDefault();
+      return false;
+    }
     dispatchMove({
       type: "start",
       request: {
@@ -653,6 +651,7 @@
         placement: "append",
       },
     });
+    return true;
   }
 
   function targetMove(noteId: string, bid: string | null, placement: MovePlacement): BlockMoveSession {
@@ -994,6 +993,7 @@
     const isTarget = moveSession.targetNoteId === noteId;
     const affected = isSource || request?.destination_note_id === noteId;
     return {
+      active: moveSession.phase === "selecting",
       sourceBid: isSource ? request?.root_bid ?? null : null,
       targetBid: isTarget ? moveSession.targetBid : null,
       placement: isTarget ? moveSession.placement : null,

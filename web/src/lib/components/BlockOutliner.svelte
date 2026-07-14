@@ -33,11 +33,12 @@
   }
 
   export type RelocationBindings = {
+    active: boolean;
     sourceBid: string | null;
     targetBid: string | null;
     placement: MovePlacement | null;
     pending: boolean;
-    onDragStart: (event: DragEvent, sourceBid: string) => void;
+    onDragStart: (event: DragEvent, sourceBid: string) => boolean;
     onDragOver: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
     onDrop: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
     onCancel: () => void;
@@ -69,9 +70,8 @@
   import { BlockOpsSaver, propertyMutationBarrier } from "$lib/block-ops-saver";
   import { spliceNoteBlock, acquireNoteDoc, releaseNoteDoc } from "$lib/loro/note-doc-registry.svelte";
   import {
-    BLOCK_MOVE_MIME,
+    blockMoveDragHasSupportedType,
     classifyDropPlacement,
-    decodeBlockMoveDragPayload,
     extractSubtree,
     moveSubtreeDown,
     moveSubtreeUnder,
@@ -1796,7 +1796,8 @@
   }
 
   function carriesInternalBlockMove(event: DragEvent): boolean {
-    return Array.from(event.dataTransfer?.types ?? []).includes(BLOCK_MOVE_MIME);
+    return relocation?.active === true
+      && blockMoveDragHasSupportedType(Array.from(event.dataTransfer?.types ?? []));
   }
 
   function invalidRelocationTarget(block: ParsedBlock): boolean {
@@ -1838,12 +1839,11 @@
       event.preventDefault();
       return;
     }
-    relocation.onDragStart(event, bid);
-    if (!carriesInternalBlockMove(event)) {
+    if (!relocation.onDragStart(event, bid)) {
       event.preventDefault();
+      relocation.onCancel();
       return;
     }
-    event.dataTransfer.effectAllowed = "move";
 
     const moved = extractSubtree(blocks, bid);
     const preview = document.createElement("div");
@@ -1884,17 +1884,8 @@
       event.stopPropagation();
       return;
     }
-    const transfer = event.dataTransfer;
     const target = event.currentTarget;
-    if (!transfer || !(target instanceof HTMLElement) || !block.bid) return;
-    const payload = decodeBlockMoveDragPayload(
-      Array.from(transfer.types),
-      transfer.getData(BLOCK_MOVE_MIME),
-    );
-    if (!payload) {
-      event.stopPropagation();
-      return;
-    }
+    if (!event.dataTransfer || !(target instanceof HTMLElement) || !block.bid) return;
     const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
     event.preventDefault();
     event.stopPropagation();

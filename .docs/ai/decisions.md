@@ -763,3 +763,21 @@ prompts for the sync-group key. A missing/expired identity now fails visibly
 before replacing the installed app; signing failures restore the prior bundle.
 Fingerprint and team can be rotated together through the documented environment
 overrides without weakening final signature verification.
+
+### 2026-07-14 — Desktop block drag uses a dual-format session locator
+
+Tauri's `.disable_drag_drop_handler()` remains required, but the installed
+product test showed it is not sufficient. Embedded WebKit must not be required
+to expose Tesela's custom MIME type synchronously during `dragstart`. The web
+client now writes both the full `application/x-tesela-block-move` payload and a
+`text/plain` marker containing only the random move ID. Drop authorization
+accepts either locator only when it matches the already-active in-memory move
+session; an external text/file drag cannot create that session.
+
+Drag data is seeded before transitioning the session from idle to selecting.
+If neither format can be written, the drag is canceled with the session still
+idle. This avoids the former failure mode where immediate custom-MIME readback
+canceled the native drag but left `selecting` latched, permanently rejecting
+later attempts. The custom payload remains the preferred exact source/root
+proof; the text marker is an opaque WebKit compatibility locator, not a second
+relocation protocol.
