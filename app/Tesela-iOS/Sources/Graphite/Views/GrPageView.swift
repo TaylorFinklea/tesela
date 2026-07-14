@@ -24,6 +24,7 @@ struct GrPageView: View {
 
     @State private var editingBlockId: String? = nil
     @State private var collapsedBlockIds: Set<String> = []
+    @State private var moveIntent: BlockMoveIntent?
 
     /// The resolved Page record (for title / type / meta). Falls back to
     /// a synthesized minimal Page when the slug isn't in `mosaic.pages`
@@ -104,6 +105,9 @@ struct GrPageView: View {
         })
         .task(id: slug) {
             await mosaic.loadPage(id: slug)
+        }
+        .sheet(item: $moveIntent) { intent in
+            BlockMoveSheet(mosaic: mosaic, intent: intent)
         }
     }
 
@@ -249,10 +253,23 @@ struct GrPageView: View {
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 },
                 onSkipRecurrence: {
-                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.recurBump(
+                            blockId: block.id,
+                            mode: .skip,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
             }
@@ -380,7 +397,7 @@ struct GrPageView: View {
               blocks[idx].kind == .task
         else { return }
         blocks[idx].done.toggle()
-        Task { await mosaic.pushPage(id: slug, blocks: blocks) }
+        mosaic.schedulePagePush(id: slug, blocks: blocks)
     }
 
     private func handlePageAction(_ action: BlockAction, on block: Block) {
@@ -389,7 +406,14 @@ struct GrPageView: View {
         case .delete, .archive: mosaic.deletePageBlock(pageId: slug, blockId: block.id)
         case .yankLink:        UIPasteboard.general.string = "tesela://block/\(block.id)"
         case .indent:          mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: 1)
-        case .promote, .convertToTag, .moveTo: break
+        case .moveTo:
+            editingBlockId = nil
+            moveIntent = BlockMoveIntent(
+                sourceSlug: slug,
+                rootBid: block.id,
+                preview: block.displayText
+            )
+        case .promote, .convertToTag: break
         }
     }
 

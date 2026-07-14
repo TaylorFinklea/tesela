@@ -1,12 +1,13 @@
+use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
-use tesela_sync::{GroupIdentity, LanDiscovery, SyncEngine, ViewRecord};
+use tesela_sync::{GroupId, GroupIdentity, LanDiscovery, SyncEngine, ViewRecord};
 use tokio::sync::RwLock;
 
 use crate::reminders::auto::AutoSync;
@@ -51,6 +52,10 @@ pub struct AppState {
     /// server. Cleartext sync continues to function while the pending
     /// AEAD slice is unwritten.
     pub group_identity: Arc<RwLock<GroupIdentity>>,
+    /// Set atomically with publication of a newly adopted group identity.
+    /// The current process still owns relay/bootstrap handles captured for the
+    /// old group, so HTTP data-plane work fails closed until process restart.
+    pub group_transition_pending_restart: AtomicBool,
     /// A human-readable display name advertised over mDNS and embedded
     /// in pairing codes. Captured once at startup.
     pub display_name: String,
@@ -77,6 +82,80 @@ pub struct AppState {
 /// echoing a delta back to the connection it arrived on.
 pub type ConnId = u64;
 
+/// An exact, non-serializable identity token for one live group runtime.
+///
+/// `group_id` alone is insufficient: adopting a rotated key for the same id
+/// must retire every daemon and socket that captured the old key. The key
+/// bytes stay private and the custom `Debug` implementation never prints
+/// them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct GroupScope {
+    group_id: GroupId,
+    group_key: [u8; 32],
+}
+
+impl GroupScope {
+    pub fn capture(identity: &GroupIdentity) -> Self {
+        Self {
+            group_id: identity.group_id,
+            group_key: *identity.group_key.as_bytes(),
+        }
+    }
+
+    pub fn group_id(self) -> GroupId {
+        self.group_id
+    }
+
+    pub fn matches(self, identity: &GroupIdentity) -> bool {
+        self.group_id == identity.group_id && self.group_key == *identity.group_key.as_bytes()
+    }
+}
+
+impl std::fmt::Debug for GroupScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GroupScope")
+            .field("group_id", &self.group_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Lease fence for a daemon that captured one group identity at boot.
+///
+/// Every identity-sensitive operation runs while holding the shared read
+/// lease. Group adoption takes the matching write lease, so it waits for an
+/// active operation to finish. Once the replacement is published, this fence
+/// refuses to poll any more old-group work.
+#[derive(Clone)]
+pub(crate) struct GroupRuntimeFence {
+    current: Arc<RwLock<GroupIdentity>>,
+    captured: GroupScope,
+}
+
+impl GroupRuntimeFence {
+    pub(crate) fn capture(current: Arc<RwLock<GroupIdentity>>, captured: &GroupIdentity) -> Self {
+        Self {
+            current,
+            captured: GroupScope::capture(captured),
+        }
+    }
+
+    pub(crate) fn scope(&self) -> GroupScope {
+        self.captured
+    }
+
+    pub(crate) async fn run_if_current<F>(&self, operation: F) -> Option<F::Output>
+    where
+        F: Future,
+    {
+        let current = self.current.read().await;
+        if !self.captured.matches(&current) {
+            return None;
+        }
+        Some(operation.await)
+    }
+}
+
 /// A Loro delta frame fanned out on [`AppState::ws_delta_tx`].
 ///
 /// `frame` is the `TLR2`-encoded `Vec<LoroDocUpdate>` (the same bytes the
@@ -89,6 +168,10 @@ pub type ConnId = u64;
 #[derive(Debug, Clone)]
 pub struct WsDelta {
     pub origin: Option<ConnId>,
+    /// Exact source identity for boot-captured daemon/socket frames. `None`
+    /// is reserved for HTTP work already serialized by the request's group
+    /// read lease; broadcasts are not replayed to later subscribers.
+    pub source_group: Option<GroupScope>,
     pub frame: Vec<u8>,
 }
 
@@ -137,4 +220,79 @@ pub enum WsEvent {
     ViewsChanged {
         views: Vec<ViewRecord>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::oneshot;
+
+    fn identity(group: u8, key: u8) -> GroupIdentity {
+        GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([group; 16]),
+            group_key: tesela_sync::GroupKey::from_bytes([key; 32]),
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_waits_for_active_group_tick_and_stale_daemons_cannot_publish() {
+        let current = Arc::new(RwLock::new(identity(0x11, 0x22)));
+        let fence = GroupRuntimeFence::capture(Arc::clone(&current), &identity(0x11, 0x22));
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let applied = Arc::new(AtomicBool::new(false));
+        let applied_by_tick = Arc::clone(&applied);
+        let tick_fence = fence.clone();
+        let tick = tokio::spawn(async move {
+            tick_fence
+                .run_if_current(async move {
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    applied_by_tick.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+
+        entered_rx.await.unwrap();
+        let replacement_identity = Arc::clone(&current);
+        let mut replacement = tokio::spawn(async move {
+            *replacement_identity.write().await = identity(0x33, 0x44);
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut replacement)
+                .await
+                .is_err(),
+            "group replacement must wait for the complete active relay tick"
+        );
+
+        release_tx.send(()).unwrap();
+        assert_eq!(tick.await.unwrap(), Some(()));
+        assert!(applied.load(Ordering::SeqCst));
+        replacement.await.unwrap();
+
+        let stale_relay_applied = AtomicBool::new(false);
+        assert_eq!(
+            fence
+                .run_if_current(async {
+                    stale_relay_applied.store(true, Ordering::SeqCst);
+                })
+                .await,
+            None,
+            "an old relay daemon stops after its captured identity is replaced"
+        );
+        assert!(!stale_relay_applied.load(Ordering::SeqCst));
+
+        let stale_presence_published = AtomicBool::new(false);
+        assert_eq!(
+            fence
+                .run_if_current(async {
+                    stale_presence_published.store(true, Ordering::SeqCst);
+                })
+                .await,
+            None,
+            "an old presence bridge cannot publish into the replacement group"
+        );
+        assert!(!stale_presence_published.load(Ordering::SeqCst));
+    }
 }

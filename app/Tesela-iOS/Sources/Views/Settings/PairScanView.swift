@@ -285,12 +285,6 @@ struct PairScanView: View {
             // the registry and activate its current one. AppShell sees
             // the activeID change and attaches + loads.
             await registry.importDiscovered(serverURL: code.url, activateCurrent: true)
-            if registry.activeProfile == nil {
-                // Discovery failed — connect to whatever the server
-                // serves so the pair still lands somewhere usable.
-                mosaic.attach(backend: backend.backend)
-                await mosaic.refresh(from: backend.backend)
-            }
         }
         pending = nil
         pendingPayload = nil

@@ -74,4 +74,9 @@ final class RemoteCursorStore: ObservableObject {
         }
         return true
     }
+
+    func clear() {
+        byPeer = [:]
+        lastSeen = [:]
+    }
 }

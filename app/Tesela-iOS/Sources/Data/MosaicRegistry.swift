@@ -9,6 +9,13 @@ final class MosaicRegistry: ObservableObject {
     @Published private(set) var profiles: [MosaicProfile] = []
     @Published private(set) var activeID: UUID? = nil
 
+    /// Synchronous pre-publication barrier for the shell's backend admission.
+    /// The callback runs before `activeID` (or the active profile's routing
+    /// fields) change, so a suspended activation cannot resume and publish the
+    /// old profile under the new UI selection during SwiftUI's later
+    /// `.onChange` turn.
+    var willChangeActiveProfile: (() -> Void)?
+
     private let profilesKey = "mosaics.profiles.v1"
     private let activeKey = "mosaics.activeID.v1"
 
@@ -24,20 +31,27 @@ final class MosaicRegistry: ObservableObject {
     func add(_ profile: MosaicProfile, makeActive: Bool = true) {
         profiles.append(profile)
         if makeActive {
-            activeID = profile.id
+            publishActiveID(profile.id)
         }
         persist()
     }
 
     func update(_ profile: MosaicProfile) {
         guard let idx = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        if activeID == profile.id, profiles[idx] != profile {
+            willChangeActiveProfile?()
+        }
         profiles[idx] = profile
         persist()
     }
 
     func delete(_ id: UUID) {
+        let deletingActive = activeID == id
+        if deletingActive {
+            willChangeActiveProfile?()
+        }
         profiles.removeAll { $0.id == id }
-        if activeID == id {
+        if deletingActive {
             activeID = profiles.first?.id
         }
         persist()
@@ -45,7 +59,7 @@ final class MosaicRegistry: ObservableObject {
 
     func setActive(_ id: UUID) {
         guard profiles.contains(where: { $0.id == id }) else { return }
-        activeID = id
+        publishActiveID(id)
         persist()
     }
 
@@ -90,11 +104,17 @@ final class MosaicRegistry: ObservableObject {
             }?.id
         }
         if activateCurrent, let currentID {
-            activeID = currentID
+            publishActiveID(currentID)
         } else if activeID == nil {
-            activeID = currentID ?? profiles.first?.id
+            publishActiveID(currentID ?? profiles.first?.id)
         }
         persist()
+    }
+
+    private func publishActiveID(_ id: UUID?) {
+        guard activeID != id else { return }
+        willChangeActiveProfile?()
+        activeID = id
     }
 
     // MARK: - Persistence
@@ -145,9 +165,20 @@ enum MosaicServerClient {
         var id: String { path }
     }
 
+    struct CurrentIdentity: Decodable, Equatable {
+        let path: String
+        let groupIdHex: String
+
+        enum CodingKeys: String, CodingKey {
+            case path
+            case groupIdHex = "group_id_hex"
+        }
+    }
+
     enum ClientError: LocalizedError {
         case badURL
         case http(Int, String)
+        case mosaicSwitchNotConfirmed(expected: String, observed: String?)
 
         var errorDescription: String? {
             switch self {
@@ -155,6 +186,9 @@ enum MosaicServerClient {
                 return "That doesn't look like a valid server URL."
             case let .http(code, body):
                 return "Server returned HTTP \(code)" + (body.isEmpty ? "" : ": \(body)")
+            case let .mosaicSwitchNotConfirmed(expected, observed):
+                let actual = observed.map { " (still serving \($0))" } ?? ""
+                return "Server did not restart on mosaic \(expected)\(actual)."
             }
         }
     }
@@ -171,15 +205,47 @@ enum MosaicServerClient {
         return resp.path
     }
 
-    /// POST /mosaics/switch — persist a new default mosaic. Takes effect
-    /// only after `restart`.
-    static func switchMosaic(serverURL: String, path: String) async throws {
-        try await post(serverURL, "/mosaics/switch", body: ["path": path])
+    /// One atomic observation of both the served path and its physical sync
+    /// group. Reading these from separate endpoints admits path A -> group B
+    /// -> path A during a fast server restart (an ABA identity mix-up).
+    static func currentIdentity(serverURL: String) async throws -> CurrentIdentity {
+        let identity: CurrentIdentity = try await get(serverURL, "/mosaics/current")
+        return CurrentIdentity(
+            path: identity.path,
+            groupIdHex: identity.groupIdHex.lowercased()
+        )
     }
 
-    /// POST /server/restart — graceful restart so a switched mosaic
-    /// takes effect. Best-effort: the server schedules its own SIGTERM,
-    /// so a dropped connection here still means it is restarting.
+    /// Stable physical identity of the mosaic currently served at this URL.
+    /// Unlike URL/path or a device-local profile UUID, the sync group id is
+    /// identical when the same mosaic is reached later through its relay.
+    static func currentGroupIdHex(serverURL: String) async throws -> String {
+        struct Resp: Decodable { let code: String }
+        let response: Resp = try await get(serverURL, "/sync/peer/pairing-code")
+        return try decodePairingCode(code: response.code).groupIdHex
+    }
+
+    /// POST /mosaics/switch — persist a new default mosaic. Takes effect
+    /// only after `restart`.
+    static func switchMosaic(serverURL: String, path: String) async throws -> String {
+        struct Resp: Decodable {
+            let defaultMosaic: String
+
+            enum CodingKeys: String, CodingKey {
+                case defaultMosaic = "default_mosaic"
+            }
+        }
+        let resp: Resp = try await postDecoding(
+            serverURL,
+            "/mosaics/switch",
+            body: ["path": path]
+        )
+        return resp.defaultMosaic
+    }
+
+    /// POST /server/restart — graceful restart so a switched mosaic takes
+    /// effect. Errors remain observable; in particular, embedded-server 409
+    /// must never be mistaken for a successful switch.
     static func restart(serverURL: String) async throws {
         try await post(serverURL, "/server/restart", body: [:])
     }

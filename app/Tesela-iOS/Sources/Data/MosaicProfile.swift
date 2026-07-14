@@ -1,4 +1,51 @@
 import Foundation
+import CryptoKit
+
+/// Stable local-engine namespace for one physical mosaic. Profile UUID and
+/// transport are deliberately absent: the same mosaic reached over a live
+/// server or its relay must share one CRDT store, while different group
+/// identities must never share files, version baselines, or engine history.
+enum MosaicEngineScope: Codable, Equatable, Hashable, Sendable {
+    case legacy
+    case mosaic(groupIdHex: String)
+
+    init(groupIdHex: String) {
+        self = .mosaic(
+            groupIdHex: groupIdHex
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        )
+    }
+
+    var identity: String {
+        switch self {
+        case .legacy:
+            return "legacy"
+        case .mosaic(let groupIdHex):
+            return "group|\(groupIdHex)"
+        }
+    }
+
+    var storageKey: String {
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func rootURL(documentsURL: URL? = nil) -> URL {
+        let documents = documentsURL ?? FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        switch self {
+        case .legacy:
+            return documents.appendingPathComponent("sync-ios-mosaic")
+        case .mosaic:
+            return documents
+                .appendingPathComponent("sync-ios-mosaics", isDirectory: true)
+                .appendingPathComponent(storageKey, isDirectory: true)
+        }
+    }
+}
 
 /// A named mosaic the user can switch between on this device. The
 /// active mosaic is the one whose `MockMosaicService` is currently

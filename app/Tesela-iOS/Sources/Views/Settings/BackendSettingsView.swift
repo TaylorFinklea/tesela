@@ -169,9 +169,6 @@ struct BackendSettingsView: View {
     private func save() async {
         backend.mode = pickerMode
         backend.serverURL = urlField
-        mosaic.attach(backend: backend.backend)
-        isReloading = true
-        await mosaic.refresh(from: backend.backend)
         isReloading = false
     }
 
@@ -185,7 +182,5 @@ struct BackendSettingsView: View {
         backend.serverURL = "http://127.0.0.1:7474"
         pickerMode = .mock
         urlField = backend.serverURL
-        mosaic.attach(backend: backend.backend)
-        await mosaic.refresh(from: backend.backend)
     }
 }

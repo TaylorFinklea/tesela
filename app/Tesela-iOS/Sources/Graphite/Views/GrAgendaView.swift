@@ -209,7 +209,7 @@ struct GrAgendaView: View {
                     status: row.status,
                     priority: row.priority,
                     size: 18
-                ) { Task { await markDone(row) } }
+                ) { markDone(row) }
                 .padding(.top, 1)
                 // Generous hit area around the 18pt glyph (extends past
                 // the frame; keeps the column width matching the dot rows).
@@ -270,11 +270,11 @@ struct GrAgendaView: View {
                     Label("Reschedule", systemImage: "calendar")
                 }
                 if row.recurrence != nil {
-                    Button { Task { await skip(row) } } label: {
+                    Button { skip(row) } label: {
                         Label("Skip to next occurrence", systemImage: "forward.end")
                     }
                 }
-                Button { Task { await markDone(row) } } label: {
+                Button { markDone(row) } label: {
                     Label(isDone ? "Mark not done" : "Mark done", systemImage: "checkmark.circle")
                 }
             }
@@ -310,7 +310,7 @@ struct GrAgendaView: View {
         rows = await mosaic.fetchAgenda(from: isoFormat(from), to: isoFormat(to), includeDone: includeDone)
     }
 
-    private func markDone(_ row: AgendaRow) async {
+    private func markDone(_ row: AgendaRow) {
         guard row.is_anchor else { return }
         let next = (row.status == "done") ? "todo" : "done"
         // Optimistic restyle — strikethrough/un-strike immediately; the
@@ -333,23 +333,48 @@ struct GrAgendaView: View {
                 field: row.field
             )
         }
-        try? await mosaic.setBlockProperty(blockId: row.block_id, key: "status", value: next)
-        await load()
-    }
-
-    private func skip(_ row: AgendaRow) async {
-        guard row.is_anchor, row.recurrence != nil else { return }
-        try? await mosaic.recurBump(blockId: row.block_id, mode: .skip)
-        await load()
-    }
-
-    private func applyReschedule(blockId: String, iso: String, time: String?, recurrence: String?) async {
-        let value = time.map { "\(iso) \($0)" } ?? iso
-        try? await mosaic.setBlockProperty(blockId: blockId, key: "scheduled", value: value)
-        if let recurrence {
-            try? await mosaic.setBlockProperty(blockId: blockId, key: "recurring", value: recurrence)
+        mosaic.enqueueBackendMutation { reservation in
+            try? await mosaic.setBlockProperty(
+                blockId: row.block_id,
+                key: "status",
+                value: next,
+                reservation: reservation
+            )
+            await load()
         }
-        await load()
+    }
+
+    private func skip(_ row: AgendaRow) {
+        guard row.is_anchor, row.recurrence != nil else { return }
+        mosaic.enqueueBackendMutation { reservation in
+            try? await mosaic.recurBump(
+                blockId: row.block_id,
+                mode: .skip,
+                reservation: reservation
+            )
+            await load()
+        }
+    }
+
+    private func applyReschedule(blockId: String, iso: String, time: String?, recurrence: String?) {
+        let value = time.map { "\(iso) \($0)" } ?? iso
+        mosaic.enqueueBackendMutation { reservation in
+            try? await mosaic.setBlockProperty(
+                blockId: blockId,
+                key: "scheduled",
+                value: value,
+                reservation: reservation
+            )
+            if let recurrence {
+                try? await mosaic.setBlockProperty(
+                    blockId: blockId,
+                    key: "recurring",
+                    value: recurrence,
+                    reservation: reservation
+                )
+            }
+            await load()
+        }
     }
 
     private func rescheduleSheet(_ target: AgendaRow) -> some View {
@@ -360,7 +385,12 @@ struct GrAgendaView: View {
             canSkip: false,
             bareDateFieldDefault: "scheduled",
             onCommit: { _field, iso, time, recurrence in
-                Task { await applyReschedule(blockId: target.block_id, iso: iso, time: time, recurrence: recurrence) }
+                applyReschedule(
+                    blockId: target.block_id,
+                    iso: iso,
+                    time: time,
+                    recurrence: recurrence
+                )
                 rescheduleTarget = nil
             },
             onSkip: { rescheduleTarget = nil },

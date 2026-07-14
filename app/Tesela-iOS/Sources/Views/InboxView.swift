@@ -68,26 +68,26 @@ struct InboxView: View {
                     onTapMosaic: { showMosaicSwitcher = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
-                    Task { await mosaic.refresh(from: backend.backend) }
+                    Task { _ = await mosaic.refreshAttachedBackend() }
                 }
                 filterSwitcherBar
                 InboxChipBar(
                     state: chipState,
                     onToggleStatic: { id in
                         chipState.active[id] = !(chipState.active[id] ?? false)
-                        Task { await commitChipState() }
+                        commitChipState()
                     },
                     onRemoveType: { name in
                         chipState.activeTypes.removeAll { $0 == name }
-                        Task { await commitChipState() }
+                        commitChipState()
                     },
                     onUnhidePage: { id in
                         chipState.hiddenPages.removeAll { $0 == id }
-                        Task { await commitChipState() }
+                        commitChipState()
                     },
                     onUnhideBlock: { id in
                         chipState.hiddenBlocks.removeAll { $0 == id }
-                        Task { await commitChipState() }
+                        commitChipState()
                     }
                 )
                 .environment(\.theme, theme)
@@ -147,7 +147,7 @@ struct InboxView: View {
                 initialDsl: dslFromChips(chipState),
                 onSave: { dsl in
                     showRawDslSheet = false
-                    Task { await commitRawDsl(dsl) }
+                    commitRawDsl(dsl)
                 },
                 onCancel: { showRawDslSheet = false }
             )
@@ -158,7 +158,7 @@ struct InboxView: View {
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
             Button("Save") {
-                Task { await performSaveAs() }
+                performSaveAs()
             }
             Button("Cancel", role: .cancel) {
                 saveAsName = ""
@@ -197,13 +197,13 @@ struct InboxView: View {
                         .listRowBackground(theme.bg2)
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             Button {
-                                Task { await triage(row, status: "todo") }
+                                triage(row, status: "todo")
                             } label: {
                                 Label("Todo", systemImage: "circle")
                             }
                             .tint(theme.fgDefault)
                             Button {
-                                Task { await triage(row, status: "doing") }
+                                triage(row, status: "doing")
                             } label: {
                                 Label("Doing", systemImage: "circle.lefthalf.filled")
                             }
@@ -211,7 +211,7 @@ struct InboxView: View {
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button {
-                                Task { await triage(row, status: "done") }
+                                triage(row, status: "done")
                             } label: {
                                 Label("Done", systemImage: "checkmark.circle.fill")
                             }
@@ -310,7 +310,7 @@ struct InboxView: View {
         availableFilters = await mosaic.listInboxFilters()
     }
 
-    private func performSaveAs() async {
+    private func performSaveAs() {
         let baseSlug = MockMosaicService.slugifyInboxFilterName(saveAsName)
         guard !baseSlug.isEmpty else {
             saveAsError = "That name doesn't slugify cleanly. Try letters + spaces."
@@ -324,16 +324,22 @@ struct InboxView: View {
             return
         }
         let newDsl = dslFromChips(chipState)
-        do {
-            try await mosaic.saveInboxDsl(slug: slug, dsl: newDsl)
-            activeSlug = slug
-            saveAsName = ""
-            saveAsError = nil
-            await loadFilters()
-            await load()
-        } catch {
-            saveAsError = "Failed to save filter."
-            showSaveAsPrompt = true
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.saveInboxDsl(
+                    slug: slug,
+                    dsl: newDsl,
+                    reservation: reservation
+                )
+                activeSlug = slug
+                saveAsName = ""
+                saveAsError = nil
+                await loadFilters()
+                await load()
+            } catch {
+                saveAsError = "Failed to save filter."
+                showSaveAsPrompt = true
+            }
         }
     }
 
@@ -368,13 +374,20 @@ struct InboxView: View {
     /// Save action. Skips the chip-driven rebuild step so the raw
     /// edit isn't lossy (chip state is re-derived from the saved DSL
     /// in `load()`).
-    private func commitRawDsl(_ dsl: String) async {
-        do {
-            try await mosaic.saveInboxDsl(slug: activeSlug, dsl: dsl)
-        } catch {
-            // Silent — connection banner surfaces server failures.
+    private func commitRawDsl(_ dsl: String) {
+        let slug = activeSlug
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.saveInboxDsl(
+                    slug: slug,
+                    dsl: dsl,
+                    reservation: reservation
+                )
+            } catch {
+                // Silent — connection banner surfaces server failures.
+            }
+            await load()
         }
-        await load()
     }
 
     /// Rebuild the DSL from the current chip state, persist it via
@@ -384,25 +397,39 @@ struct InboxView: View {
     /// the web's 500ms debounce mattered because of typed raw-DSL
     /// edits. The raw-DSL editor (stage 5) will reintroduce a debounce
     /// if it lands as a TextEditor with live save.
-    private func commitChipState() async {
+    private func commitChipState() {
         let newDsl = dslFromChips(chipState)
-        do {
-            try await mosaic.saveInboxDsl(slug: activeSlug, dsl: newDsl)
-        } catch {
-            // Silent — connection banner surfaces server failures.
+        let slug = activeSlug
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.saveInboxDsl(
+                    slug: slug,
+                    dsl: newDsl,
+                    reservation: reservation
+                )
+            } catch {
+                // Silent — connection banner surfaces server failures.
+            }
+            await load()
         }
-        await load()
     }
 
-    private func triage(_ row: QueryItem, status: String) async {
+    private func triage(_ row: QueryItem, status: String) {
         guard let bid = row.block_id else { return }
-        do {
-            try await mosaic.setBlockProperty(blockId: bid, key: "status", value: status)
-            // Optimistically remove the row instead of refetching — the
-            // user is going through a list and wants immediate feedback.
-            rows.removeAll { $0.id == row.id }
-        } catch {
-            // Silent — connection banner surfaces server failures.
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.setBlockProperty(
+                    blockId: bid,
+                    key: "status",
+                    value: status,
+                    reservation: reservation
+                )
+                // Optimistically remove the row instead of refetching — the
+                // user is going through a list and wants immediate feedback.
+                rows.removeAll { $0.id == row.id }
+            } catch {
+                // Silent — connection banner surfaces server failures.
+            }
         }
     }
 

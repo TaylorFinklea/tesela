@@ -1,6 +1,19 @@
 import SwiftUI
 import BackgroundTasks
 
+private final class BackgroundTaskCompletionOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return false }
+        completed = true
+        return true
+    }
+}
+
 @main
 struct TeselaApp: App {
     /// Shell selection. The Graphite redesign is now the DEFAULT — it owns
@@ -66,10 +79,12 @@ struct TeselaApp: App {
         //    supersedes any pending one.
         scheduleCatchup()
         // 2. Wrap the async work in a Task we can cancel.
+        let completion = BackgroundTaskCompletionOnce()
         let work = Task { @MainActor in
-            let ticker = RelayTicker()
-            await ticker.runBackgroundCatchup()
-            task.setTaskCompleted(success: true)
+            let outcome = await RelayTicker.shared.runBackgroundCatchup()
+            Self.catchupTask = nil
+            guard !Task.isCancelled, completion.claim() else { return }
+            task.setTaskCompleted(success: outcome.didRunSuccessfully)
         }
         Self.catchupTask = work
         // 3. If iOS reclaims our time, cancel the in-flight Task and
@@ -79,7 +94,9 @@ struct TeselaApp: App {
         task.expirationHandler = {
             work.cancel()
             Self.catchupTask = nil
-            task.setTaskCompleted(success: false)
+            if completion.claim() {
+                task.setTaskCompleted(success: false)
+            }
         }
     }
 

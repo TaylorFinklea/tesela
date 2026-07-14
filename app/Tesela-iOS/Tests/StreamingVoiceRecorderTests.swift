@@ -1,6 +1,49 @@
 import XCTest
 @testable import Tesela
 
+private actor ServerVoiceUploadRecorder {
+    private var requestURLs: [URL] = []
+
+    func record(_ url: URL) {
+        requestURLs.append(url)
+    }
+
+    func urls() -> [URL] {
+        requestURLs
+    }
+}
+
+private final class ServerVoiceUploadURLProtocol: URLProtocol {
+    static var recorder = ServerVoiceUploadRecorder()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path == "/transcription/transcribe"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Task { [weak self] in
+            guard let self, let url = request.url else { return }
+            await Self.recorder.record(url)
+            let data = Data(#"{"text":"stale profile transcript","model_id":"test","duration_ms":1}"#.utf8)
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 /// tesela-v5t.3: `StreamingVoiceRecorder`'s streaming seam and its
 /// AVAudioSession interruption/route-change state machine. Zero dictation
 /// tests existed before this bead.
@@ -28,6 +71,8 @@ final class StreamingVoiceRecorderTests: XCTestCase {
         var supportsStreaming: Bool = true
         var startStreamingShouldThrow = false
         var finalTranscript = "final transcript"
+        var delayFinish = false
+        var onFinishStarted: (() -> Void)?
 
         private(set) var startStreamingCallCount = 0
         private(set) var appendedChunks: [[Float]] = []
@@ -35,6 +80,7 @@ final class StreamingVoiceRecorderTests: XCTestCase {
         private(set) var cancelStreamingCallCount = 0
 
         private var partialCallback: (@MainActor (String) -> Void)?
+        private var finishContinuation: CheckedContinuation<Void, Never>?
 
         func transcribe(audio url: URL) async throws -> String { "" }
         func transcribe(samples: [Float]) async throws -> String { "" }
@@ -53,6 +99,12 @@ final class StreamingVoiceRecorderTests: XCTestCase {
 
         func finishStreaming() async throws -> String {
             finishStreamingCallCount += 1
+            onFinishStarted?()
+            if delayFinish {
+                await withCheckedContinuation { continuation in
+                    finishContinuation = continuation
+                }
+            }
             return finalTranscript
         }
 
@@ -65,6 +117,11 @@ final class StreamingVoiceRecorderTests: XCTestCase {
         func emitPartial(_ text: String) {
             partialCallback?(text)
         }
+
+        func completeFinish() {
+            finishContinuation?.resume()
+            finishContinuation = nil
+        }
     }
 
     /// A whole-clip-only engine (whisper/server shape) — relies entirely
@@ -76,6 +133,30 @@ final class StreamingVoiceRecorderTests: XCTestCase {
     }
 
     // MARK: - beginStreamingSession / partial-callback plumbing
+
+    func testServerEngineCreatedUnderProfileARefusesToUploadThroughProfileB() async throws {
+        ServerVoiceUploadURLProtocol.recorder = ServerVoiceUploadRecorder()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ServerVoiceUploadURLProtocol.self]
+        let mosaic = MockMosaicService(
+            session: URLSession(configuration: configuration)
+        )
+        mosaic.attach(backend: .http(URL(string: "https://profile-a.test")!))
+        let engine = ServerTranscriptionEngine(mosaic: mosaic)
+
+        mosaic.attach(backend: .http(URL(string: "https://profile-b.test")!))
+
+        do {
+            _ = try await engine.transcribe(samples: Array(repeating: 0, count: 4_800))
+            XCTFail("an engine created under profile A must reject stop-time upload under B")
+        } catch is CancellationError {
+            // Expected: the engine's creation-time backend lease is stale.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        let uploadedURLs = await ServerVoiceUploadURLProtocol.recorder.urls()
+        XCTAssertTrue(uploadedURLs.isEmpty, "stale A audio must never upload to profile B")
+    }
 
     func testBeginStreamingSessionWiresPartialsToLivePartial() async {
         let recorder = StreamingVoiceRecorder()
@@ -153,9 +234,70 @@ final class StreamingVoiceRecorderTests: XCTestCase {
         await recorder.finishStreamingSession()
 
         XCTAssertEqual(fake.finishStreamingCallCount, 1)
-        XCTAssertEqual(recorder.lastTranscript, "the final committed text")
+        XCTAssertEqual(recorder.lastTranscript?.text, "the final committed text")
+        XCTAssertEqual(recorder.lastTranscript?.scope, .testing)
         XCTAssertNil(recorder.livePartial)
         XCTAssertFalse(recorder.streamingSessionActive)
+    }
+
+    func testProfileSwitchInvalidationDropsLateFinalTranscript() async {
+        let recorder = StreamingVoiceRecorder()
+        let profileA = FakeStreamingTranscriptionEngine()
+        profileA.finalTranscript = "profile A transcript"
+        profileA.delayFinish = true
+        let finishStarted = expectation(description: "profile A finish started")
+        profileA.onFinishStarted = { finishStarted.fulfill() }
+        _ = await recorder.beginStreamingSession(
+            using: profileA,
+            scope: VoiceCaptureScope(profileIdentity: "A", backendGeneration: 1)
+        )
+
+        let oldFinish = Task { @MainActor in
+            await recorder.finishStreamingSession()
+        }
+        await fulfillment(of: [finishStarted], timeout: 2)
+
+        recorder.invalidateForProfileSwitch()
+        profileA.completeFinish()
+        await oldFinish.value
+
+        XCTAssertNil(recorder.lastTranscript)
+        XCTAssertNil(recorder.livePartial)
+        XCTAssertFalse(recorder.transcribingChunk)
+    }
+
+    func testTranscriptCannotBeConsumedByDifferentProfileBeforeGenerationChanges() {
+        let profileA = VoiceCaptureScope(profileIdentity: "A", backendGeneration: 7)
+        let selectedProfileB = VoiceCaptureScope(profileIdentity: "B", backendGeneration: 7)
+        let transcript = VoiceTranscript(text: "belongs to A", scope: profileA)
+
+        XCTAssertNil(transcript.text(ifCurrent: selectedProfileB))
+        XCTAssertEqual(transcript.text(ifCurrent: profileA), "belongs to A")
+    }
+
+    func testStartingNewSessionDropsLateFinalTranscriptFromPreviousSession() async {
+        let recorder = StreamingVoiceRecorder()
+        let profileA = FakeStreamingTranscriptionEngine()
+        profileA.finalTranscript = "profile A transcript"
+        profileA.delayFinish = true
+        let finishStarted = expectation(description: "profile A finish started")
+        profileA.onFinishStarted = { finishStarted.fulfill() }
+        _ = await recorder.beginStreamingSession(using: profileA)
+
+        let oldFinish = Task { @MainActor in
+            await recorder.finishStreamingSession()
+        }
+        await fulfillment(of: [finishStarted], timeout: 2)
+
+        let profileB = FakeStreamingTranscriptionEngine()
+        _ = await recorder.beginStreamingSession(using: profileB)
+        profileA.completeFinish()
+        await oldFinish.value
+
+        XCTAssertNil(
+            recorder.lastTranscript,
+            "a late profile A finalizer must not publish into profile B's recorder state"
+        )
     }
 
     func testFinishStreamingSessionWithEmptyTranscriptDoesNotSetLastTranscript() async {

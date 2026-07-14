@@ -352,7 +352,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -560,7 +560,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * arrive in B.2/B.3 alongside engine apply.
  */
 public protocol RelayClientHandleProtocol: AnyObject, Sendable {
-    
+
     /**
      * Fetch the relay's compacted snapshot set + its compaction watermark.
      * A fresh or long-offline device imports each (note_id-keyed) snapshot,
@@ -572,7 +572,7 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * import directly.
      */
     func fetchSnapshots() async throws  -> FetchSnapshotsRecord
-    
+
     /**
      * Probe: poll for envelopes since `since_seq` and return how many
      * are pending plus the highest seq seen. Used by the B.1.4 smoke
@@ -580,7 +580,7 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * work. The full envelope-bearing poll lands in B.2.
      */
     func pollCount(sinceSeq: Int64) async throws  -> PollProbeRecord
-    
+
     /**
      * Deposit a full set of per-note snapshots (tesela-zpr) — the FFI
      * mirror of [`tesela_sync::transport::relay::RelayClient::put_snapshots`].
@@ -590,7 +590,7 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * iOS deposits inertly).
      */
     func putSnapshots(coversSeq: Int64, snapshots: [NoteSnapshotRecord]) async throws  -> UInt64
-    
+
     /**
      * Chunked variant of [`Self::put_snapshots`] — the FFI mirror of
      * [`tesela_sync::transport::relay::RelayClient::put_snapshots_chunked`].
@@ -603,15 +603,15 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * peer hasn't applied yet.
      */
     func putSnapshotsChunked(coversSeq: Int64, snapshots: [NoteSnapshotRecord], budgetBytes: UInt64) async throws  -> SnapshotDepositReportRecord
-    
+
     /**
      * Register this device's APNs push token so the relay can wake our
      * OTHER devices with a content-available silent push on every op
      * deposit (sync durability P3b). Best-effort + idempotent (the relay
      * upserts by device id). The token is a routing id, not note content.
      */
-    func registerDevice(apnsToken: String) async throws 
-    
+    func registerDevice(apnsToken: String) async throws
+
     /**
      * Register on the relay, recovering an existing matching record
      * if one exists. Returns the Unix-seconds timestamp pinned to the
@@ -620,7 +620,7 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * without us having to chase the clock.
      */
     func registerOrRecover() async throws  -> Int64
-    
+
     /**
      * Hijack-detection check: read back the relay's stored
      * registration for this group and verify the signed intent against
@@ -628,8 +628,8 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
      * by a holder of our group key; Err otherwise (someone squatted
      * the group id but couldn't produce a valid intent signature).
      */
-    func verifyRegistration() async throws 
-    
+    func verifyRegistration() async throws
+
 }
 /**
  * Handle to a [`RelayClient`] over UniFFI. Owns its own `reqwest`
@@ -707,9 +707,9 @@ public convenience init(relayUrl: String, groupIdHex: String, deviceIdHex: Strin
         try! rustCall { uniffi_tesela_sync_ffi_fn_free_relayclienthandle(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Fetch the relay's compacted snapshot set + its compaction watermark.
      * A fresh or long-offline device imports each (note_id-keyed) snapshot,
@@ -726,7 +726,7 @@ open func fetchSnapshots()async throws  -> FetchSnapshotsRecord  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_relayclienthandle_fetch_snapshots(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -736,7 +736,7 @@ open func fetchSnapshots()async throws  -> FetchSnapshotsRecord  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Probe: poll for envelopes since `since_seq` and return how many
      * are pending plus the highest seq seen. Used by the B.1.4 smoke
@@ -759,7 +759,7 @@ open func pollCount(sinceSeq: Int64)async throws  -> PollProbeRecord  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Deposit a full set of per-note snapshots (tesela-zpr) — the FFI
      * mirror of [`tesela_sync::transport::relay::RelayClient::put_snapshots`].
@@ -784,7 +784,7 @@ open func putSnapshots(coversSeq: Int64, snapshots: [NoteSnapshotRecord])async t
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Chunked variant of [`Self::put_snapshots`] — the FFI mirror of
      * [`tesela_sync::transport::relay::RelayClient::put_snapshots_chunked`].
@@ -812,7 +812,7 @@ open func putSnapshotsChunked(coversSeq: Int64, snapshots: [NoteSnapshotRecord],
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Register this device's APNs push token so the relay can wake our
      * OTHER devices with a content-available silent push on every op
@@ -835,7 +835,7 @@ open func registerDevice(apnsToken: String)async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Register on the relay, recovering an existing matching record
      * if one exists. Returns the Unix-seconds timestamp pinned to the
@@ -849,7 +849,7 @@ open func registerOrRecover()async throws  -> Int64  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_relayclienthandle_register_or_recover(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_i64,
@@ -859,7 +859,7 @@ open func registerOrRecover()async throws  -> Int64  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Hijack-detection check: read back the relay's stored
      * registration for this group and verify the signed intent against
@@ -873,7 +873,7 @@ open func verifyRegistration()async throws   {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_relayclienthandle_verify_registration(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
@@ -883,9 +883,9 @@ open func verifyRegistration()async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -951,19 +951,19 @@ public func FfiConverterTypeRelayClientHandle_lower(_ value: RelayClientHandle) 
  * will persist it through `RelayState`-equivalent storage.
  */
 public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
-    
+
     /**
      * Current inbound cursor (relay seq) — `0` means nothing has been
      * applied yet this run.
      */
     func inboundCursorSeq() async  -> Int64
-    
+
     /**
      * Current outbound cursor (ntp64) — `None` means nothing has been
      * sent yet this run. Surfaced for the dev smoke UI.
      */
     func outboundCursorNtp() async  -> Int64?
-    
+
     /**
      * Restore the inbound cursor from prior-session persistence.
      * Idempotent and clamping: a request to move BACKWARDS is
@@ -971,15 +971,15 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
      * re-applying is a waste of bandwidth, even though it's safe
      * thanks to content-hash dedupe).
      */
-    func setInboundCursorSeq(seq: Int64) async 
-    
+    func setInboundCursorSeq(seq: Int64) async
+
     /**
      * Restore the outbound cursor (HLC ntp64) from prior-session
      * persistence. Same clamping rule as the inbound setter — won't
      * move backwards.
      */
-    func setOutboundCursorNtp(ntp: Int64) async 
-    
+    func setOutboundCursorNtp(ntp: Int64) async
+
     /**
      * Drain incoming envelopes from the relay since the last applied
      * `seq`, decrypt + decode each, apply via the engine (which
@@ -1009,7 +1009,7 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
      * restart).
      */
     func tickInbound() async throws  -> TickInboundRecord
-    
+
     /**
      * Drain locally-recorded ops that the relay hasn't seen yet,
      * postcard-encode them into a `SyncEnvelope`, AEAD-seal via the
@@ -1028,7 +1028,7 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
      * indistinguishable from "nothing to send".
      */
     func tickOutbound(maxBytes: UInt32) async throws  -> TickOutboundRecord
-    
+
 }
 /**
  * Coordinator that owns a (SyncEngine, RelayClient, group identity) tuple
@@ -1116,9 +1116,9 @@ public convenience init(engine: SyncEngineHandle, relay: RelayClientHandle, grou
         try! rustCall { uniffi_tesela_sync_ffi_fn_free_synccoordinator(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Current inbound cursor (relay seq) — `0` means nothing has been
      * applied yet this run.
@@ -1129,7 +1129,7 @@ open func inboundCursorSeq()async  -> Int64  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_synccoordinator_inbound_cursor_seq(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_i64,
@@ -1137,10 +1137,10 @@ open func inboundCursorSeq()async  -> Int64  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_i64,
             liftFunc: FfiConverterInt64.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Current outbound cursor (ntp64) — `None` means nothing has been
      * sent yet this run. Surfaced for the dev smoke UI.
@@ -1151,7 +1151,7 @@ open func outboundCursorNtp()async  -> Int64?  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_synccoordinator_outbound_cursor_ntp(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -1159,10 +1159,10 @@ open func outboundCursorNtp()async  -> Int64?  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterOptionInt64.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Restore the inbound cursor from prior-session persistence.
      * Idempotent and clamping: a request to move BACKWARDS is
@@ -1184,10 +1184,10 @@ open func setInboundCursorSeq(seq: Int64)async   {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Restore the outbound cursor (HLC ntp64) from prior-session
      * persistence. Same clamping rule as the inbound setter — won't
@@ -1207,10 +1207,10 @@ open func setOutboundCursorNtp(ntp: Int64)async   {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Drain incoming envelopes from the relay since the last applied
      * `seq`, decrypt + decode each, apply via the engine (which
@@ -1245,7 +1245,7 @@ open func tickInbound()async throws  -> TickInboundRecord  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_synccoordinator_tick_inbound(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -1255,7 +1255,7 @@ open func tickInbound()async throws  -> TickInboundRecord  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Drain locally-recorded ops that the relay hasn't seen yet,
      * postcard-encode them into a `SyncEnvelope`, AEAD-seal via the
@@ -1289,9 +1289,9 @@ open func tickOutbound(maxBytes: UInt32)async throws  -> TickOutboundRecord  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -1352,7 +1352,7 @@ public func FfiConverterTypeSyncCoordinator_lower(_ value: SyncCoordinator) -> U
  * methods, not the retired op-replay path.
  */
 public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
-    
+
     /**
      * Apply a TLR2-framed delta frame received over the instant-multidevice
      * WebSocket. Decodes the TLR2 payload and imports each per-note Loro
@@ -1373,7 +1373,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * delta couldn't fully integrate.
      */
     func applyDeltaFrame(frame: Data) async throws  -> DeltaApplyOutcome
-    
+
     /**
      * Remove a property from a block — the on-device mirror of the server's
      * `POST /blocks/clear-property` route (P1.10,
@@ -1385,13 +1385,13 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * [`Self::set_block_property`] (`1` recorded, `0` block not found).
      */
     func clearBlockProperty(slug: String, blockIdHex: String, key: String) async throws  -> UInt32
-    
+
     /**
      * 32-char hex of this engine's device id. The Swift coordinator
      * reads this once at boot for display in Settings → Sync.
      */
     func deviceHex()  -> String
-    
+
     /**
      * Idempotently seed the built-in views (currently: the Inbox).
      * Safe to call on every launch — a registry that already carries the
@@ -1399,8 +1399,8 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * user edits to the builtin survive. Concurrent seeds on two devices
      * write the same fixed id and converge to ONE Inbox.
      */
-    func ensureBuiltinViews() async throws 
-    
+    func ensureBuiltinViews() async throws
+
     /**
      * Export the current full Loro snapshot for every note this engine
      * tracks (tesela-zpr). Mirrors the server's `deposit_snapshots`
@@ -1412,7 +1412,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * best-effort posture as the server side.
      */
     func exportAllNoteSnapshots() async  -> [NoteSnapshotRecord]
-    
+
     /**
      * Import the server's full Loro snapshot for a note as an **authoritative
      * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
@@ -1426,8 +1426,8 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * of this bridge uses; the engine import is commutative + idempotent, so a
      * re-import or a snapshot captured mid-edit is safe (no data loss).
      */
-    func importNoteSnapshot(slug: String, bytes: Data) async throws 
-    
+    func importNoteSnapshot(slug: String, bytes: Data) async throws
+
     /**
      * Import a relay snapshot keyed by `note_id` (the relay's opaque
      * `stream_id`), for bootstrap-from-snapshots. `RelayClientHandle::fetch_snapshots`
@@ -1436,8 +1436,8 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * one-way), so it can't use the slug-keyed `import_note_snapshot`.
      * Same authoritative re-base as the slug path.
      */
-    func importNoteSnapshotById(noteId: Data, bytes: Data) async throws 
-    
+    func importNoteSnapshotById(noteId: Data, bytes: Data) async throws
+
     /**
      * Every note's index entry (id/title/slug/tags) from the always-
      * resident Loro index — the complete page list for THIS mosaic,
@@ -1446,7 +1446,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * opened locally are still found. No per-note docs are loaded.
      */
     func indexEntries() async  -> [IndexEntryRecord]
-    
+
     /**
      * Mint a stable, op-anchored cursor at `utf16_offset` in a block's
      * `text_seq`, as encoded bytes to publish in presence (Phase 1). The
@@ -1456,7 +1456,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * unparseable id.
      */
     func mintCursor(slug: String, blockIdHex: String, utf16Offset: UInt32) async throws  -> Data?
-    
+
     /**
      * Encoded version vector of a note's current Loro doc, for the
      * reconnect/catch-up handshake: a peer hands this to the other side's
@@ -1466,7 +1466,17 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * [`Self::produce_note_delta`].
      */
     func noteVersion(slug: String) async  -> Data?
-    
+
+    /**
+     * Prepare one cursor-free TLR2 frame for every requested note and pair
+     * it with exact frame-associated post-export version vectors. Multiple
+     * notes (notably the source and destination of one relocation) travel in
+     * the same frame and must be checkpointed together after a confirmed
+     * send. Duplicate slugs are rejected rather than ambiguously choosing a
+     * baseline.
+     */
+    func prepareDeltaFrame(requests: [NoteDeltaRequestRecord]) async throws  -> PreparedDeltaFrameRecord?
+
     /**
      * Produce the live Loro delta for a just-changed note, framed as a
      * single TLR2 relay frame ready to push over the instant-multidevice
@@ -1492,7 +1502,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * `Ok(Some(frame))` with the TLR2-framed bytes otherwise.
      */
     func produceNoteDelta(slug: String, sinceVv: Data?) async throws  -> Data?
-    
+
     /**
      * Read a single block's current text — the engine-exact `text_seq`
      * content — by `slug` + `block_id_hex`. The inbound counterpart of
@@ -1510,7 +1520,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * unparseable `block_id_hex`.
      */
     func readBlockText(slug: String, blockIdHex: String) async throws  -> String?
-    
+
     /**
      * Block-granular variant of `record_note_upsert_by_slug`. Diffs
      * the new body against the engine's last-materialized version of
@@ -1544,7 +1554,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * `crates/tesela-server/src/routes/notes.rs::record_sync_update`.
      */
     func recordNoteDiff(slug: String, newContent: String, title: String, createdAtMillis: Int64) async throws  -> UInt32
-    
+
     /**
      * Record a "create or update a note" op locally. Returns the
      * resulting 64-char hex content hash that the engine assigned —
@@ -1558,7 +1568,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * updates so the engine's HLC stays monotonic across both edits.
      */
     func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: String, content: String, createdAtMillis: Int64) async throws  -> String
-    
+
     /**
      * Slug-flavoured variant of [`Self::record_note_upsert`]. Computes
      * the note id with the same blake3-truncation Mac's server uses
@@ -1572,7 +1582,14 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * keeps the engine's HLC ordering monotonic.
      */
     func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64) async throws  -> String
-    
+
+    /**
+     * Relocate one complete stable-id block subtree through the authoritative
+     * engine transaction. Swift supplies a stable `move_id` so an interrupted
+     * request can retry exactly without duplicating the subtree.
+     */
+    func relocateBlockSubtree(request: BlockRelocationRecord) async throws  -> BlockRelocationOutcomeRecord
+
     /**
      * Re-anchor stranded outbound cursors after the caller CONFIRMED the
      * deposit of `deposited`'s snapshots to the relay (tesela-c7s item 4 — the
@@ -1585,8 +1602,8 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * cursor is rewound; healthy cursors are left untouched. No-op on records
      * whose note id or version is malformed/empty.
      */
-    func repairBroadcastCursorsAfterSnapshot(deposited: [NoteSnapshotRecord]) async 
-    
+    func repairBroadcastCursorsAfterSnapshot(deposited: [NoteSnapshotRecord]) async
+
     /**
      * Resolve an encoded cursor (from a peer's presence) to its CURRENT utf16
      * offset in this engine's copy of the note. `None` if it can't be placed
@@ -1594,7 +1611,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * block id (carried in the presence payload) to position the remote caret.
      */
     func resolveCursor(slug: String, cursorBytes: Data) async throws  -> UInt32?
-    
+
     /**
      * Set ONE property on a block through the engine's typed
      * `props`/`prop_keys` containers (P1.11) — the on-device mirror of the
@@ -1632,7 +1649,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * silently no-opping in the apply arm.
      */
     func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String) async throws  -> UInt32
-    
+
     /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
      * outbound foundation for cursor-accurate collaborative editing. Instead
@@ -1657,7 +1674,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * splice is an in-place edit — the block must already exist).
      */
     func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32, utf16DeleteLen: UInt32, insert: String) async throws  -> UInt32
-    
+
     /**
      * Delete a saved view by id. Returns `true` when removed, `false`
      * when no such view exists; a BUILTIN view errors (builtins are
@@ -1665,7 +1682,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * UI by hiding the delete affordance).
      */
     func viewsDelete(viewId: String) async throws  -> Bool
-    
+
     /**
      * All saved views from the synced views registry, sorted by
      * `(order, id)` — deterministic across devices. Empty on a fresh
@@ -1674,7 +1691,7 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * no extra sync plumbing is needed on the Swift side.
      */
     func viewsList() async  -> [ViewRecord]
-    
+
     /**
      * Create or update a saved view (field-level LWW — a concurrent peer
      * edit of a DIFFERENT field of the same view survives the merge).
@@ -1683,8 +1700,8 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * doc and is picked up by the next outbound sync tick / WS push like
      * any note edit.
      */
-    func viewsUpsert(record: ViewRecord) async throws 
-    
+    func viewsUpsert(record: ViewRecord) async throws
+
 }
 /**
  * Handle to the authoritative Loro sync engine. Created with
@@ -1747,7 +1764,7 @@ open class SyncEngineHandle: SyncEngineHandleProtocol, @unchecked Sendable {
         try! rustCall { uniffi_tesela_sync_ffi_fn_free_syncenginehandle(handle, $0) }
     }
 
-    
+
     /**
      * Open an authoritative **LoroEngine** for iOS (the Loro cutover).
      * LoroEngine becomes the sole writer: it materializes
@@ -1777,9 +1794,9 @@ public static func openLoro(mosaicPath: String, deviceIdHex: String)async throws
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
 
-    
+
+
     /**
      * Apply a TLR2-framed delta frame received over the instant-multidevice
      * WebSocket. Decodes the TLR2 payload and imports each per-note Loro
@@ -1815,7 +1832,7 @@ open func applyDeltaFrame(frame: Data)async throws  -> DeltaApplyOutcome  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Remove a property from a block — the on-device mirror of the server's
      * `POST /blocks/clear-property` route (P1.10,
@@ -1842,7 +1859,7 @@ open func clearBlockProperty(slug: String, blockIdHex: String, key: String)async
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * 32-char hex of this engine's device id. The Swift coordinator
      * reads this once at boot for display in Settings → Sync.
@@ -1854,7 +1871,7 @@ open func deviceHex() -> String  {
     )
 })
 }
-    
+
     /**
      * Idempotently seed the built-in views (currently: the Inbox).
      * Safe to call on every launch — a registry that already carries the
@@ -1868,7 +1885,7 @@ open func ensureBuiltinViews()async throws   {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_ensure_builtin_views(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
@@ -1878,7 +1895,7 @@ open func ensureBuiltinViews()async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Export the current full Loro snapshot for every note this engine
      * tracks (tesela-zpr). Mirrors the server's `deposit_snapshots`
@@ -1895,7 +1912,7 @@ open func exportAllNoteSnapshots()async  -> [NoteSnapshotRecord]  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_export_all_note_snapshots(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -1903,10 +1920,10 @@ open func exportAllNoteSnapshots()async  -> [NoteSnapshotRecord]  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterSequenceTypeNoteSnapshotRecord.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Import the server's full Loro snapshot for a note as an **authoritative
      * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
@@ -1936,7 +1953,7 @@ open func importNoteSnapshot(slug: String, bytes: Data)async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Import a relay snapshot keyed by `note_id` (the relay's opaque
      * `stream_id`), for bootstrap-from-snapshots. `RelayClientHandle::fetch_snapshots`
@@ -1961,7 +1978,7 @@ open func importNoteSnapshotById(noteId: Data, bytes: Data)async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Every note's index entry (id/title/slug/tags) from the always-
      * resident Loro index — the complete page list for THIS mosaic,
@@ -1975,7 +1992,7 @@ open func indexEntries()async  -> [IndexEntryRecord]  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_index_entries(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -1983,10 +2000,10 @@ open func indexEntries()async  -> [IndexEntryRecord]  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterSequenceTypeIndexEntryRecord.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Mint a stable, op-anchored cursor at `utf16_offset` in a block's
      * `text_seq`, as encoded bytes to publish in presence (Phase 1). The
@@ -2011,7 +2028,7 @@ open func mintCursor(slug: String, blockIdHex: String, utf16Offset: UInt32)async
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Encoded version vector of a note's current Loro doc, for the
      * reconnect/catch-up handshake: a peer hands this to the other side's
@@ -2034,10 +2051,35 @@ open func noteVersion(slug: String)async  -> Data?  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterOptionData.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
+    /**
+     * Prepare one cursor-free TLR2 frame for every requested note and pair
+     * it with exact frame-associated post-export version vectors. Multiple
+     * notes (notably the source and destination of one relocation) travel in
+     * the same frame and must be checkpointed together after a confirmed
+     * send. Duplicate slugs are rejected rather than ambiguously choosing a
+     * baseline.
+     */
+open func prepareDeltaFrame(requests: [NoteDeltaRequestRecord])async throws  -> PreparedDeltaFrameRecord?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_prepare_delta_frame(
+                    self.uniffiCloneHandle(),
+                    FfiConverterSequenceTypeNoteDeltaRequestRecord.lower(requests)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypePreparedDeltaFrameRecord.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+
     /**
      * Produce the live Loro delta for a just-changed note, framed as a
      * single TLR2 relay frame ready to push over the instant-multidevice
@@ -2078,7 +2120,7 @@ open func produceNoteDelta(slug: String, sinceVv: Data?)async throws  -> Data?  
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Read a single block's current text — the engine-exact `text_seq`
      * content — by `slug` + `block_id_hex`. The inbound counterpart of
@@ -2111,7 +2153,7 @@ open func readBlockText(slug: String, blockIdHex: String)async throws  -> String
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Block-granular variant of `record_note_upsert_by_slug`. Diffs
      * the new body against the engine's last-materialized version of
@@ -2160,7 +2202,7 @@ open func recordNoteDiff(slug: String, newContent: String, title: String, create
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Record a "create or update a note" op locally. Returns the
      * resulting 64-char hex content hash that the engine assigned —
@@ -2189,7 +2231,7 @@ open func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: Stri
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Slug-flavoured variant of [`Self::record_note_upsert`]. Computes
      * the note id with the same blake3-truncation Mac's server uses
@@ -2218,7 +2260,29 @@ open func recordNoteUpsertBySlug(slug: String, title: String, content: String, c
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
+    /**
+     * Relocate one complete stable-id block subtree through the authoritative
+     * engine transaction. Swift supplies a stable `move_id` so an interrupted
+     * request can retry exactly without duplicating the subtree.
+     */
+open func relocateBlockSubtree(request: BlockRelocationRecord)async throws  -> BlockRelocationOutcomeRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_relocate_block_subtree(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeBlockRelocationRecord_lower(request)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeBlockRelocationOutcomeRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+
     /**
      * Re-anchor stranded outbound cursors after the caller CONFIRMED the
      * deposit of `deposited`'s snapshots to the relay (tesela-c7s item 4 — the
@@ -2245,10 +2309,10 @@ open func repairBroadcastCursorsAfterSnapshot(deposited: [NoteSnapshotRecord])as
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Resolve an encoded cursor (from a peer's presence) to its CURRENT utf16
      * offset in this engine's copy of the note. `None` if it can't be placed
@@ -2271,7 +2335,7 @@ open func resolveCursor(slug: String, cursorBytes: Data)async throws  -> UInt32?
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Set ONE property on a block through the engine's typed
      * `props`/`prop_keys` containers (P1.11) — the on-device mirror of the
@@ -2324,7 +2388,7 @@ open func setBlockProperty(slug: String, blockIdHex: String, key: String, value:
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
      * outbound foundation for cursor-accurate collaborative editing. Instead
@@ -2364,7 +2428,7 @@ open func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * Delete a saved view by id. Returns `true` when removed, `false`
      * when no such view exists; a BUILTIN view errors (builtins are
@@ -2387,7 +2451,7 @@ open func viewsDelete(viewId: String)async throws  -> Bool  {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
+
     /**
      * All saved views from the synced views registry, sorted by
      * `(order, id)` — deterministic across devices. Empty on a fresh
@@ -2401,7 +2465,7 @@ open func viewsList()async  -> [ViewRecord]  {
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_views_list(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -2409,10 +2473,10 @@ open func viewsList()async  -> [ViewRecord]  {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterSequenceTypeViewRecord.lift,
             errorHandler: nil
-            
+
         )
 }
-    
+
     /**
      * Create or update a saved view (field-level LWW — a concurrent peer
      * edit of a DIFFERENT field of the same view survives the merge).
@@ -2437,9 +2501,9 @@ open func viewsUpsert(record: ViewRecord)async throws   {
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -2487,6 +2551,142 @@ public func FfiConverterTypeSyncEngineHandle_lower(_ value: SyncEngineHandle) ->
 
 
 /**
+ * Durable relocation result returned to Swift so both affected note
+ * projections can be refreshed without guessing.
+ */
+public struct BlockRelocationOutcomeRecord: Equatable, Hashable {
+    public var moveId: String
+    public var status: BlockMoveStatus
+    public var notes: [RelocatedNoteRecord]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(moveId: String, status: BlockMoveStatus, notes: [RelocatedNoteRecord]) {
+        self.moveId = moveId
+        self.status = status
+        self.notes = notes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlockRelocationOutcomeRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlockRelocationOutcomeRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlockRelocationOutcomeRecord {
+        return
+            try BlockRelocationOutcomeRecord(
+                moveId: FfiConverterString.read(from: &buf),
+                status: FfiConverterTypeBlockMoveStatus.read(from: &buf),
+                notes: FfiConverterSequenceTypeRelocatedNoteRecord.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BlockRelocationOutcomeRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.moveId, into: &buf)
+        FfiConverterTypeBlockMoveStatus.write(value.status, into: &buf)
+        FfiConverterSequenceTypeRelocatedNoteRecord.write(value.notes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockRelocationOutcomeRecord_lift(_ buf: RustBuffer) throws -> BlockRelocationOutcomeRecord {
+    return try FfiConverterTypeBlockRelocationOutcomeRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockRelocationOutcomeRecord_lower(_ value: BlockRelocationOutcomeRecord) -> RustBuffer {
+    return FfiConverterTypeBlockRelocationOutcomeRecord.lower(value)
+}
+
+
+/**
+ * Swift-facing relocation request. Rust derives note identity and trusted
+ * daily-note seeds so retries cannot drift with UI-supplied metadata.
+ */
+public struct BlockRelocationRecord: Equatable, Hashable {
+    public var moveId: String
+    public var sourceSlug: String
+    public var rootBid: String
+    public var destinationSlug: String
+    public var targetBid: String?
+    public var placement: BlockMovePlacement
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(moveId: String, sourceSlug: String, rootBid: String, destinationSlug: String, targetBid: String?, placement: BlockMovePlacement) {
+        self.moveId = moveId
+        self.sourceSlug = sourceSlug
+        self.rootBid = rootBid
+        self.destinationSlug = destinationSlug
+        self.targetBid = targetBid
+        self.placement = placement
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlockRelocationRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlockRelocationRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlockRelocationRecord {
+        return
+            try BlockRelocationRecord(
+                moveId: FfiConverterString.read(from: &buf),
+                sourceSlug: FfiConverterString.read(from: &buf),
+                rootBid: FfiConverterString.read(from: &buf),
+                destinationSlug: FfiConverterString.read(from: &buf),
+                targetBid: FfiConverterOptionString.read(from: &buf),
+                placement: FfiConverterTypeBlockMovePlacement.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BlockRelocationRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.moveId, into: &buf)
+        FfiConverterString.write(value.sourceSlug, into: &buf)
+        FfiConverterString.write(value.rootBid, into: &buf)
+        FfiConverterString.write(value.destinationSlug, into: &buf)
+        FfiConverterOptionString.write(value.targetBid, into: &buf)
+        FfiConverterTypeBlockMovePlacement.write(value.placement, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockRelocationRecord_lift(_ buf: RustBuffer) throws -> BlockRelocationRecord {
+    return try FfiConverterTypeBlockRelocationRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockRelocationRecord_lower(_ value: BlockRelocationRecord) -> RustBuffer {
+    return FfiConverterTypeBlockRelocationRecord.lower(value)
+}
+
+
+/**
  * Outcome of [`SyncEngineHandle::apply_delta_frame`]. Beyond the count of
  * per-note updates applied, it reports whether ANY update was left PENDING by
  * Loro (a causal gap — the device is on a disjoint lineage / missing deps) and
@@ -2515,12 +2715,12 @@ public struct DeltaApplyOutcome: Equatable, Hashable {
     public init(
         /**
          * Number of per-note updates decoded + applied from the frame.
-         */applied: UInt32, 
+         */applied: UInt32,
         /**
          * `true` when at least one update was left PENDING (missing
          * dependencies) — the signal to catch up the affected note(s) via
          * [`SyncEngineHandle::import_note_snapshot`].
-         */needsCatchup: Bool, 
+         */needsCatchup: Bool,
         /**
          * Hex (32-char) note ids carried by the frame, so the caller knows
          * which note(s) to request a snapshot for.
@@ -2530,9 +2730,9 @@ public struct DeltaApplyOutcome: Equatable, Hashable {
         self.noteIdsHex = noteIdsHex
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2546,8 +2746,8 @@ public struct FfiConverterTypeDeltaApplyOutcome: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeltaApplyOutcome {
         return
             try DeltaApplyOutcome(
-                applied: FfiConverterUInt32.read(from: &buf), 
-                needsCatchup: FfiConverterBool.read(from: &buf), 
+                applied: FfiConverterUInt32.read(from: &buf),
+                needsCatchup: FfiConverterBool.read(from: &buf),
                 noteIdsHex: FfiConverterSequenceString.read(from: &buf)
         )
     }
@@ -2598,9 +2798,9 @@ public struct FetchSnapshotsRecord: Equatable, Hashable {
         self.snapshots = snapshots
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2614,7 +2814,7 @@ public struct FfiConverterTypeFetchSnapshotsRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FetchSnapshotsRecord {
         return
             try FetchSnapshotsRecord(
-                compactionSeq: FfiConverterInt64.read(from: &buf), 
+                compactionSeq: FfiConverterInt64.read(from: &buf),
                 snapshots: FfiConverterSequenceTypeRelaySnapshotRecord.read(from: &buf)
         )
     }
@@ -2659,7 +2859,7 @@ public struct GroupIdentityRecord: Equatable, Hashable {
     public init(
         /**
          * 32-char lowercase hex of the 16-byte group id.
-         */groupIdHex: String, 
+         */groupIdHex: String,
         /**
          * 64-char lowercase hex of the 32-byte group key.
          */groupKeyHex: String) {
@@ -2667,9 +2867,9 @@ public struct GroupIdentityRecord: Equatable, Hashable {
         self.groupKeyHex = groupKeyHex
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2683,7 +2883,7 @@ public struct FfiConverterTypeGroupIdentityRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GroupIdentityRecord {
         return
             try GroupIdentityRecord(
-                groupIdHex: FfiConverterString.read(from: &buf), 
+                groupIdHex: FfiConverterString.read(from: &buf),
                 groupKeyHex: FfiConverterString.read(from: &buf)
         )
     }
@@ -2740,13 +2940,13 @@ public struct IndexEntryRecord: Equatable, Hashable {
     public init(
         /**
          * 32-char lowercase hex of the 16-byte note id.
-         */noteIdHex: String, 
+         */noteIdHex: String,
         /**
          * Display title.
-         */title: String, 
+         */title: String,
         /**
          * URL/link slug.
-         */slug: String, 
+         */slug: String,
         /**
          * Tags on the note.
          */tags: [String]) {
@@ -2756,9 +2956,9 @@ public struct IndexEntryRecord: Equatable, Hashable {
         self.tags = tags
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2772,9 +2972,9 @@ public struct FfiConverterTypeIndexEntryRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> IndexEntryRecord {
         return
             try IndexEntryRecord(
-                noteIdHex: FfiConverterString.read(from: &buf), 
-                title: FfiConverterString.read(from: &buf), 
-                slug: FfiConverterString.read(from: &buf), 
+                noteIdHex: FfiConverterString.read(from: &buf),
+                title: FfiConverterString.read(from: &buf),
+                slug: FfiConverterString.read(from: &buf),
                 tags: FfiConverterSequenceString.read(from: &buf)
         )
     }
@@ -2800,6 +3000,63 @@ public func FfiConverterTypeIndexEntryRecord_lift(_ buf: RustBuffer) throws -> I
 #endif
 public func FfiConverterTypeIndexEntryRecord_lower(_ value: IndexEntryRecord) -> RustBuffer {
     return FfiConverterTypeIndexEntryRecord.lower(value)
+}
+
+
+/**
+ * One note and delivery baseline requested for a cursor-free live delta.
+ */
+public struct NoteDeltaRequestRecord: Equatable, Hashable {
+    public var slug: String
+    public var sinceVersion: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(slug: String, sinceVersion: Data?) {
+        self.slug = slug
+        self.sinceVersion = sinceVersion
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NoteDeltaRequestRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNoteDeltaRequestRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NoteDeltaRequestRecord {
+        return
+            try NoteDeltaRequestRecord(
+                slug: FfiConverterString.read(from: &buf),
+                sinceVersion: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NoteDeltaRequestRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.slug, into: &buf)
+        FfiConverterOptionData.write(value.sinceVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoteDeltaRequestRecord_lift(_ buf: RustBuffer) throws -> NoteDeltaRequestRecord {
+    return try FfiConverterTypeNoteDeltaRequestRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoteDeltaRequestRecord_lower(_ value: NoteDeltaRequestRecord) -> RustBuffer {
+    return FfiConverterTypeNoteDeltaRequestRecord.lower(value)
 }
 
 
@@ -2835,10 +3092,10 @@ public struct NoteSnapshotRecord: Equatable, Hashable {
     public init(
         /**
          * 16-byte note id, opaque `stream_id` on the relay.
-         */noteId: Data, 
+         */noteId: Data,
         /**
          * Full compact Loro snapshot bytes for this note.
-         */payload: Data, 
+         */payload: Data,
         /**
          * Encoded doc version vector captured at snapshot-EXPORT time
          * (tesela-c7s item 4). After the caller CONFIRMS this snapshot reached
@@ -2855,9 +3112,9 @@ public struct NoteSnapshotRecord: Equatable, Hashable {
         self.versionVv = versionVv
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2871,8 +3128,8 @@ public struct FfiConverterTypeNoteSnapshotRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NoteSnapshotRecord {
         return
             try NoteSnapshotRecord(
-                noteId: FfiConverterData.read(from: &buf), 
-                payload: FfiConverterData.read(from: &buf), 
+                noteId: FfiConverterData.read(from: &buf),
+                payload: FfiConverterData.read(from: &buf),
                 versionVv: FfiConverterData.read(from: &buf)
         )
     }
@@ -2943,23 +3200,23 @@ public struct PairingCodeRecord: Equatable, Hashable {
     public init(
         /**
          * 32-char hex group id (16 bytes).
-         */groupIdHex: String, 
+         */groupIdHex: String,
         /**
          * 64-char hex group key (32 bytes).
-         */groupKeyHex: String, 
+         */groupKeyHex: String,
         /**
          * 32-char hex device id of the issuing device.
-         */deviceIdHex: String, 
+         */deviceIdHex: String,
         /**
          * Reachable HTTP URL of the issuing tesela-server (e.g.
          * `http://10.0.0.5:7474`).
-         */url: String, 
+         */url: String,
         /**
          * User-visible display name from the issuer.
-         */displayName: String, 
+         */displayName: String,
         /**
          * Wire-format version; checked by `decode_pairing_code` already.
-         */version: UInt32, 
+         */version: UInt32,
         /**
          * WAN relay URL the issuer is configured against, if any.
          * `None` ≡ the issuer is LAN-only. When set, the joining device
@@ -2976,9 +3233,9 @@ public struct PairingCodeRecord: Equatable, Hashable {
         self.relayUrl = relayUrl
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2992,12 +3249,12 @@ public struct FfiConverterTypePairingCodeRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PairingCodeRecord {
         return
             try PairingCodeRecord(
-                groupIdHex: FfiConverterString.read(from: &buf), 
-                groupKeyHex: FfiConverterString.read(from: &buf), 
-                deviceIdHex: FfiConverterString.read(from: &buf), 
-                url: FfiConverterString.read(from: &buf), 
-                displayName: FfiConverterString.read(from: &buf), 
-                version: FfiConverterUInt32.read(from: &buf), 
+                groupIdHex: FfiConverterString.read(from: &buf),
+                groupKeyHex: FfiConverterString.read(from: &buf),
+                deviceIdHex: FfiConverterString.read(from: &buf),
+                url: FfiConverterString.read(from: &buf),
+                displayName: FfiConverterString.read(from: &buf),
+                version: FfiConverterUInt32.read(from: &buf),
                 relayUrl: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -3047,7 +3304,7 @@ public struct PollProbeRecord: Equatable, Hashable {
     public init(
         /**
          * Number of envelopes the relay returned (≤ relay page size).
-         */count: UInt32, 
+         */count: UInt32,
         /**
          * Highest seq in the returned batch, or `since_seq` when empty.
          */highestSeq: Int64) {
@@ -3055,9 +3312,9 @@ public struct PollProbeRecord: Equatable, Hashable {
         self.highestSeq = highestSeq
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3071,7 +3328,7 @@ public struct FfiConverterTypePollProbeRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PollProbeRecord {
         return
             try PollProbeRecord(
-                count: FfiConverterUInt32.read(from: &buf), 
+                count: FfiConverterUInt32.read(from: &buf),
                 highestSeq: FfiConverterInt64.read(from: &buf)
         )
     }
@@ -3095,6 +3352,121 @@ public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> Po
 #endif
 public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
     return FfiConverterTypePollProbeRecord.lower(value)
+}
+
+
+/**
+ * One TLR2 frame, potentially carrying several notes, plus the exact
+ * per-note versions callers may commit only after confirmed delivery.
+ */
+public struct PreparedDeltaFrameRecord: Equatable, Hashable {
+    public var frame: Data
+    public var notes: [PreparedDeltaNoteRecord]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(frame: Data, notes: [PreparedDeltaNoteRecord]) {
+        self.frame = frame
+        self.notes = notes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PreparedDeltaFrameRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePreparedDeltaFrameRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreparedDeltaFrameRecord {
+        return
+            try PreparedDeltaFrameRecord(
+                frame: FfiConverterData.read(from: &buf),
+                notes: FfiConverterSequenceTypePreparedDeltaNoteRecord.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PreparedDeltaFrameRecord, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.frame, into: &buf)
+        FfiConverterSequenceTypePreparedDeltaNoteRecord.write(value.notes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedDeltaFrameRecord_lift(_ buf: RustBuffer) throws -> PreparedDeltaFrameRecord {
+    return try FfiConverterTypePreparedDeltaFrameRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedDeltaFrameRecord_lower(_ value: PreparedDeltaFrameRecord) -> RustBuffer {
+    return FfiConverterTypePreparedDeltaFrameRecord.lower(value)
+}
+
+
+/**
+ * Exact version of one note carried by a prepared live-delta frame.
+ */
+public struct PreparedDeltaNoteRecord: Equatable, Hashable {
+    public var slug: String
+    public var version: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(slug: String, version: Data) {
+        self.slug = slug
+        self.version = version
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PreparedDeltaNoteRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePreparedDeltaNoteRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreparedDeltaNoteRecord {
+        return
+            try PreparedDeltaNoteRecord(
+                slug: FfiConverterString.read(from: &buf),
+                version: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PreparedDeltaNoteRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.slug, into: &buf)
+        FfiConverterData.write(value.version, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedDeltaNoteRecord_lift(_ buf: RustBuffer) throws -> PreparedDeltaNoteRecord {
+    return try FfiConverterTypePreparedDeltaNoteRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedDeltaNoteRecord_lower(_ value: PreparedDeltaNoteRecord) -> RustBuffer {
+    return FfiConverterTypePreparedDeltaNoteRecord.lower(value)
 }
 
 
@@ -3134,17 +3506,17 @@ public struct PresenceWsHeaders: Equatable, Hashable {
     public init(
         /**
          * 32-char lowercase hex of the 16-byte group id (`x-tesela-group`).
-         */groupHex: String, 
+         */groupHex: String,
         /**
          * 32-char lowercase hex of the 16-byte device id (`x-tesela-device`).
-         */deviceHex: String, 
+         */deviceHex: String,
         /**
          * STANDARD-base64 of the fresh 16-byte MAC nonce (`x-tesela-nonce`).
-         */nonceB64: String, 
+         */nonceB64: String,
         /**
          * Unix SECONDS as i64 (`x-tesela-ts` = `String(ts)`); also the `ts`
          * fed into the canonical request that the MAC signs.
-         */ts: Int64, 
+         */ts: Int64,
         /**
          * STANDARD-base64 of the HMAC-SHA256 request MAC (`x-tesela-mac`).
          */macB64: String) {
@@ -3155,9 +3527,9 @@ public struct PresenceWsHeaders: Equatable, Hashable {
         self.macB64 = macB64
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3171,10 +3543,10 @@ public struct FfiConverterTypePresenceWsHeaders: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PresenceWsHeaders {
         return
             try PresenceWsHeaders(
-                groupHex: FfiConverterString.read(from: &buf), 
-                deviceHex: FfiConverterString.read(from: &buf), 
-                nonceB64: FfiConverterString.read(from: &buf), 
-                ts: FfiConverterInt64.read(from: &buf), 
+                groupHex: FfiConverterString.read(from: &buf),
+                deviceHex: FfiConverterString.read(from: &buf),
+                nonceB64: FfiConverterString.read(from: &buf),
+                ts: FfiConverterInt64.read(from: &buf),
                 macB64: FfiConverterString.read(from: &buf)
         )
     }
@@ -3228,10 +3600,10 @@ public struct RelaySnapshotRecord: Equatable, Hashable {
         /**
          * Opaque stream key = the 16-byte `note_id` the snapshot covers. Import
          * with [`SyncEngineHandle::import_note_snapshot_by_id`].
-         */streamId: Data, 
+         */streamId: Data,
         /**
          * Relay-assigned seq this snapshot covers up to.
-         */snapshotSeq: Int64, 
+         */snapshotSeq: Int64,
         /**
          * Decrypted full-note snapshot bytes (already opened with the group key).
          */payload: Data) {
@@ -3240,9 +3612,9 @@ public struct RelaySnapshotRecord: Equatable, Hashable {
         self.payload = payload
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3256,8 +3628,8 @@ public struct FfiConverterTypeRelaySnapshotRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RelaySnapshotRecord {
         return
             try RelaySnapshotRecord(
-                streamId: FfiConverterData.read(from: &buf), 
-                snapshotSeq: FfiConverterInt64.read(from: &buf), 
+                streamId: FfiConverterData.read(from: &buf),
+                snapshotSeq: FfiConverterInt64.read(from: &buf),
                 payload: FfiConverterData.read(from: &buf)
         )
     }
@@ -3282,6 +3654,72 @@ public func FfiConverterTypeRelaySnapshotRecord_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeRelaySnapshotRecord_lower(_ value: RelaySnapshotRecord) -> RustBuffer {
     return FfiConverterTypeRelaySnapshotRecord.lower(value)
+}
+
+
+public struct RelocatedNoteRecord: Equatable, Hashable {
+    public var noteIdHex: String
+    public var slug: String
+    public var preVersion: Data
+    public var changed: Bool
+    public var created: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(noteIdHex: String, slug: String, preVersion: Data, changed: Bool, created: Bool) {
+        self.noteIdHex = noteIdHex
+        self.slug = slug
+        self.preVersion = preVersion
+        self.changed = changed
+        self.created = created
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RelocatedNoteRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRelocatedNoteRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RelocatedNoteRecord {
+        return
+            try RelocatedNoteRecord(
+                noteIdHex: FfiConverterString.read(from: &buf),
+                slug: FfiConverterString.read(from: &buf),
+                preVersion: FfiConverterData.read(from: &buf),
+                changed: FfiConverterBool.read(from: &buf),
+                created: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RelocatedNoteRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.noteIdHex, into: &buf)
+        FfiConverterString.write(value.slug, into: &buf)
+        FfiConverterData.write(value.preVersion, into: &buf)
+        FfiConverterBool.write(value.changed, into: &buf)
+        FfiConverterBool.write(value.created, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelocatedNoteRecord_lift(_ buf: RustBuffer) throws -> RelocatedNoteRecord {
+    return try FfiConverterTypeRelocatedNoteRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelocatedNoteRecord_lower(_ value: RelocatedNoteRecord) -> RustBuffer {
+    return FfiConverterTypeRelocatedNoteRecord.lower(value)
 }
 
 
@@ -3312,10 +3750,10 @@ public struct SnapshotDepositReportRecord: Equatable, Hashable {
         /**
          * Number of relay ops GC'd by this deposit (0 for an inert
          * `covers_seq = 0` deposit).
-         */gc: UInt64, 
+         */gc: UInt64,
         /**
          * Number of `PUT /snapshot` chunks sent.
-         */chunksSent: UInt32, 
+         */chunksSent: UInt32,
         /**
          * Note ids whose single-snapshot size alone exceeded the relay's
          * body cap and were skipped (never retried by halving — see
@@ -3326,9 +3764,9 @@ public struct SnapshotDepositReportRecord: Equatable, Hashable {
         self.skippedStreamIds = skippedStreamIds
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3342,8 +3780,8 @@ public struct FfiConverterTypeSnapshotDepositReportRecord: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SnapshotDepositReportRecord {
         return
             try SnapshotDepositReportRecord(
-                gc: FfiConverterUInt64.read(from: &buf), 
-                chunksSent: FfiConverterUInt32.read(from: &buf), 
+                gc: FfiConverterUInt64.read(from: &buf),
+                chunksSent: FfiConverterUInt32.read(from: &buf),
                 skippedStreamIds: FfiConverterSequenceData.read(from: &buf)
         )
     }
@@ -3390,9 +3828,9 @@ public struct TableColumnConfig: Equatable, Hashable {
         self.sortDir = sortDir
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3406,9 +3844,9 @@ public struct FfiConverterTypeTableColumnConfig: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TableColumnConfig {
         return
             try TableColumnConfig(
-                hidden: FfiConverterSequenceString.read(from: &buf), 
-                order: FfiConverterSequenceString.read(from: &buf), 
-                sortBy: FfiConverterOptionString.read(from: &buf), 
+                hidden: FfiConverterSequenceString.read(from: &buf),
+                order: FfiConverterSequenceString.read(from: &buf),
+                sortBy: FfiConverterOptionString.read(from: &buf),
                 sortDir: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -3493,22 +3931,22 @@ public struct TickInboundRecord: Equatable, Hashable {
         /**
          * Envelopes that were decrypted, decoded, and run through the
          * engine apply (including ones whose updates landed pending).
-         */applied: UInt32, 
+         */applied: UInt32,
         /**
          * Envelopes the relay echoed back to us (we authored them
          * originally). Cursor still advances over these but the apply is
          * skipped.
-         */skippedOwn: UInt32, 
+         */skippedOwn: UInt32,
         /**
          * Failures this tick: undecryptable/undecodable envelopes PLUS
          * envelopes with at least one failed per-note apply. Non-zero means
          * the tick was not fully healthy even though it returned Ok.
-         */errors: UInt32, 
+         */errors: UInt32,
         /**
          * Highest relay-assigned seq acked this tick. Same as the updated
          * inbound cursor — held BEFORE a failing envelope while its retry
          * budget lasts (audit A4).
-         */newCursorSeq: Int64, 
+         */newCursorSeq: Int64,
         /**
          * Hex (32-char) note ids that need an authoritative-snapshot
          * catch-up: updates Loro left PENDING (causal gap) plus per-note
@@ -3516,7 +3954,7 @@ public struct TickInboundRecord: Equatable, Hashable {
          * should fetch the relay snapshots (or the hub's note snapshot)
          * and import them for exactly these notes, or they silently
          * freeze (audit A4).
-         */needsCatchupNoteIdsHex: [String], 
+         */needsCatchupNoteIdsHex: [String],
         /**
          * The relay's current per-group compaction watermark (the additive
          * `X-Tesela-Compaction-Seq` header on `GET /ops`). `0` when the relay
@@ -3536,9 +3974,9 @@ public struct TickInboundRecord: Equatable, Hashable {
         self.compactionSeq = compactionSeq
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3552,11 +3990,11 @@ public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TickInboundRecord {
         return
             try TickInboundRecord(
-                applied: FfiConverterUInt32.read(from: &buf), 
-                skippedOwn: FfiConverterUInt32.read(from: &buf), 
-                errors: FfiConverterUInt32.read(from: &buf), 
-                newCursorSeq: FfiConverterInt64.read(from: &buf), 
-                needsCatchupNoteIdsHex: FfiConverterSequenceString.read(from: &buf), 
+                applied: FfiConverterUInt32.read(from: &buf),
+                skippedOwn: FfiConverterUInt32.read(from: &buf),
+                errors: FfiConverterUInt32.read(from: &buf),
+                newCursorSeq: FfiConverterInt64.read(from: &buf),
+                needsCatchupNoteIdsHex: FfiConverterSequenceString.read(from: &buf),
                 compactionSeq: FfiConverterInt64.read(from: &buf)
         )
     }
@@ -3628,25 +4066,25 @@ public struct TickOutboundRecord: Equatable, Hashable {
     public init(
         /**
          * Number of ops included in the envelope. `0` ≡ nothing to send.
-         */opsSent: UInt32, 
+         */opsSent: UInt32,
         /**
          * Relay-assigned seq of the envelope, or `None` when nothing was
          * sent.
-         */relaySeq: Int64?, 
+         */relaySeq: Int64?,
         /**
          * HLC ntp64 of the new outbound cursor, or `None` when nothing
          * was sent (or the produced batch wasn't `At`-cursor-shaped).
-         */newCursorNtp: Int64?, 
+         */newCursorNtp: Int64?,
         /**
          * Batches produced + attempted this tick. `0` ≡ nothing to send.
-         */batchesAttempted: UInt32, 
+         */batchesAttempted: UInt32,
         /**
          * Batches whose encode or relay PUT failed (audit A7). Their
          * cursors stay uncommitted, so they re-produce next tick. Non-zero
          * means outbound is NOT healthy even though the call returned Ok —
          * the caller must surface it (`ops_sent: 0` alone is
          * indistinguishable from "nothing to send").
-         */batchesFailed: UInt32, 
+         */batchesFailed: UInt32,
         /**
          * Error message from the most recent failed batch, for the UI.
          */lastError: String?) {
@@ -3658,9 +4096,9 @@ public struct TickOutboundRecord: Equatable, Hashable {
         self.lastError = lastError
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3674,11 +4112,11 @@ public struct FfiConverterTypeTickOutboundRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TickOutboundRecord {
         return
             try TickOutboundRecord(
-                opsSent: FfiConverterUInt32.read(from: &buf), 
-                relaySeq: FfiConverterOptionInt64.read(from: &buf), 
-                newCursorNtp: FfiConverterOptionInt64.read(from: &buf), 
-                batchesAttempted: FfiConverterUInt32.read(from: &buf), 
-                batchesFailed: FfiConverterUInt32.read(from: &buf), 
+                opsSent: FfiConverterUInt32.read(from: &buf),
+                relaySeq: FfiConverterOptionInt64.read(from: &buf),
+                newCursorNtp: FfiConverterOptionInt64.read(from: &buf),
+                batchesAttempted: FfiConverterUInt32.read(from: &buf),
+                batchesFailed: FfiConverterUInt32.read(from: &buf),
                 lastError: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -3765,29 +4203,29 @@ public struct ViewRecord: Equatable, Hashable {
         /**
          * Stable view id (UUID string for user views; the fixed
          * `builtin-inbox` constant for the seeded Inbox).
-         */id: String, 
+         */id: String,
         /**
          * Display name ("Inbox", "This week", …).
-         */name: String, 
+         */name: String,
         /**
          * The query DSL string the view executes.
-         */dsl: String, 
+         */dsl: String,
         /**
          * Sort position in the view switcher (ties break by id).
-         */order: Int64, 
+         */order: Int64,
         /**
          * Built-ins are editable but never deletable (sticky — an upsert
          * can't unflag it).
-         */builtin: Bool, 
+         */builtin: Bool,
         /**
          * Result rendering: "list" | "table" | "kanban".
-         */displayMode: String, 
+         */displayMode: String,
         /**
          * Optional grouping key (kanban columns / table groups).
-         */displayGroupBy: String?, 
+         */displayGroupBy: String?,
         /**
          * Optional "include done items" toggle.
-         */displayShowDone: Bool?, 
+         */displayShowDone: Bool?,
         /**
          * tesela-ya4.4 — table column display config (hide / reorder / sort).
          * iOS STORES this (round-trips it through upsert/list) but does not
@@ -3804,9 +4242,9 @@ public struct ViewRecord: Equatable, Hashable {
         self.displayTableConfig = displayTableConfig
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -3820,14 +4258,14 @@ public struct FfiConverterTypeViewRecord: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ViewRecord {
         return
             try ViewRecord(
-                id: FfiConverterString.read(from: &buf), 
-                name: FfiConverterString.read(from: &buf), 
-                dsl: FfiConverterString.read(from: &buf), 
-                order: FfiConverterInt64.read(from: &buf), 
-                builtin: FfiConverterBool.read(from: &buf), 
-                displayMode: FfiConverterString.read(from: &buf), 
-                displayGroupBy: FfiConverterOptionString.read(from: &buf), 
-                displayShowDone: FfiConverterOptionBool.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
+                dsl: FfiConverterString.read(from: &buf),
+                order: FfiConverterInt64.read(from: &buf),
+                builtin: FfiConverterBool.read(from: &buf),
+                displayMode: FfiConverterString.read(from: &buf),
+                displayGroupBy: FfiConverterOptionString.read(from: &buf),
+                displayShowDone: FfiConverterOptionBool.read(from: &buf),
                 displayTableConfig: FfiConverterOptionTypeTableColumnConfig.read(from: &buf)
         )
     }
@@ -3860,6 +4298,161 @@ public func FfiConverterTypeViewRecord_lower(_ value: ViewRecord) -> RustBuffer 
     return FfiConverterTypeViewRecord.lower(value)
 }
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum BlockMovePlacement: Equatable, Hashable {
+
+    case before
+    case inside
+    case after
+    case append
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlockMovePlacement: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlockMovePlacement: FfiConverterRustBuffer {
+    typealias SwiftType = BlockMovePlacement
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlockMovePlacement {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .before
+
+        case 2: return .inside
+
+        case 3: return .after
+
+        case 4: return .append
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BlockMovePlacement, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .before:
+            writeInt(&buf, Int32(1))
+
+
+        case .inside:
+            writeInt(&buf, Int32(2))
+
+
+        case .after:
+            writeInt(&buf, Int32(3))
+
+
+        case .append:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockMovePlacement_lift(_ buf: RustBuffer) throws -> BlockMovePlacement {
+    return try FfiConverterTypeBlockMovePlacement.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockMovePlacement_lower(_ value: BlockMovePlacement) -> RustBuffer {
+    return FfiConverterTypeBlockMovePlacement.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum BlockMoveStatus: Equatable, Hashable {
+
+    case applied
+    case replayed
+    case noOp
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BlockMoveStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBlockMoveStatus: FfiConverterRustBuffer {
+    typealias SwiftType = BlockMoveStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BlockMoveStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .applied
+
+        case 2: return .replayed
+
+        case 3: return .noOp
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BlockMoveStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .applied:
+            writeInt(&buf, Int32(1))
+
+
+        case .replayed:
+            writeInt(&buf, Int32(2))
+
+
+        case .noOp:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockMoveStatus_lift(_ buf: RustBuffer) throws -> BlockMoveStatus {
+    return try FfiConverterTypeBlockMoveStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBlockMoveStatus_lower(_ value: BlockMoveStatus) -> RustBuffer {
+    return FfiConverterTypeBlockMoveStatus.lower(value)
+}
+
+
 
 /**
  * FFI-facing error variants. Stays narrow so consumers can match
@@ -3868,8 +4461,8 @@ public func FfiConverterTypeViewRecord_lower(_ value: ViewRecord) -> RustBuffer 
  */
 public enum FfiSyncError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     /**
      * The bytes the host handed us don't decode as a valid pairing
      * code (bad base64, bad postcard, future version, etc.).
@@ -3880,6 +4473,21 @@ public enum FfiSyncError: Swift.Error, Equatable, Hashable, Foundation.Localized
          */message: String
     )
     /**
+     * Authoritative relocation preconditions were not satisfied.
+     */
+    case RelocationRejected(message: String
+    )
+    /**
+     * A relocation idempotency key was reused with different arguments.
+     */
+    case RelocationConflict(message: String
+    )
+    /**
+     * An interrupted relocation must be retried with the exact same request.
+     */
+    case RelocationRecoveryRequired(moveId: String, message: String
+    )
+    /**
      * A wrapped error we couldn't more usefully classify yet.
      */
     case Other(
@@ -3888,15 +4496,15 @@ public enum FfiSyncError: Swift.Error, Equatable, Hashable, Foundation.Localized
          */message: String
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -3913,13 +4521,23 @@ public struct FfiConverterTypeFfiSyncError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .InvalidPairingCode(
             message: try FfiConverterString.read(from: &buf)
             )
-        case 2: return .Other(
+        case 2: return .RelocationRejected(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .RelocationConflict(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .RelocationRecoveryRequired(
+            moveId: try FfiConverterString.read(from: &buf),
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .Other(
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -3930,19 +4548,35 @@ public struct FfiConverterTypeFfiSyncError: FfiConverterRustBuffer {
     public static func write(_ value: FfiSyncError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .InvalidPairingCode(message):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(message, into: &buf)
-            
-        
-        case let .Other(message):
+
+
+        case let .RelocationRejected(message):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(message, into: &buf)
-            
+
+
+        case let .RelocationConflict(message):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .RelocationRecoveryRequired(moveId,message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(moveId, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .Other(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+
         }
     }
 }
@@ -4085,6 +4719,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypePreparedDeltaFrameRecord: FfiConverterRustBuffer {
+    typealias SwiftType = PreparedDeltaFrameRecord?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypePreparedDeltaFrameRecord.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypePreparedDeltaFrameRecord.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeTableColumnConfig: FfiConverterRustBuffer {
     typealias SwiftType = TableColumnConfig?
 
@@ -4184,6 +4842,31 @@ fileprivate struct FfiConverterSequenceTypeIndexEntryRecord: FfiConverterRustBuf
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeNoteDeltaRequestRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [NoteDeltaRequestRecord]
+
+    public static func write(_ value: [NoteDeltaRequestRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNoteDeltaRequestRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NoteDeltaRequestRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NoteDeltaRequestRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNoteDeltaRequestRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeNoteSnapshotRecord: FfiConverterRustBuffer {
     typealias SwiftType = [NoteSnapshotRecord]
 
@@ -4209,6 +4892,31 @@ fileprivate struct FfiConverterSequenceTypeNoteSnapshotRecord: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypePreparedDeltaNoteRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [PreparedDeltaNoteRecord]
+
+    public static func write(_ value: [PreparedDeltaNoteRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePreparedDeltaNoteRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PreparedDeltaNoteRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PreparedDeltaNoteRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePreparedDeltaNoteRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRustBuffer {
     typealias SwiftType = [RelaySnapshotRecord]
 
@@ -4226,6 +4934,31 @@ fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRust
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeRelaySnapshotRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRelocatedNoteRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [RelocatedNoteRecord]
+
+    public static func write(_ value: [RelocatedNoteRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRelocatedNoteRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RelocatedNoteRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RelocatedNoteRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRelocatedNoteRecord.read(from: &buf))
         }
         return seq
     }
@@ -4670,6 +5403,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_prepare_delta_frame() != 650) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_produce_note_delta() != 37163) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4683,6 +5419,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert_by_slug() != 28447) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_relocate_block_subtree() != 45908) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_repair_broadcast_cursors_after_snapshot() != 49347) {

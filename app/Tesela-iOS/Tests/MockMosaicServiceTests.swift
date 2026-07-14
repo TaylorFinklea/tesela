@@ -1,11 +1,297 @@
 import XCTest
 @testable import Tesela
 
+private actor VoiceTranscriptionResponseGate {
+    private var isReleased = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+private actor BackendMutationStartGate {
+    private var isReleased = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+private final class BackendMutationRequestRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hosts: [String] = []
+
+    func append(host: String) {
+        lock.lock()
+        hosts.append(host)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return hosts
+    }
+}
+
+private final class BackendMutationURLProtocol: URLProtocol {
+    static var recorder = BackendMutationRequestRecorder()
+    static var requestReceived: XCTestExpectation?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "profile-a.test" || request.url?.host == "profile-b.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.recorder.append(host: url.host ?? "")
+        Self.requestReceived?.fulfill()
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class DelayedVoiceTranscriptionURLProtocol: URLProtocol {
+    static var requestStarted: XCTestExpectation?
+    static var responseGate = VoiceTranscriptionResponseGate()
+    private var responseTask: Task<Void, Never>?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "voice-race.test"
+            && request.url?.path == "/transcription/transcribe"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.requestStarted?.fulfill()
+        responseTask = Task { [weak self] in
+            await Self.responseGate.wait()
+            guard let self, !Task.isCancelled, let url = request.url else { return }
+            let data = Data(#"{"text":"profile A transcript","model_id":"test","duration_ms":1}"#.utf8)
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        responseTask?.cancel()
+        responseTask = nil
+    }
+}
+
 /// Tests for MockMosaicService internals that are testable without a live
 /// server — specifically the `parseBlocks(from:noteId:)` line-number
 /// tracking introduced for the `recur-bump` block_id fix.
 @MainActor
 final class MockMosaicServiceTests: XCTestCase {
+
+    func testEnqueuedMutationReservesProfileBeforeTaskRuns() async throws {
+        let requestReceived = expectation(description: "profile A mutation sent")
+        BackendMutationURLProtocol.recorder = BackendMutationRequestRecorder()
+        BackendMutationURLProtocol.requestReceived = requestReceived
+        defer { BackendMutationURLProtocol.requestReceived = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BackendMutationURLProtocol.self]
+        let service = MockMosaicService(
+            session: URLSession(configuration: configuration)
+        )
+        let profileA = MockMosaicService.Backend.http(
+            URL(string: "https://profile-a.test")!
+        )
+        let profileB = MockMosaicService.Backend.http(
+            URL(string: "https://profile-b.test")!
+        )
+        service.attach(backend: profileA)
+
+        let mutationGate = BackendMutationStartGate()
+        let mutationTask = service.enqueueBackendMutation { reservation in
+            await mutationGate.wait()
+            try await service.setBlockProperty(
+                blockId: "daily-a:block-a",
+                key: "status",
+                value: "done",
+                reservation: reservation
+            )
+        }
+
+        XCTAssertEqual(
+            service.testableBackendOperationsInFlight(),
+            1,
+            "the A intent must reserve the activation barrier synchronously"
+        )
+
+        var activationFinished = false
+        let activationTask = Task { @MainActor in
+            await service.waitUntilBackendOperationsFinish()
+            service.attach(backend: profileB)
+            activationFinished = true
+        }
+        await Task.yield()
+        XCTAssertFalse(activationFinished)
+
+        await mutationGate.release()
+        try await mutationTask.value
+        await fulfillment(of: [requestReceived], timeout: 2)
+        await activationTask.value
+
+        XCTAssertTrue(activationFinished)
+        XCTAssertEqual(
+            BackendMutationURLProtocol.recorder.snapshot(),
+            ["profile-a.test"],
+            "the reserved A mutation must never be redirected to profile B"
+        )
+        XCTAssertEqual(service.testableBackendOperationsInFlight(), 0)
+    }
+
+    func testVoiceCaptureBlocksProfileActivationUntilTranscriptIsCaptured() async throws {
+        let requestStarted = expectation(description: "transcription request started")
+        DelayedVoiceTranscriptionURLProtocol.requestStarted = requestStarted
+        DelayedVoiceTranscriptionURLProtocol.responseGate = VoiceTranscriptionResponseGate()
+        defer {
+            DelayedVoiceTranscriptionURLProtocol.requestStarted = nil
+        }
+
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        try Data([0]).write(to: audioURL)
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DelayedVoiceTranscriptionURLProtocol.self]
+        let service = MockMosaicService(
+            session: URLSession(configuration: configuration)
+        )
+        let profileA = MockMosaicService.Backend.http(
+            URL(string: "https://voice-race.test")!
+        )
+        let profileB = MockMosaicService.Backend.http(
+            URL(string: "https://profile-b.test")!
+        )
+        service.attach(backend: profileA)
+
+        let captureTask = Task { @MainActor in
+            try await service.captureVoiceNote(audio: audioURL)
+        }
+        await fulfillment(of: [requestStarted], timeout: 2)
+
+        var activationFinished = false
+        let activationTask = Task { @MainActor in
+            await service.waitUntilBackendOperationsFinish()
+            service.attach(backend: profileB)
+            activationFinished = true
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(
+            activationFinished,
+            "profile activation must drain the complete transcription and capture lifecycle"
+        )
+        XCTAssertEqual(service.testableBackendOperationsInFlight(), 1)
+
+        await DelayedVoiceTranscriptionURLProtocol.responseGate.release()
+        let capturedTranscript = try await captureTask.value
+        XCTAssertEqual(capturedTranscript, "profile A transcript")
+        await activationTask.value
+
+        XCTAssertTrue(activationFinished)
+        XCTAssertEqual(service.testableBackendOperationsInFlight(), 0)
+        XCTAssertFalse(
+            service.todayBlocks.contains { $0.text == "profile A transcript" },
+            "profile A's transcript must be cleared before profile B becomes active"
+        )
+    }
+
+    func testSameBackendReattachRejectsAQueuedPageWriteFromOldGeneration() async {
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        let oldGeneration = service.testableBackendGeneration()
+        var writes = 0
+        service.onLocalWrite = { _, _, _, _ in writes += 1 }
+
+        service.attach(backend: .relay)
+        await service.pushPage(
+            id: "queued-old-profile",
+            blocks: [Block(id: "b1", kind: .note, text: "must not write")],
+            expectedGeneration: oldGeneration
+        )
+
+        XCTAssertEqual(writes, 0)
+        XCTAssertNotEqual(service.testableBackendGeneration(), oldGeneration)
+    }
+
+    func testScheduledPageWriteReservesActivationBeforeItsTaskStarts() async {
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        var writes: [String] = []
+        service.onLocalWrite = { slug, _, _, _ in writes.append(slug) }
+
+        service.schedulePagePush(
+            id: "profile-a-page",
+            blocks: [Block(id: "b1", kind: .note, text: "durable A edit")]
+        )
+
+        XCTAssertFalse(service.backendActivationIsSafe)
+        XCTAssertEqual(service.testableBackendOperationsInFlight(), 1)
+
+        var activationFinished = false
+        let activation = Task { @MainActor in
+            await service.waitUntilBackendOperationsFinish()
+            service.attach(backend: .relay)
+            activationFinished = true
+        }
+        await activation.value
+
+        XCTAssertTrue(activationFinished)
+        XCTAssertEqual(writes, ["profile-a-page"])
+        XCTAssertTrue(service.backendActivationIsSafe)
+    }
 
     // MARK: - Block folding
 
@@ -83,6 +369,7 @@ final class MockMosaicServiceTests: XCTestCase {
 
         var now = date(2099, 6, 11)
         let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
 
         await service.refresh(from: .relay)
         XCTAssertEqual(service.todayDailySlug, previousDay)
@@ -105,6 +392,7 @@ final class MockMosaicServiceTests: XCTestCase {
 
         var now = date(2099, 6, 13)
         let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
 
         await service.refresh(from: .relay)
         XCTAssertEqual(service.todayBlocks.map(\.text), ["previous day block"])
@@ -496,6 +784,7 @@ final class MockMosaicServiceTests: XCTestCase {
         // Port 1 refuses instantly — a stand-in for a wrong LAN IP / Mac
         // off / 127.0.0.1-on-a-real-device (HTTP fails, local copy exists).
         let dead = MockMosaicService.Backend.http(URL(string: "http://127.0.0.1:1")!)
+        service.attach(backend: dead)
         await service.refresh(from: dead)
 
         // Reads survive — the local copy is still on screen.

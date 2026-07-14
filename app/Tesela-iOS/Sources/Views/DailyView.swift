@@ -30,6 +30,7 @@ struct DailyView: View {
     @State private var showSyncSettings: Bool = false
     @State private var pickedDate: Date = Date()
     @State private var collapsedBlockIds: Set<String> = []
+    @State private var moveIntent: BlockMoveIntent?
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -44,9 +45,7 @@ struct DailyView: View {
                     onTapSync: { showSyncSettings = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
-                    if let backend {
-                        Task { await mosaic.refresh(from: backend.backend) }
-                    }
+                    Task { _ = await mosaic.refreshAttachedBackend() }
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -74,9 +73,7 @@ struct DailyView: View {
                     }
                 }
                 .refreshable {
-                    if let backend {
-                        await mosaic.refresh(from: backend.backend)
-                    }
+                    _ = await mosaic.refreshAttachedBackend()
                 }
             }
             .background(theme.bg)
@@ -128,6 +125,9 @@ struct DailyView: View {
             }
             .sheet(isPresented: $showDatePicker) {
                 datePickerSheet
+            }
+            .sheet(item: $moveIntent) { intent in
+                BlockMoveSheet(mosaic: mosaic, intent: intent)
             }
             .sheet(isPresented: $showMosaicSwitcher) {
                 MosaicSwitcherSheet(registry: mosaicRegistry)
@@ -216,10 +216,23 @@ struct DailyView: View {
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 },
                 onSkipRecurrence: {
-                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.recurBump(
+                            blockId: block.id,
+                            mode: .skip,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
         }
@@ -239,9 +252,9 @@ struct DailyView: View {
             // Strip from today by removing — true archive backlog flag
             // can land when the server exposes it.
             mosaic.deleteTodayBlock(id: block.id)
-        case .promote, .convertToTag, .moveTo:
-            // These are surfaced; backend support lands in a later
-            // phase. For now treat them as no-ops with a haptic.
+        case .moveTo:
+            presentMove(block, sourceSlug: mosaic.todayDailySlug)
+        case .promote, .convertToTag:
             break
         }
     }
@@ -290,7 +303,14 @@ struct DailyView: View {
                     // gains a yesterday-aware branch (cheap follow-up).
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
             .opacity(0.7)
@@ -309,7 +329,9 @@ struct DailyView: View {
             mosaic.indentYesterdayBlock(id: block.id, by: 1)
         case .archive:
             mosaic.deleteYesterdayBlock(id: block.id)
-        case .promote, .convertToTag, .moveTo:
+        case .moveTo:
+            presentMove(block, sourceSlug: mosaic.yesterdayDailySlug)
+        case .promote, .convertToTag:
             break
         }
     }
@@ -362,7 +384,14 @@ struct DailyView: View {
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
                     },
                     onSetProperty: { key, value in
-                        Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                        mosaic.enqueueBackendMutation { reservation in
+                            try? await mosaic.setBlockProperty(
+                                blockId: block.noteId + ":" + block.id,
+                                key: key,
+                                value: value,
+                                reservation: reservation
+                            )
+                        }
                     }
                 )
                 .opacity(0.7)
@@ -382,9 +411,20 @@ struct DailyView: View {
             mosaic.indentPastDailyBlock(dayId: dayId, blockId: block.id, by: 1)
         case .archive:
             mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
-        case .promote, .convertToTag, .moveTo:
+        case .moveTo:
+            presentMove(block, sourceSlug: dayId)
+        case .promote, .convertToTag:
             break
         }
+    }
+
+    private func presentMove(_ block: Block, sourceSlug: String) {
+        editingBlockId = nil
+        moveIntent = BlockMoveIntent(
+            sourceSlug: sourceSlug,
+            rootBid: block.id,
+            preview: block.displayText
+        )
     }
 
     /// A deliberate ~1/3-viewport gap between day sections so each day

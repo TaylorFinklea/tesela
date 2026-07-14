@@ -46,9 +46,7 @@ struct GrLibraryView: View {
                     .padding(.horizontal, 14)
                 }
                 .refreshable {
-                    if let backend {
-                        await mosaic.refresh(from: backend.backend)
-                    }
+                    _ = await mosaic.refreshAttachedBackend()
                 }
             }
             .background(theme.bg)

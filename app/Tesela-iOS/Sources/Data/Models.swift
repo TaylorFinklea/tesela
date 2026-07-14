@@ -1,5 +1,60 @@
 import Foundation
 
+/// Serializes the await-heavy server/mosaic activation pass while coalescing
+/// rapid profile changes to the newest request. Main-actor isolation prevents
+/// memory races, but this revision is what prevents an older pass from
+/// publishing a stale socket after a newer profile was selected.
+@MainActor
+final class HubActivationSequencer {
+    struct Lease: Equatable {
+        fileprivate let revision: UInt64
+    }
+
+    private var revision: UInt64 = 0
+    private var pending: ((Lease) async -> Void)?
+    private var runner: Task<Void, Never>?
+
+    func request(_ operation: @escaping @MainActor (Lease) async -> Void) {
+        revision &+= 1
+        pending = operation
+        guard runner == nil else { return }
+        runner = Task { [weak self] in
+            await self?.drain()
+        }
+    }
+
+    func isCurrent(_ lease: Lease) -> Bool {
+        lease.revision == revision
+    }
+
+    /// Supersede the running/pending activation immediately, without queuing
+    /// its replacement yet. MosaicRegistry calls this before publishing a new
+    /// active profile; SwiftUI's subsequent token change then queues the pass
+    /// that reads the newly-published profile.
+    func invalidateCurrentRequest() {
+        revision &+= 1
+        pending = nil
+    }
+
+    func waitUntilIdle() async {
+        while let runner {
+            await runner.value
+        }
+    }
+
+    private func drain() async {
+        while let operation = pending {
+            pending = nil
+            let lease = Lease(revision: revision)
+            await operation(lease)
+        }
+        runner = nil
+        // A request cannot interleave between the loop's final read and this
+        // assignment on the main actor. A later request sees nil and starts a
+        // fresh runner.
+    }
+}
+
 /// Domain models the SwiftUI views render. Same shape as the design
 /// canvas's `data.jsx` so the screens look right in mock + the eventual
 /// FFI-backed service can fill in the same structs.
@@ -105,6 +160,72 @@ struct BlockProperty: Equatable, Hashable, Codable {
 struct DailyEntry: Identifiable, Equatable, Hashable {
     let id: String
     let blocks: [Block]
+}
+
+enum BlockMoveDestinationKind: String, Equatable, Hashable {
+    case daily
+    case page
+}
+
+struct BlockMoveDestination: Identifiable, Equatable, Hashable {
+    var id: String { slug }
+    let slug: String
+    let title: String
+    let kind: BlockMoveDestinationKind
+
+    static func filtered(
+        _ destinations: [BlockMoveDestination],
+        query: String,
+        excluding sourceSlug: String
+    ) -> [BlockMoveDestination] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var seen: Set<String> = []
+        return destinations.filter { destination in
+            guard destination.slug != sourceSlug, seen.insert(destination.slug).inserted else {
+                return false
+            }
+            guard !needle.isEmpty else { return true }
+            return destination.slug.lowercased().contains(needle)
+                || destination.title.lowercased().contains(needle)
+        }
+    }
+}
+
+struct BlockMoveRequest: Codable, Equatable, Hashable {
+    let moveId: String
+    let sourceSlug: String
+    let rootBid: String
+    let destinationSlug: String
+}
+
+struct BlockMoveIntent: Identifiable, Equatable, Hashable {
+    let moveId: UUID
+    let sourceSlug: String
+    let rootBid: String
+    let preview: String
+
+    var id: UUID { moveId }
+
+    init(
+        moveId: UUID = UUID(),
+        sourceSlug: String,
+        rootBid: String,
+        preview: String
+    ) {
+        self.moveId = moveId
+        self.sourceSlug = sourceSlug
+        self.rootBid = rootBid
+        self.preview = preview
+    }
+
+    func request(to destination: BlockMoveDestination) -> BlockMoveRequest {
+        BlockMoveRequest(
+            moveId: moveId.uuidString.lowercased(),
+            sourceSlug: sourceSlug,
+            rootBid: rootBid,
+            destinationSlug: destination.slug
+        )
+    }
 }
 
 /// A markdown page. `type` is the frontmatter discriminator (note,

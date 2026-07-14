@@ -21,10 +21,10 @@ struct GrViewEditorSheet: View {
     /// The current ordered registry — used to mint the new view's order
     /// (append after the last, steps of 10, the server's rule).
     let siblings: [SavedView]
-    /// Persist the record. `(record, isNew)`; throws surface inline.
-    let onSave: (SavedView, Bool) async throws -> Void
+    /// Persist the record. `(record, isNew)`; task failures surface inline.
+    let onSave: (SavedView, Bool) -> Task<Void, Error>
     /// Delete the view (never called for builtins/new views).
-    let onDelete: (String) async throws -> Void
+    let onDelete: (String) -> Task<Void, Error>
     /// The live property/type registry — drives the query-completion
     /// strip's KEY (property names) and VALUE (select choices / type
     /// names) tiers (tesela-vp9.5, spec decision 4). Defaults to an
@@ -49,8 +49,8 @@ struct GrViewEditorSheet: View {
     init(
         existing: SavedView?,
         siblings: [SavedView],
-        onSave: @escaping (SavedView, Bool) async throws -> Void,
-        onDelete: @escaping (String) async throws -> Void,
+        onSave: @escaping (SavedView, Bool) -> Task<Void, Error>,
+        onDelete: @escaping (String) -> Task<Void, Error>,
         propertyRegistry: PropertyRegistry = PropertyRegistry()
     ) {
         self.existing = existing
@@ -376,7 +376,7 @@ struct GrViewEditorSheet: View {
             variant: .cta,
             label: busy ? "Saving…" : (isNew ? "Create view" : "Save changes")
         ) {
-            Task { await save() }
+            save()
         }
         .disabled(busy)
     }
@@ -412,7 +412,7 @@ struct GrViewEditorSheet: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete view", role: .destructive) {
-                    Task { await deleteNow() }
+                    deleteNow()
                 }
             }
         }
@@ -420,7 +420,7 @@ struct GrViewEditorSheet: View {
 
     // ── Actions ─────────────────────────────────────────────────────────
 
-    private func save() async {
+    private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else {
             errorText = "Name must not be empty"
@@ -432,7 +432,6 @@ struct GrViewEditorSheet: View {
             return
         }
         busy = true
-        defer { busy = false }
         let base = existing ?? SavedView(
             id: UUID().uuidString,
             name: trimmedName,
@@ -452,23 +451,30 @@ struct GrViewEditorSheet: View {
             displayMode: displayMode,
             displayGroupBy: displayGroupBy
         )
-        do {
-            try await onSave(record, isNew)
-            dismiss()
-        } catch {
-            errorText = error.localizedDescription
+        let mutationTask = onSave(record, isNew)
+        Task {
+            do {
+                try await mutationTask.value
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
         }
     }
 
-    private func deleteNow() async {
+    private func deleteNow() {
         guard let existing, !existing.builtin else { return }
         busy = true
-        defer { busy = false }
-        do {
-            try await onDelete(existing.id)
-            dismiss()
-        } catch {
-            errorText = error.localizedDescription
+        let mutationTask = onDelete(existing.id)
+        Task {
+            do {
+                try await mutationTask.value
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
         }
     }
 

@@ -112,6 +112,7 @@ async fn notify_views_changed(s: &AppState) {
             Ok(frame) => {
                 let _ = s.ws_delta_tx.send(crate::state::WsDelta {
                     origin: None,
+                    source_group: None,
                     frame,
                 });
             }

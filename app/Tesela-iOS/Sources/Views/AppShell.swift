@@ -16,6 +16,9 @@ struct AppShell: View {
     @StateObject private var transcription = TranscriptionStore()
     @StateObject private var mosaicRegistry = MosaicRegistry()
     @StateObject private var liveSync = LiveSyncSocket()
+    @State private var hubActivation = HubActivationSequencer()
+    @State private var hubActivationReady = false
+    @State private var activationRetryTask: Task<Void, Never>?
     /// Option-B relay-mode presence transport. Hub mode (`.http`) carries
     /// carets over `liveSync`'s `/ws` fan-out; relay mode uses this dedicated
     /// CF presence socket. Wired in `activateMosaic` and driven by scenePhase.
@@ -24,7 +27,7 @@ struct AppShell: View {
     /// is foregrounded; pauses in background. Mac-originated edits
     /// arrive via this loop within ~5s instead of the prior "tap the
     /// dev pull button or wait minutes" behaviour.
-    @StateObject private var relayTicker = RelayTicker()
+    @StateObject private var relayTicker = RelayTicker.shared
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
     /// Lifted out of CaptureBar so the AVAudioEngine init isn't paid
@@ -44,59 +47,56 @@ struct AppShell: View {
             if onboardingComplete {
                 shell
                     .task {
-                        await activateMosaic(initial: true)
+                        mosaicRegistry.willChangeActiveProfile = { [weak mosaic, weak hubActivation] in
+                            mosaic?.closeBackendMutationAdmissionForActivation()
+                            hubActivation?.invalidateCurrentRequest()
+                        }
+                        mosaicRegistry.seedFromLegacyIfNeeded(
+                            legacyURL: backend.serverURL,
+                            defaultName: "My mosaic"
+                        )
+                        liveSync.onNoteChange = { [mosaic] in
+                            Task { await mosaic.applyRemoteChange() }
+                        }
+                        liveSync.onBinaryDelta = { [weak relayTicker] frame, hubIdentity in
+                            Task {
+                                await relayTicker?.applyInboundDelta(
+                                    frame,
+                                    requiredHubIdentity: hubIdentity
+                                )
+                            }
+                        }
                         // Bind + start the relay ticker once the app
                         // is up. connect() is idempotent so re-runs
                         // (e.g. on mosaic switch) don't churn.
                         relayTicker.connect(mosaic: mosaic)
-                        // Hub mode (Part E2): when the backend is an HTTP
-                        // Mac server, the live `/ws` socket (connected in
-                        // `activateMosaic`) is the sync hub. Gate the relay
-                        // coordinator loop off so it can't inject stale
-                        // foreign-history ops into the same Loro docs the
-                        // WS path drives. Mirrors how `liveSync.connect` is
-                        // gated on `.http`. Reversible — the cached pairing
-                        // code is kept.
-                        if case .http = backend.backend {
-                            relayTicker.hubMode = true
+                        relayTicker.configureLiveDeltaSender { [weak liveSync] frame, hubIdentity in
+                            await liveSync?.sendDelta(
+                                frame,
+                                requiredHubIdentity: hubIdentity
+                            ) == true
                         }
-                        // Open the local sync engine eagerly — purely
-                        // local, no network, so this succeeds even on
-                        // an offline cold launch. Writes that happen
-                        // before pairing completes (or while the user
-                        // is on cellular without tailscale) still land
-                        // durably in SQLite + the materialized notes
-                        // dir, instead of being silently dropped.
-                        do { try await relayTicker.openEngineIfNeeded() }
-                        catch { /* surfaced via relayTicker.lastError */ }
+                        liveSync.onConnectionAttempt = { [weak relayTicker] in
+                            Task { _ = await relayTicker?.retryPendingRelocation() }
+                        }
+                        liveSync.onBindingInvalidated = {
+                            suspendCurrentHub()
+                            requestMosaicActivation()
+                        }
                         // Route iOS-authored writes through the engine
                         // + relay alongside the existing HTTP PUT. On
                         // LAN both succeed (HTTP first); on cellular
                         // when Mac is unreachable the engine path is
                         // the only one that gets there.
-                        mosaic.onLocalWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
-                            Task { @MainActor [weak relayTicker, weak liveSync] in
-                                // 1) Record into the engine + relay push
-                                //    (the fallback delivery path).
-                                await relayTicker?.recordAndPush(
-                                    slug: slug,
-                                    title: title,
-                                    content: content,
-                                    createdAtMillis: createdAt
-                                )
-                                // 2) Produce the cursor-free delta from the
-                                //    now-recorded engine state and push it
-                                //    over the live WS for sub-second
-                                //    delivery (Phase C). The delta baseline
-                                //    advances only on a confirmed send
-                                //    (commitPushedDelta) so a dropped frame
-                                //    re-ships next time.
-                                if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                                    if await liveSync?.sendDelta(frame) == true {
-                                        await relayTicker?.commitPushedDelta(slug: slug)
-                                    }
-                                }
-                            }
+                        mosaic.onLocalWrite = { [weak relayTicker] slug, title, content, createdAt in
+                            let session = relayTicker?.engineSessionToken
+                            relayTicker?.enqueueRecordAndPush(
+                                slug: slug,
+                                title: title,
+                                content: content,
+                                createdAtMillis: createdAt,
+                                requiredSession: session
+                            )
                         }
                         // P1.11: relay-mode property writes (Inbox
                         // triage swipes, Agenda mark-done / reschedule)
@@ -105,35 +105,37 @@ struct AppShell: View {
                         // materialized file; returns whether the engine
                         // recorded the write so a not-found bid throws
                         // instead of silently vanishing the row.
-                        mosaic.onLocalPropertySet = { [weak relayTicker, weak liveSync] slug, bidHex, key, value in
+                        mosaic.onLocalPropertySet = { [weak relayTicker] slug, bidHex, key, value in
                             guard let relayTicker else { return false }
-                            let applied = await relayTicker.setBlockPropertyAndPush(
-                                slug: slug, bidHex: bidHex, key: key, value: value
+                            let session = relayTicker.engineSessionToken
+                            return await relayTicker.setBlockPropertyAndPush(
+                                slug: slug,
+                                bidHex: bidHex,
+                                key: key,
+                                value: value,
+                                requiredSession: session
                             )
-                            if applied, let frame = await relayTicker.produceDeltaFrame(slug: slug) {
-                                if await liveSync?.sendDelta(frame) == true {
-                                    await relayTicker.commitPushedDelta(slug: slug)
-                                }
-                            }
-                            return applied
                         }
                         // Awaitable whole-note write (relay-mode
                         // saveInboxDsl): same record → produce → send →
                         // commit tail as onLocalWrite, but the caller
                         // can read-after-write (the inbox reloads its
                         // DSL immediately after saving).
-                        mosaic.onLocalNoteWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
+                        mosaic.onLocalNoteWrite = { [weak relayTicker] slug, title, content, createdAt in
+                            let session = relayTicker?.engineSessionToken
                             await relayTicker?.recordAndPush(
                                 slug: slug,
                                 title: title,
                                 content: content,
-                                createdAtMillis: createdAt
+                                createdAtMillis: createdAt,
+                                requiredSession: session
                             )
-                            if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                                if await liveSync?.sendDelta(frame) == true {
-                                    await relayTicker?.commitPushedDelta(slug: slug)
-                                }
+                        }
+                        mosaic.onLocalBlockMove = { [weak relayTicker] request in
+                            guard let relayTicker else {
+                                throw FfiSyncError.Other(message: "sync engine unavailable")
                             }
+                            return try await relayTicker.moveSubtreeAndDeliver(request)
                         }
                         // When the ticker applies new inbound ops,
                         // re-pull the user-visible pages over HTTP so
@@ -163,16 +165,15 @@ struct AppShell: View {
                         mosaic.onNoteOpened = { [weak relayTicker] slug in
                             Task { await relayTicker?.bootstrapNoteIfNeeded(slug: slug) }
                         }
-                        // The initial `activateMosaic` refresh above ran
-                        // before `onNoteOpened` was wired, so explicitly
-                        // bootstrap the currently-visible daily once now
-                        // (T2). Covers a pure receive-only device that never
-                        // edits or backgrounds.
-                        await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
+                        hubActivationReady = true
+                        requestMosaicActivation()
+                        await hubActivation.waitUntilIdle()
                         relayTicker.start()
                     }
-                    .onChange(of: mosaicRegistry.activeID) { _, _ in
-                        Task { await activateMosaic(initial: false) }
+                    .onChange(of: activationToken) { _, _ in
+                        streamRecorder.invalidateForProfileSwitch()
+                        guard hubActivationReady else { return }
+                        requestMosaicActivation()
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         // Foreground auto-refresh: when the user
@@ -184,15 +185,17 @@ struct AppShell: View {
                         // background and reconnected here.
                         switch newPhase {
                         case .active:
-                            liveSync.nudge()
-                            presenceRelay.nudge()
-                            // wake() (not start()) so a loop parked in a
-                            // backoff sleep ticks NOW — start() no-ops on an
-                            // existing loop.
-                            relayTicker.wake()
                             Task {
-                                await mosaic.refresh(from: backend.backend)
-                                await mosaic.refreshLoadedPages()
+                                await relayTicker.resumeFromBackground()
+                                // Restore hub routing before reconnecting the
+                                // foreground socket; a background relay tick
+                                // may still hold the shared engine briefly.
+                                liveSync.nudge()
+                                presenceRelay.nudge()
+                                relayTicker.wake()
+                                if await mosaic.refreshAttachedBackend() {
+                                    await mosaic.refreshLoadedPages()
+                                }
                             }
                         case .background:
                             liveSync.suspend()
@@ -209,8 +212,9 @@ struct AppShell: View {
                         // composer here, at the stable app root, rather
                         // than inside the churny capture-bar accessory.
                         guard let transcript else { return }
-                        composer.append(transcript)
-                        streamRecorder.lastTranscript = nil
+                        defer { streamRecorder.clearLastTranscript() }
+                        guard let text = transcript.text(ifCurrent: voiceCaptureScope) else { return }
+                        composer.append(text)
                     }
             } else {
                 OnboardingView(
@@ -223,62 +227,285 @@ struct AppShell: View {
         }
     }
 
-    /// Point the data service at the active mosaic. Runs on first
-    /// launch and whenever the user switches profiles. When the active
-    /// profile names a specific on-disk mosaic, the server is asked to
-    /// switch+restart onto it before the data is loaded.
-    private func activateMosaic(initial: Bool) async {
-        if initial {
-            // First launch: if no profiles exist yet, seed one from the
-            // legacy `backend.serverURL` so existing users keep working.
-            mosaicRegistry.seedFromLegacyIfNeeded(
-                legacyURL: backend.serverURL,
-                defaultName: "My mosaic"
+    private var activationToken: String {
+        let profile = mosaicRegistry.activeProfile
+        return [
+            backend.mode.rawValue,
+            profile?.id.uuidString ?? "legacy",
+            profile?.serverURL ?? backend.serverURL,
+            profile?.mosaicPath ?? ""
+        ].joined(separator: "|")
+    }
+
+    private var voiceCaptureScope: VoiceCaptureScope {
+        VoiceCaptureScope(
+            profileIdentity: activationToken,
+            backendGeneration: mosaic.backendGenerationLease
+        )
+    }
+
+    private func requestMosaicActivation() {
+        mosaic.closeBackendMutationAdmissionForActivation()
+        activationRetryTask?.cancel()
+        activationRetryTask = nil
+        hubActivation.request { lease in
+            await activateMosaic(lease: lease)
+        }
+    }
+
+    private func suspendCurrentHub() {
+        relayTicker.configureLiveHub(identity: nil)
+        liveSync.disconnect()
+        presenceRelay.disconnect()
+        mosaic.sendPresence = nil
+        // Fail closed while the next backend is unresolved: never let the
+        // relay coordinator feed the shared engine during a hub transition.
+        relayTicker.hubMode = true
+        mosaic.detachForActivation()
+    }
+
+    /// Point the data service at the active mosaic. Await-heavy server
+    /// switching is serialized, and only the newest request may publish a
+    /// socket binding.
+    private func activateMosaic(lease: HubActivationSequencer.Lease) async {
+        guard await waitForActivationAdmission(lease: lease) else { return }
+        suspendCurrentHub()
+
+        let activeProfile = mosaicRegistry.activeProfile
+        let profileID = activeProfile?.id
+        let serverURL = activeProfile?.serverURL ?? backend.serverURL
+        let requestedPath = activeProfile?.mosaicPath
+        let mode = backend.mode
+        let resolvedBackend = BackendSettings.resolveBackend(
+            mode: mode,
+            serverURL: serverURL
+        )
+
+        if backend.serverURL != serverURL {
+            backend.serverURL = serverURL
+        }
+
+        var confirmedPath: String?
+        var confirmedGroupIdHex: String?
+        var confirmedHubIdentity: String?
+        var engineScope = MosaicEngineScope.legacy
+        if case .http = resolvedBackend {
+            do {
+                if let requestedPath {
+                    confirmedPath = try await mosaic.ensureServerMosaic(
+                        path: requestedPath,
+                        serverURL: serverURL
+                    )
+                } else {
+                    confirmedPath = try await MosaicServerClient.currentPath(
+                        serverURL: serverURL
+                    )
+                }
+                let observed = try await MosaicServerClient.currentIdentity(
+                    serverURL: serverURL
+                )
+                guard observed.path == confirmedPath else {
+                    throw MosaicServerClient.ClientError.mosaicSwitchNotConfirmed(
+                        expected: confirmedPath ?? "",
+                        observed: observed.path
+                    )
+                }
+                confirmedGroupIdHex = observed.groupIdHex
+                engineScope = MosaicEngineScope(groupIdHex: observed.groupIdHex)
+            } catch {
+                guard hubActivation.isCurrent(lease) else { return }
+                failActivation(error.localizedDescription, retry: true)
+                return
+            }
+            guard hubActivation.isCurrent(lease) else { return }
+            guard let confirmedPath, let confirmedGroupIdHex else { return }
+            let legacyIdentity = RelayTicker.hubIdentity(
+                serverURL: serverURL,
+                profileID: profileID,
+                mosaicPath: confirmedPath
             )
-            // Route live-sync events into the mosaic. Set once — the
-            // socket itself is repointed per-mosaic below.
-            liveSync.onNoteChange = { [mosaic] in
-                Task { await mosaic.applyRemoteChange() }
+            let identity = RelayTicker.hubIdentity(
+                serverURL: serverURL,
+                profileID: profileID,
+                mosaicPath: confirmedPath,
+                groupIdHex: confirmedGroupIdHex
+            )
+            // A cold launch may recover an unprepared outbox only by binding
+            // the exact hub that owns it. Leave the UI detached for any other
+            // selected profile until the user switches back.
+            if let pendingIdentity = relayTicker.unpreparedRelocationHubIdentity,
+               pendingIdentity != identity,
+               !(relayTicker.unpreparedRelocationEngineScope == nil
+                   && pendingIdentity == legacyIdentity) {
+                failActivation(
+                    "A saved block move belongs to another mosaic. Switch back to finish it.",
+                    retry: false
+                )
+                return
             }
-            // Binary frames = inbound Loro deltas. Apply through the
-            // RelayTicker (sole engine owner) for sub-second remote
-            // edits (Phase C).
-            liveSync.onBinaryDelta = { [weak relayTicker] frame in
-                Task { await relayTicker?.applyInboundDelta(frame) }
+            if let pendingScope = relayTicker.unpreparedRelocationEngineScope,
+               pendingScope != engineScope {
+                failActivation(
+                    "A saved block move belongs to another local mosaic. Switch back to finish it.",
+                    retry: false
+                )
+                return
             }
-            // Phase 3 presence (inbound peer carets → the store; outbound our
-            // caret → the transport) is wired mode-aware in `wirePresence()`
-            // below, so a relay-mode mosaic uses `PresenceRelaySocket` instead
-            // of the hub `/ws` fan-out.
-        }
-        if let active = mosaicRegistry.activeProfile {
-            if backend.serverURL != active.serverURL {
-                backend.serverURL = active.serverURL
-            }
-            mosaic.attach(backend: backend.backend)
-            if let path = active.mosaicPath, case .http = backend.backend {
-                await mosaic.ensureServerMosaic(path: path, serverURL: active.serverURL)
-            }
+            confirmedHubIdentity = identity
         } else {
-            mosaic.attach(backend: backend.backend)
+            if mode == .relay {
+                guard let code = RelayTicker.cachedPairingCode(),
+                      let pairing = try? decodePairingCode(code: code)
+                else {
+                    failActivation("Relay pairing is unavailable. Pair this device again.", retry: false)
+                    return
+                }
+                engineScope = MosaicEngineScope(groupIdHex: pairing.groupIdHex)
+            }
+            if relayTicker.unpreparedRelocationHubIdentity != nil {
+                failActivation(
+                    "A saved block move is waiting for its desktop mosaic. Switch back to finish it.",
+                    retry: false
+                )
+                return
+            }
         }
-        await mosaic.refresh(from: backend.backend)
-        // Point the live-sync socket at the active server (or tear it
-        // down in mock mode).
-        if case .http = backend.backend {
-            liveSync.connect(serverURL: backend.serverURL)
+
+        do {
+            try await relayTicker.activateEngine(scope: engineScope)
+        } catch {
+            guard hubActivation.isCurrent(lease) else { return }
+            failActivation(error.localizedDescription, retry: true)
+            return
+        }
+        guard hubActivation.isCurrent(lease) else { return }
+
+        if case .http = resolvedBackend,
+           let confirmedPath,
+           let confirmedGroupIdHex,
+           let hubIdentity = confirmedHubIdentity {
+            let verified = await liveSync.connectAndVerify(
+                serverURL: serverURL,
+                expectedMosaicPath: confirmedPath,
+                expectedGroupIdHex: confirmedGroupIdHex,
+                hubIdentity: hubIdentity
+            )
+            guard hubActivation.isCurrent(lease) else {
+                liveSync.disconnect()
+                return
+            }
+            guard verified,
+                  liveSync.isVerifiedBinding(
+                      serverURL: serverURL,
+                      expectedMosaicPath: confirmedPath,
+                      expectedGroupIdHex: confirmedGroupIdHex,
+                      hubIdentity: hubIdentity
+                  )
+            else {
+                liveSync.disconnect()
+                failActivation(
+                    "The selected mosaic's live identity could not be verified.",
+                    retry: true
+                )
+                return
+            }
+        }
+        guard hubActivation.isCurrent(lease) else { return }
+
+        relayTicker.hubMode = {
+            if case .relay = resolvedBackend { return false }
+            return true
+        }()
+        if case .http = resolvedBackend,
+           let hubIdentity = confirmedHubIdentity {
+            relayTicker.configureLiveHub(identity: hubIdentity)
+        }
+        mosaic.attach(
+            backend: resolvedBackend,
+            engineScope: engineScope,
+            openMutationAdmission: false
+        )
+        guard await mosaic.refreshAttachedBackend() else {
+            guard hubActivation.isCurrent(lease) else { return }
+            suspendCurrentHub()
+            failActivation("The selected mosaic could not be loaded.", retry: true)
+            return
+        }
+        guard hubActivation.isCurrent(lease) else { return }
+        wirePresence(backend: resolvedBackend)
+
+        // Refresh called onNoteOpened before the verified hub identity was
+        // publishable, so perform the first catch-up explicitly now. The
+        // identity check prevents this shared engine from importing bytes for
+        // a profile that became stale during the await.
+        if let hubIdentity = confirmedHubIdentity {
+            await relayTicker.bootstrapNoteIfNeeded(
+                slug: mosaic.todayDailySlug,
+                requiredHubIdentity: hubIdentity
+            )
         } else {
-            liveSync.connect(serverURL: nil)
+            await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
         }
-        wirePresence()
+        guard hubActivation.isCurrent(lease) else { return }
+        if case .http = resolvedBackend {
+            guard let confirmedPath,
+                  let confirmedGroupIdHex,
+                  let hubIdentity = confirmedHubIdentity,
+                  liveSync.publishVerifiedBinding(
+                      serverURL: serverURL,
+                      expectedMosaicPath: confirmedPath,
+                      expectedGroupIdHex: confirmedGroupIdHex,
+                      hubIdentity: hubIdentity
+                  )
+            else {
+                liveSync.disconnect()
+                failActivation(
+                    "The selected mosaic's live identity was lost during activation.",
+                    retry: true
+                )
+                return
+            }
+        }
+        activationRetryTask?.cancel()
+        activationRetryTask = nil
+        mosaic.commitBackendMutationAdmission()
+    }
+
+    private func waitForActivationAdmission(
+        lease: HubActivationSequencer.Lease
+    ) async -> Bool {
+        while hubActivation.isCurrent(lease) {
+            await mosaic.waitUntilBackendOperationsFinish()
+            await relayTicker.waitUntilHubActivationIsSafe()
+            guard hubActivation.isCurrent(lease) else { return false }
+            if mosaic.backendActivationIsSafe, relayTicker.hubActivationIsSafe {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func failActivation(_ message: String, retry: Bool) {
+        mosaic.reportActivationFailure(message)
+        activationRetryTask?.cancel()
+        activationRetryTask = nil
+        guard retry else { return }
+        activationRetryTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            requestMosaicActivation()
+        }
     }
 
     /// Point presence at the transport matching the current backend: hub mode
     /// (`.http`) reuses `LiveSyncSocket`'s `/ws` fan-out; relay mode uses
     /// `PresenceRelaySocket` (seal/open via the pure FFI). `publishPresence`
     /// stays transport-agnostic. Gated so the two paths never double-publish.
-    private func wirePresence() {
-        if case .http = backend.backend {
+    private func wirePresence(backend resolvedBackend: MockMosaicService.Backend) {
+        if case .http = resolvedBackend {
             presenceRelay.disconnect()
             liveSync.onPresence = { [mosaic] frame in
                 Task { @MainActor in mosaic.applyPresence(frame) }
@@ -356,6 +583,7 @@ struct AppShell: View {
                 SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
             }
         }
+        .allowsHitTesting(shellAllowsInteraction)
         // Tab bar / nav-chrome tint. `accentSpark` equals the primary
         // accent for every theme except Prism Spark, which lifts it to
         // the neon coral — so picking Prism Spark visibly lights up iOS.
@@ -371,7 +599,8 @@ struct AppShell: View {
                 transcription: transcription,
                 context: captureContext,
                 recorder: streamRecorder,
-                composer: composer
+                composer: composer,
+                profileIdentity: activationToken
             )
             .environment(\.theme, appearance.theme)
         }
@@ -388,6 +617,7 @@ struct AppShell: View {
                     context: captureContext,
                     recorder: streamRecorder,
                     composer: composer,
+                    profileIdentity: activationToken,
                     expanded: true
                 )
                 .environment(\.theme, appearance.theme)
@@ -397,6 +627,17 @@ struct AppShell: View {
         .environment(\.captureContext, captureContext)
         .environment(\.openSearch, { activeTab = .search })
         .environmentObject(mosaicRegistry)
+    }
+
+    /// While an activation is in flight, the rendered snapshot may still be
+    /// profile A even though the selection already says B. Block data-surface
+    /// gestures until B commits. A failed activation re-enables navigation so
+    /// Settings remains reachable, while service-level admission guards keep
+    /// every content mutation fail-closed.
+    private var shellAllowsInteraction: Bool {
+        if mosaic.backendMutationAdmissionIsOpen { return true }
+        if case .failed = mosaic.connection { return true }
+        return false
     }
 }
 

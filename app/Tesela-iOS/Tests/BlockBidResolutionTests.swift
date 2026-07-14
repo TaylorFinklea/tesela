@@ -70,11 +70,14 @@ final class BlockBidResolutionTests: XCTestCase {
             return true
         }
         do {
-            try await service.setBlockProperty(
-                blockId: "22222222-2222-2222-2222-222222222222",
-                key: "scheduled",
-                value: "[[2026-06-23]]"
-            )
+            try await service.enqueueBackendMutation { reservation in
+                try await service.setBlockProperty(
+                    blockId: "22222222-2222-2222-2222-222222222222",
+                    key: "scheduled",
+                    value: "[[2026-06-23]]",
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected a throw on a bare-bid address")
         } catch {
             // expected — bare bid can't resolve, so the write is rejected.
@@ -134,11 +137,14 @@ final class BlockBidResolutionTests: XCTestCase {
             return true
         }
         // Bid-suffix address: resolvable without a local note file.
-        try await service.setBlockProperty(
-            blockId: "daily-note:44444444-4444-4444-4444-444444444444",
-            key: "status",
-            value: "done"
-        )
+        try await service.enqueueBackendMutation { reservation in
+            try await service.setBlockProperty(
+                blockId: "daily-note:44444444-4444-4444-4444-444444444444",
+                key: "status",
+                value: "done",
+                reservation: reservation
+            )
+        }.value
         XCTAssertEqual(captured?.slug, "daily-note")
         XCTAssertEqual(captured?.bid, "44444444-4444-4444-4444-444444444444")
         XCTAssertEqual(captured?.key, "status")
@@ -153,11 +159,14 @@ final class BlockBidResolutionTests: XCTestCase {
         service.attach(backend: .relay)
         service.onLocalPropertySet = { _, _, _, _ in false }
         do {
-            try await service.setBlockProperty(
-                blockId: "daily-note:44444444-4444-4444-4444-444444444444",
-                key: "status",
-                value: "done"
-            )
+            try await service.enqueueBackendMutation { reservation in
+                try await service.setBlockProperty(
+                    blockId: "daily-note:44444444-4444-4444-4444-444444444444",
+                    key: "status",
+                    value: "done",
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected a throw when the engine rejects the write")
         } catch {
             // expected
@@ -170,11 +179,14 @@ final class BlockBidResolutionTests: XCTestCase {
         let service = MockMosaicService()
         service.attach(backend: .relay)
         do {
-            try await service.setBlockProperty(
-                blockId: "daily-note:44444444-4444-4444-4444-444444444444",
-                key: "status",
-                value: "done"
-            )
+            try await service.enqueueBackendMutation { reservation in
+                try await service.setBlockProperty(
+                    blockId: "daily-note:44444444-4444-4444-4444-444444444444",
+                    key: "status",
+                    value: "done",
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected a throw when no engine seam is wired")
         } catch {
             // expected
@@ -189,9 +201,14 @@ final class BlockBidResolutionTests: XCTestCase {
             return true
         }
         do {
-            try await service.setBlockProperty(
-                blockId: "no-colon-address", key: "status", value: "done"
-            )
+            try await service.enqueueBackendMutation { reservation in
+                try await service.setBlockProperty(
+                    blockId: "no-colon-address",
+                    key: "status",
+                    value: "done",
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected a throw on a malformed block address")
         } catch {
             // expected
@@ -206,9 +223,14 @@ final class BlockBidResolutionTests: XCTestCase {
             XCTFail("seam must not fire in mock mode")
             return true
         }
-        try await service.setBlockProperty(
-            blockId: "daily-note:0", key: "status", value: "done"
-        )
+        try await service.enqueueBackendMutation { reservation in
+            try await service.setBlockProperty(
+                blockId: "daily-note:0",
+                key: "status",
+                value: "done",
+                reservation: reservation
+            )
+        }.value
     }
 
     func testRelaySaveInboxDslRoutesThroughNoteWriteSeam() async throws {
@@ -219,7 +241,13 @@ final class BlockBidResolutionTests: XCTestCase {
             captured = (slug, title, content)
         }
         let dsl = "kind:block -has:status -is:heading"
-        try await service.saveInboxDsl(slug: "inbox-work", dsl: dsl)
+        try await service.enqueueBackendMutation { reservation in
+            try await service.saveInboxDsl(
+                slug: "inbox-work",
+                dsl: dsl,
+                reservation: reservation
+            )
+        }.value
         XCTAssertEqual(captured?.slug, "inbox-work")
         XCTAssertEqual(captured?.title, "Views Work")
         XCTAssertTrue(

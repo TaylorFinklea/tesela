@@ -37,6 +37,7 @@ postcard = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 # The Phase B WS-delta round-trip test opens two real LoroEngine handles

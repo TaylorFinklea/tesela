@@ -23,6 +23,7 @@
 //! group-only [`presence_aad`]. Plaintext presence never leaves this process
 //! unencrypted and is NEVER logged.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -40,14 +41,16 @@ use tesela_sync::crypto::relay_auth::{
 };
 use tesela_sync::device::DeviceId;
 use tesela_sync::group::GroupId;
+use tesela_sync::GroupIdentity;
 
 use crate::routes::ws::is_presence_frame;
-use crate::state::WsDelta;
+use crate::state::{GroupRuntimeFence, GroupScope, WsDelta};
 
 /// Min/max reconnect backoff. Doubles from `MIN` to `MAX` on consecutive
 /// connect/session failures; resets to `MIN` after a successful connect.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(32);
+const GROUP_BOUND_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// WS keep-alive: ping the relay every 30s so a NAT/edge-dropped idle socket
 /// is detected and reconnected (CF DO idle eviction + Stage-1 residual #3).
@@ -99,6 +102,7 @@ pub fn spawn(
     device_id: DeviceId,
     group_key: GroupKey,
     ws_delta_tx: broadcast::Sender<WsDelta>,
+    current_group: Arc<tokio::sync::RwLock<GroupIdentity>>,
 ) {
     let Some(ws_url) = presence_ws_url(relay_base, &group_id) else {
         return;
@@ -108,10 +112,22 @@ pub fn spawn(
     // distinct — never crossed.
     let auth_key = derive_relay_auth_key(&group_key, &group_id);
     let mut delta_rx = ws_delta_tx.subscribe();
+    let fence = GroupRuntimeFence::capture(
+        current_group,
+        &GroupIdentity {
+            group_id,
+            group_key: group_key.clone(),
+        },
+    );
+    let captured_scope = fence.scope();
 
     tokio::spawn(async move {
         let mut backoff = BACKOFF_MIN;
         loop {
+            if fence.run_if_current(std::future::ready(())).await.is_none() {
+                tracing::info!("presence relay: captured group was replaced; stopping old bridge");
+                return;
+            }
             match connect(&ws_url, &group_id, &device_id, &auth_key).await {
                 Ok(ws_stream) => {
                     tracing::info!("presence relay: connected to {ws_url}");
@@ -122,8 +138,16 @@ pub fn spawn(
                         &ws_delta_tx,
                         &group_key,
                         &group_id,
+                        captured_scope,
+                        &fence,
                     )
                     .await;
+                    if fence.run_if_current(std::future::ready(())).await.is_none() {
+                        tracing::info!(
+                            "presence relay: captured group was replaced; stopping old bridge"
+                        );
+                        return;
+                    }
                     tracing::debug!("presence relay: session ended; reconnecting");
                 }
                 Err(e) => {
@@ -140,9 +164,8 @@ pub fn spawn(
 }
 
 /// Type alias for the connected presence socket.
-type PresenceSocket = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type PresenceSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Open the presence WebSocket, authenticating the upgrade GET with the same
 /// MAC scheme as the other relay calls. The signed canonical path MUST be
@@ -177,7 +200,11 @@ async fn connect(
         Ok(())
     };
     set(headers, "x-tesela-group", &hex::encode(group_id.as_bytes()))?;
-    set(headers, "x-tesela-device", &hex::encode(device_id.as_bytes()))?;
+    set(
+        headers,
+        "x-tesela-device",
+        &hex::encode(device_id.as_bytes()),
+    )?;
     set(headers, "x-tesela-nonce", &nonce_b64)?;
     set(headers, "x-tesela-ts", &ts.to_string())?;
     set(headers, "x-tesela-mac", &mac_b64)?;
@@ -197,6 +224,8 @@ async fn run_session(
     ws_delta_tx: &broadcast::Sender<WsDelta>,
     group_key: &GroupKey,
     group_id: &GroupId,
+    captured_scope: GroupScope,
+    fence: &GroupRuntimeFence,
 ) {
     let (mut sink, mut stream) = ws_stream.split();
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
@@ -207,21 +236,28 @@ async fn run_session(
         tokio::select! {
             // OUTBOUND: a locally-originated presence frame on the WS fan-out.
             delta = delta_rx.recv() => match delta {
-                Ok(WsDelta { origin, frame }) => {
+                Ok(delta) => {
                     // Loop guard: only forward LOCAL presence (origin set). A
                     // CF-injected frame is re-published with origin = None.
-                    if origin.is_none() || !is_presence_frame(&frame) {
+                    if !should_forward_presence(&delta, captured_scope) {
                         continue;
                     }
-                    let outer = match seal_frame(group_key, group_id, &frame) {
+                    let outer = match seal_frame(group_key, group_id, &delta.frame) {
                         Ok(o) => o,
                         Err(e) => {
                             tracing::warn!("presence relay: seal outbound: {e}");
                             continue;
                         }
                     };
-                    if sink.send(Message::Binary(outer.into())).await.is_err() {
-                        break;
+                    match fence
+                        .run_if_current(tokio::time::timeout(
+                            GROUP_BOUND_SEND_TIMEOUT,
+                            sink.send(Message::Binary(outer.into())),
+                        ))
+                        .await
+                    {
+                        Some(Ok(Ok(()))) => {}
+                        Some(Ok(Err(_))) | Some(Err(_)) | None => break,
                     }
                 }
                 // Ephemeral: a lagged fan-out just means we dropped some cursor
@@ -237,7 +273,19 @@ async fn run_session(
                             // The relay only broadcasts to OTHER devices' sockets
                             // (it excludes ours), so an inbound frame is never our
                             // own echo — fan it out to every local socket.
-                            let _ = ws_delta_tx.send(WsDelta { origin: None, frame: inner });
+                            if fence
+                                .run_if_current(async {
+                                    let _ = ws_delta_tx.send(WsDelta {
+                                        origin: None,
+                                        source_group: Some(captured_scope),
+                                        frame: inner,
+                                    });
+                                })
+                                .await
+                                .is_none()
+                            {
+                                break;
+                            }
                         }
                         Err(e) => {
                             tracing::warn!("presence relay: open inbound (skipping): {e}");
@@ -245,8 +293,15 @@ async fn run_session(
                     }
                 }
                 Some(Ok(Message::Ping(payload))) => {
-                    if sink.send(Message::Pong(payload)).await.is_err() {
-                        break;
+                    match fence
+                        .run_if_current(tokio::time::timeout(
+                            GROUP_BOUND_SEND_TIMEOUT,
+                            sink.send(Message::Pong(payload)),
+                        ))
+                        .await
+                    {
+                        Some(Ok(Ok(()))) => {}
+                        Some(Ok(Err(_))) | Some(Err(_)) | None => break,
                     }
                 }
                 // Pong / Text / Frame are not part of the protocol; ignore.
@@ -259,12 +314,25 @@ async fn run_session(
             },
             // HEARTBEAT: keep the idle socket alive / detect a dead peer.
             _ = heartbeat.tick() => {
-                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
-                    break;
+                match fence
+                    .run_if_current(tokio::time::timeout(
+                        GROUP_BOUND_SEND_TIMEOUT,
+                        sink.send(Message::Ping(Vec::new().into())),
+                    ))
+                    .await
+                {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(_))) | Some(Err(_)) | None => break,
                 }
             }
         }
     }
+}
+
+fn should_forward_presence(delta: &WsDelta, captured_scope: GroupScope) -> bool {
+    delta.origin.is_some()
+        && delta.source_group == Some(captured_scope)
+        && is_presence_frame(&delta.frame)
 }
 
 /// Seal a local `b"PRES" ++ json` frame into the postcard outer-payload bytes
@@ -286,8 +354,8 @@ fn open_frame(group_key: &GroupKey, group_id: &GroupId, bytes: &[u8]) -> Result<
     let outer: OuterPayload =
         postcard::from_bytes(bytes).map_err(|e| format!("postcard outer: {e}"))?;
     let aad = presence_aad(group_id.as_bytes());
-    let inner = aead_open(group_key, &outer.nonce, &outer.ciphertext, &aad)
-        .map_err(|e| e.to_string())?;
+    let inner =
+        aead_open(group_key, &outer.nonce, &outer.ciphertext, &aad).map_err(|e| e.to_string())?;
     if !is_presence_frame(&inner) {
         return Err("opened payload is not a PRES frame".into());
     }
@@ -306,7 +374,31 @@ mod tests {
     use super::*;
 
     fn fixture() -> (GroupKey, GroupId) {
-        (GroupKey::from_bytes([0x77; 32]), GroupId::from_bytes([0x42; 16]))
+        (
+            GroupKey::from_bytes([0x77; 32]),
+            GroupId::from_bytes([0x42; 16]),
+        )
+    }
+
+    fn scope(group: u8, key: u8) -> GroupScope {
+        GroupScope::capture(&GroupIdentity {
+            group_id: GroupId::from_bytes([group; 16]),
+            group_key: GroupKey::from_bytes([key; 32]),
+        })
+    }
+
+    #[test]
+    fn presence_bridge_only_forwards_its_exact_captured_group() {
+        let old = scope(0x11, 0x22);
+        let replacement = scope(0x33, 0x44);
+        let delta = WsDelta {
+            origin: Some(7),
+            source_group: Some(old),
+            frame: b"PRES{}".to_vec(),
+        };
+
+        assert!(should_forward_presence(&delta, old));
+        assert!(!should_forward_presence(&delta, replacement));
     }
 
     #[test]
@@ -314,7 +406,10 @@ mod tests {
         let g = GroupId::from_bytes([0xab; 16]);
         let hex = hex::encode(g.as_bytes());
         assert_eq!(
-            presence_ws_url(&reqwest::Url::parse("https://relay.example.com").unwrap(), &g),
+            presence_ws_url(
+                &reqwest::Url::parse("https://relay.example.com").unwrap(),
+                &g
+            ),
             Some(format!("wss://relay.example.com/groups/{hex}/presence/ws"))
         );
         assert_eq!(
@@ -326,7 +421,8 @@ mod tests {
     #[test]
     fn seal_then_open_round_trips_the_frame() {
         let (key, group) = fixture();
-        let frame = b"PRES{\"peer\":\"aa\",\"color\":\"#fff\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}";
+        let frame =
+            b"PRES{\"peer\":\"aa\",\"color\":\"#fff\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}";
         let sealed = seal_frame(&key, &group, frame).unwrap();
         let opened = open_frame(&key, &group, &sealed).unwrap();
         assert_eq!(opened, frame);
@@ -336,7 +432,8 @@ mod tests {
     fn open_fails_under_a_different_group() {
         let (key, group) = fixture();
         let other = GroupId::from_bytes([0x43; 16]);
-        let frame = b"PRES{\"peer\":\"aa\",\"color\":\"#fff\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}";
+        let frame =
+            b"PRES{\"peer\":\"aa\",\"color\":\"#fff\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}";
         let sealed = seal_frame(&key, &group, frame).unwrap();
         assert!(
             open_frame(&key, &other, &sealed).is_err(),

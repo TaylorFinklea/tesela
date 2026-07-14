@@ -398,6 +398,7 @@ pub async fn serve(
         sync_engine,
         lan_discovery,
         group_identity,
+        group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
         display_name,
         public_url,
         relay_url: load_relay_url_from_config(&mosaic),
@@ -838,6 +839,11 @@ async fn bring_up_relay_if_configured(
     let tick_handle = handle.clone();
     let tick_engine = state.sync_engine.clone();
     let tick_ident = ident.clone();
+    let tick_fence = state::GroupRuntimeFence::capture(
+        std::sync::Arc::clone(&state.group_identity),
+        &tick_ident,
+    );
+    let tick_scope = tick_fence.scope();
     // Instant-multidevice (Phase A, spec finding #4): give the relay loop
     // the WS fan-out handles so a relay-originated edit notifies web
     // (`ws_tx`) and reaches live device sockets (`ws_delta_tx`). Cloning
@@ -854,47 +860,56 @@ async fn bring_up_relay_if_configured(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            match sync_relay::tick(&*tick_engine, &tick_ident, &tick_handle).await {
-                Ok(outcome) => {
-                    if outcome.applied > 0 || outcome.sent > 0 {
-                        tracing::debug!(
-                            "relay tick: applied {}, sent {}",
-                            outcome.applied,
-                            outcome.sent
-                        );
-                    }
-                    for note_id in &outcome.applied_note_ids {
-                        // Notify web that this remote-originated edit landed
-                        // (drives query invalidation — list/agenda/inbox).
-                        routes::ws::emit_note_updated(
-                            &*tick_engine,
-                            &tick_store,
-                            &tick_index,
-                            &tick_ws_tx,
-                            *note_id,
-                        )
-                        .await;
-                    }
-                    // Re-broadcast the EXACT applied delta bytes to live
-                    // device sockets so their Loro docs converge without
-                    // waiting on their own poll. `origin: None` — fan out to
-                    // everyone (the relay has no originating WS socket). The
-                    // post-apply `export_doc_update` returned None here — the
-                    // engine's export cursor already consumed these bytes — so
-                    // we carry them out of the tick and re-broadcast verbatim,
-                    // exactly as the WS inbound handler does.
-                    if !outcome.applied_updates.is_empty() {
-                        if let Ok(frame) =
-                            tesela_sync::encode_loro_relay_payload(&outcome.applied_updates)
-                        {
-                            let _ = tick_ws_delta_tx.send(state::WsDelta {
-                                origin: None,
-                                frame,
-                            });
+            let ran = tick_fence
+                .run_if_current(async {
+                    match sync_relay::tick(&*tick_engine, &tick_ident, &tick_handle).await {
+                        Ok(outcome) => {
+                            if outcome.applied > 0 || outcome.sent > 0 {
+                                tracing::debug!(
+                                    "relay tick: applied {}, sent {}",
+                                    outcome.applied,
+                                    outcome.sent
+                                );
+                            }
+                            for note_id in &outcome.applied_note_ids {
+                                // Notify web that this remote-originated edit landed
+                                // (drives query invalidation — list/agenda/inbox).
+                                routes::ws::emit_note_updated(
+                                    &*tick_engine,
+                                    &tick_store,
+                                    &tick_index,
+                                    &tick_ws_tx,
+                                    *note_id,
+                                )
+                                .await;
+                            }
+                            // Re-broadcast the EXACT applied delta bytes to live
+                            // device sockets so their Loro docs converge without
+                            // waiting on their own poll. `origin: None` — fan out to
+                            // everyone (the relay has no originating WS socket). The
+                            // post-apply `export_doc_update` returned None here — the
+                            // engine's export cursor already consumed these bytes — so
+                            // we carry them out of the tick and re-broadcast verbatim,
+                            // exactly as the WS inbound handler does.
+                            if !outcome.applied_updates.is_empty() {
+                                if let Ok(frame) =
+                                    tesela_sync::encode_loro_relay_payload(&outcome.applied_updates)
+                                {
+                                    let _ = tick_ws_delta_tx.send(state::WsDelta {
+                                        origin: None,
+                                        source_group: Some(tick_scope),
+                                        frame,
+                                    });
+                                }
+                            }
                         }
+                        Err(e) => tracing::debug!("relay tick: {e}"),
                     }
-                }
-                Err(e) => tracing::debug!("relay tick: {e}"),
+                })
+                .await;
+            if ran.is_none() {
+                tracing::info!("relay tick: captured group was replaced; stopping old daemon");
+                break;
             }
         }
     });
@@ -911,6 +926,7 @@ async fn bring_up_relay_if_configured(
         device,
         ident.group_key.clone(),
         state.ws_delta_tx.clone(),
+        std::sync::Arc::clone(&state.group_identity),
     );
 
     state.relay = Some(handle);
@@ -1032,6 +1048,133 @@ mod tests {
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(100, 128, 0, 0)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(10, 15, 109, 184)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(192, 168, 1, 5)));
+    }
+
+    #[tokio::test]
+    async fn pending_group_restart_fails_closed_before_http_data_plane_handlers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+
+        let device = tesela_sync::DeviceId::from_bytes([0x51; 16]);
+        let engine = tesela_sync::LoroEngine::new(device, Arc::new(tesela_sync::Hlc::new(device)));
+        let store = Arc::new(FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        ));
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let (ws_tx, _) = broadcast::channel::<WsEvent>(8);
+        let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(8);
+        let group_id = tesela_sync::GroupId::from_bytes([0x61; 16]);
+        let expected_group = hex::encode(group_id.as_bytes());
+        let app_state = AppState {
+            mosaic_root: mosaic.clone(),
+            store,
+            index,
+            ws_tx,
+            ws_delta_tx,
+            ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+            type_registry: tesela_core::types::TypeRegistry::load(&mosaic),
+            auto_sync: Arc::new(reminders::auto::AutoSync::new()),
+            sync_engine: Arc::new(engine) as Arc<dyn tesela_sync::SyncEngine>,
+            lan_discovery: None,
+            group_identity: Arc::new(RwLock::new(tesela_sync::GroupIdentity {
+                group_id,
+                group_key: tesela_sync::GroupKey::from_bytes([0x71; 32]),
+            })),
+            group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
+            display_name: "test".into(),
+            public_url: "http://127.0.0.1:0".into(),
+            relay_url: None,
+            relay: None,
+            backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                crate::backup_scheduler::SchedulerConfig::from_env(),
+            ),
+        };
+        app_state
+            .group_transition_pending_restart
+            .store(true, std::sync::atomic::Ordering::Release);
+        let router = routes::build(app_state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let client = reqwest::Client::new();
+
+        for response in [
+            client
+                .get(format!("http://{addr}/notes"))
+                .send()
+                .await
+                .unwrap(),
+            client
+                .get(format!("http://{addr}/notes"))
+                .header("x-tesela-expected-group", &expected_group)
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(format!("http://{addr}/notes"))
+                .json(&serde_json::json!({
+                    "title": "must-not-bootstrap-or-create",
+                    "content": "- blocked",
+                }))
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(format!("http://{addr}/sync/peer/pair-code"))
+                .json(&serde_json::json!({"code": "ignored"}))
+                .send()
+                .await
+                .unwrap(),
+            client
+                .post(format!("http://{addr}/mosaics/switch"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap(),
+        ] {
+            assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                response.json::<serde_json::Value>().await.unwrap(),
+                serde_json::json!({
+                    "error": "group_transition_pending_restart",
+                    "restart_required": true,
+                })
+            );
+        }
+        assert!(
+            !mosaic
+                .join("notes/must-not-bootstrap-or-create.md")
+                .exists(),
+            "the rejected create never reaches bootstrap or mutation code"
+        );
+
+        assert_eq!(
+            client
+                .get(format!("http://{addr}/health"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::OK
+        );
+        assert_eq!(
+            client
+                .get(format!("http://{addr}/mosaics/current"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::OK
+        );
     }
 
     #[tokio::test]
@@ -1162,12 +1305,17 @@ mod tests {
         );
         let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
         let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
+        let expected_group_id = tesela_sync::GroupId::from_bytes([0x42; 16]);
+        let expected_group_id_hex = hex::encode(expected_group_id.as_bytes());
         let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
-            group_id: tesela_sync::GroupId::new_random(),
+            group_id: expected_group_id,
             group_key: tesela_sync::GroupKey::random(),
         }));
+        let group_identity_for_replacement = Arc::clone(&group_identity);
         let app_state = AppState {
-            mosaic_root: mosaic.clone(),
+            // Keep a non-canonical spelling in AppState so the socket hello
+            // and `/mosaics/current` contract must normalize it.
+            mosaic_root: mosaic.join("."),
             store,
             index,
             ws_tx,
@@ -1178,6 +1326,7 @@ mod tests {
             sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
             lan_discovery: None,
             group_identity,
+            group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
             display_name: "test".into(),
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
@@ -1196,9 +1345,69 @@ mod tests {
             let _ = axum::serve(listener, router).await;
         });
 
+        // Even legacy/web requests without the expected-group header hold a
+        // data-plane read lease through their handler. A replacement write
+        // lease must therefore serialize with them rather than relabeling the
+        // durable mosaic while an old-group request is active.
+        let replacement_guard = group_identity_for_replacement.write().await;
+        let unbound_health_url = format!("http://{addr}/health");
+        let unbound_health = tokio::spawn(async move { reqwest::get(unbound_health_url).await });
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        assert!(
+            !unbound_health.is_finished(),
+            "an unbound data-plane request waits for the identity transition lease"
+        );
+        drop(replacement_guard);
+        assert_eq!(
+            unbound_health.await.unwrap().unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+
         let url = format!("ws://{}/ws", addr);
         let (mut client_b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         let (mut client_a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        let canonical_mosaic = std::fs::canonicalize(&mosaic)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for (name, client) in [("B", &mut client_b), ("A", &mut client_a)] {
+            let first = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+                .await
+                .unwrap_or_else(|_| panic!("client {name} timed out awaiting session hello"))
+                .unwrap_or_else(|| panic!("client {name} closed before session hello"))
+                .unwrap_or_else(|error| panic!("client {name} hello error: {error}"));
+            let TMessage::Text(text) = first else {
+                panic!("client {name} first frame was not text: {first:?}");
+            };
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+                serde_json::json!({
+                    "event": "loro_session",
+                    "mosaic_path": canonical_mosaic,
+                    "group_id_hex": expected_group_id_hex,
+                }),
+                "client {name} receives the canonical mosaic identity first"
+            );
+        }
+
+        let current: serde_json::Value = reqwest::get(format!("http://{addr}/mosaics/current"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            current.get("path").and_then(|value| value.as_str()),
+            Some(canonical_mosaic.as_str()),
+            "HTTP and WebSocket surfaces expose the same canonical root"
+        );
+        assert_eq!(
+            current.get("group_id_hex").and_then(|value| value.as_str()),
+            Some(expected_group_id_hex.as_str()),
+            "HTTP and WebSocket surfaces expose the same physical group"
+        );
 
         // Give both subscriptions a moment to register on the broadcast bus.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1236,10 +1445,14 @@ mod tests {
                     };
                     if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
                         assert_eq!(
-                            value.get("barrier_id").and_then(|v| v.as_str()),
-                            Some(good_barrier)
+                            value,
+                            serde_json::json!({
+                                "event": "loro_barrier_ack",
+                                "barrier_id": good_barrier,
+                                "ok": true,
+                            }),
+                            "legacy barrier acknowledgement keeps its exact three-key shape"
                         );
-                        assert_eq!(value.get("ok").and_then(|v| v.as_bool()), Some(true));
                         got_good_ack = true;
                     }
                 }
@@ -1256,6 +1469,137 @@ mod tests {
         assert!(
             rendered_at_ack.contains("live edit from A"),
             "positive ack is emitted only after the edit is server-applied: {rendered_at_ack:?}"
+        );
+
+        let bound_barrier = "33333333-3333-4333-8333-333333333333";
+        client_a
+            .send(TMessage::Text(
+                serde_json::json!({
+                    "event": "loro_barrier",
+                    "barrier_id": bound_barrier,
+                    "expected_mosaic_path": canonical_mosaic,
+                    "expected_group_id_hex": expected_group_id_hex,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let bound_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_bound_ack = false;
+        while !got_bound_ack && tokio::time::Instant::now() < bound_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_a.next()).await {
+                Ok(Some(Ok(TMessage::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
+                        assert_eq!(
+                            value,
+                            serde_json::json!({
+                                "event": "loro_barrier_ack",
+                                "barrier_id": bound_barrier,
+                                "mosaic_path": canonical_mosaic,
+                                "group_id_hex": expected_group_id_hex,
+                                "ok": true,
+                            })
+                        );
+                        got_bound_ack = true;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(got_bound_ack, "matching mosaic binding receives an ack");
+
+        let mismatch_barrier = "44444444-4444-4444-8444-444444444444";
+        client_a
+            .send(TMessage::Text(
+                serde_json::json!({
+                    "event": "loro_barrier",
+                    "barrier_id": mismatch_barrier,
+                    "expected_mosaic_path": "/definitely/not/the/active/mosaic",
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let mismatch_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_mismatch_ack = false;
+        while !got_mismatch_ack && tokio::time::Instant::now() < mismatch_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_a.next()).await {
+                Ok(Some(Ok(TMessage::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
+                        assert_eq!(
+                            value,
+                            serde_json::json!({
+                                "event": "loro_barrier_ack",
+                                "barrier_id": mismatch_barrier,
+                                "mosaic_path": canonical_mosaic,
+                                "ok": false,
+                            })
+                        );
+                        got_mismatch_ack = true;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            got_mismatch_ack,
+            "mismatched mosaic binding receives a negative ack"
+        );
+
+        let group_mismatch_barrier = "55555555-5555-4555-8555-555555555555";
+        client_a
+            .send(TMessage::Text(
+                serde_json::json!({
+                    "event": "loro_barrier",
+                    "barrier_id": group_mismatch_barrier,
+                    "expected_mosaic_path": canonical_mosaic,
+                    "expected_group_id_hex": "00000000000000000000000000000000",
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let group_mismatch_deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got_group_mismatch_ack = false;
+        while !got_group_mismatch_ack && tokio::time::Instant::now() < group_mismatch_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_a.next()).await {
+                Ok(Some(Ok(TMessage::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value.get("event").and_then(|v| v.as_str()) == Some("loro_barrier_ack") {
+                        assert_eq!(
+                            value,
+                            serde_json::json!({
+                                "event": "loro_barrier_ack",
+                                "barrier_id": group_mismatch_barrier,
+                                "mosaic_path": canonical_mosaic,
+                                "group_id_hex": expected_group_id_hex,
+                                "ok": false,
+                            })
+                        );
+                        got_group_mismatch_ack = true;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            got_group_mismatch_ack,
+            "mismatched group binding receives a negative ack"
         );
 
         // A malformed/failed binary frame dirties this connection's next
@@ -1397,6 +1741,117 @@ mod tests {
             rendered.contains("live edit from A"),
             "server converged: {rendered:?}"
         );
+
+        // A socket is bound to the physical group announced by its first
+        // frame. If that group is replaced at the same path, an already-open
+        // socket must not apply another delta to the replacement group.
+        let http = reqwest::Client::new();
+        let snapshot_url = format!("http://{addr}/loro/notes/n/snapshot");
+        let verified_snapshot = http
+            .get(&snapshot_url)
+            .header("x-tesela-expected-group", &expected_group_id_hex)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            verified_snapshot.status(),
+            reqwest::StatusCode::OK,
+            "the HTTP read is valid while its verified WS group remains active"
+        );
+
+        *group_identity_for_replacement.write().await = tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([0x77; 16]),
+            group_key: tesela_sync::GroupKey::random(),
+        };
+        let stale_snapshot = http
+            .get(&snapshot_url)
+            .header("x-tesela-expected-group", &expected_group_id_hex)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            stale_snapshot.status(),
+            reqwest::StatusCode::CONFLICT,
+            "an HTTP read bound to the verified old group must fail after replacement"
+        );
+        let stale_write = http
+            .post(format!("http://{addr}/notes"))
+            .header("x-tesela-expected-group", &expected_group_id_hex)
+            .json(&serde_json::json!({
+                "title": "must not cross HTTP groups",
+                "content": "- rejected stale-group write",
+                "tags": [],
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            stale_write.status(),
+            reqwest::StatusCode::CONFLICT,
+            "an HTTP mutation bound to the verified old group must fail after replacement"
+        );
+        let notes_after_stale_write: Vec<serde_json::Value> = http
+            .get(format!("http://{addr}/notes?limit=200"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            notes_after_stale_write.iter().all(|note| {
+                note.get("title").and_then(|value| value.as_str())
+                    != Some("must not cross HTTP groups")
+            }),
+            "the rejected stale-group request must not mutate the replacement group"
+        );
+
+        device_a
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0xcd; 16],
+                note_id,
+                parent_block_id: None,
+                order_key: "zz".into(),
+                indent_level: 0,
+                text: "must not cross physical groups".into(),
+                after_block_id: Some([0xab; 16]),
+            })
+            .await
+            .unwrap();
+        let stale_delta = device_a.export_doc_update(note_id, None).await.unwrap();
+        let stale_frame = tesela_sync::encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: note_id,
+            update_bytes: stale_delta,
+        }])
+        .unwrap();
+        client_a
+            .send(TMessage::Binary(stale_frame.into()))
+            .await
+            .unwrap();
+        let rendered = server_engine_handle.render_note(note_id).await.unwrap();
+        assert!(
+            !rendered.contains("must not cross physical groups"),
+            "a stale socket cannot write into a replacement group: {rendered:?}"
+        );
+
+        // Identity replacement retires both the active writer and an idle
+        // peer instead of leaving either socket apparently connected while
+        // silently discarding every future frame.
+        for (name, client) in [("A", &mut client_a), ("B", &mut client_b)] {
+            let retired = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    match client.next().await {
+                        Some(Ok(TMessage::Close(_))) | Some(Err(_)) | None => break,
+                        Some(Ok(_)) => continue,
+                    }
+                }
+            })
+            .await;
+            assert!(
+                retired.is_ok(),
+                "old-group client {name} remained connected"
+            );
+        }
     }
 
     /// End-to-end real-socket regression for the WS-push clobber (the final
@@ -1574,6 +2029,7 @@ mod tests {
             sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
             lan_discovery: None,
             group_identity,
+            group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
             display_name: "test".into(),
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
@@ -1790,6 +2246,7 @@ mod tests {
             sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
             lan_discovery: None,
             group_identity,
+            group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
             display_name: "test".into(),
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
@@ -1931,6 +2388,7 @@ mod tests {
             sync_engine: Arc::new(engine) as Arc<dyn tesela_sync::SyncEngine>,
             lan_discovery: None,
             group_identity,
+            group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
             display_name: "test".into(),
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,

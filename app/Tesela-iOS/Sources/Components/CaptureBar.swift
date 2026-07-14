@@ -31,6 +31,9 @@ struct CaptureBar: View {
     /// an externally-delivered voice transcript reliably land in the
     /// field despite the `tabViewBottomAccessory` recreating this view.
     @ObservedObject var composer: CaptureComposer
+    /// Synchronous identity of the selected profile/backend settings.
+    /// Captured with the backend generation when recording starts.
+    let profileIdentity: String
     /// `true` for the expanded keyboard-tracking panel, `false` for the
     /// compact bar in the tab accessory. Drives the layout.
     var expanded: Bool = false
@@ -368,7 +371,7 @@ struct CaptureBar: View {
         // Recording always shows Stop, even with draft text present.
         if isRecording || composer.draft.trimmingCharacters(in: .whitespaces).isEmpty {
             Button {
-                Task { await toggleRecording() }
+                toggleRecording()
             } label: {
                 Image(systemName: isRecording ? "stop.circle.fill" : "mic")
                     .font(.system(size: isRecording ? 24 : 18, weight: .regular))
@@ -416,7 +419,7 @@ struct CaptureBar: View {
         }
     }
 
-    private func toggleRecording() async {
+    private func toggleRecording() {
         if isRecording {
             recorder.stop()
             return
@@ -425,7 +428,14 @@ struct CaptureBar: View {
         // which AppShell observes and feeds into `composer` — not a
         // callback or a `.onChange` on this view, both of which can miss
         // the live instance once the accessory recreates the bar.
-        _ = await recorder.start(using: engine)
+        let scope = VoiceCaptureScope(
+            profileIdentity: profileIdentity,
+            backendGeneration: mosaic.backendGenerationLease
+        )
+        let transcriber = engine
+        Task {
+            _ = await recorder.start(using: transcriber, scope: scope)
+        }
     }
 }
 

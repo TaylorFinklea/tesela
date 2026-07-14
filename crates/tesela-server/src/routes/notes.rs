@@ -500,6 +500,7 @@ pub async fn update_note(
             Ok(frame) => {
                 let _ = s.ws_delta_tx.send(crate::state::WsDelta {
                     origin: None,
+                    source_group: None,
                     frame,
                 });
             }
@@ -714,6 +715,7 @@ pub async fn upsert_blocks(
             Ok(frame) => {
                 let _ = s.ws_delta_tx.send(crate::state::WsDelta {
                     origin: None,
+                    source_group: None,
                     frame,
                 });
             }
@@ -946,6 +948,7 @@ pub async fn move_block_subtree(
                 Ok(frame) => {
                     let _ = s.ws_delta_tx.send(crate::state::WsDelta {
                         origin: None,
+                        source_group: None,
                         frame,
                     });
                 }
@@ -2784,6 +2787,7 @@ mod tests {
                 sync_engine: Arc::clone(&engine),
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: Some(base_url.to_string()),
@@ -2953,6 +2957,7 @@ mod tests {
                 sync_engine: Arc::clone(&engine),
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: Some(base_url.to_string()),
@@ -3118,6 +3123,7 @@ mod tests {
                 sync_engine: Arc::clone(&engine),
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: Some(base_url.to_string()),
@@ -3282,6 +3288,7 @@ mod tests {
                 sync_engine: Arc::clone(&engine),
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: Some(base_url.to_string()),
@@ -3417,6 +3424,7 @@ mod tests {
                 sync_engine: Arc::new(FailingRecordEngine) as Arc<dyn SyncEngine>,
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: None,
@@ -3585,6 +3593,7 @@ mod tests {
                 sync_engine,
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: None,
@@ -3753,6 +3762,7 @@ mod tests {
                 sync_engine: engine,
                 lan_discovery: None,
                 group_identity,
+                group_transition_pending_restart: std::sync::atomic::AtomicBool::new(false),
                 display_name: "test".into(),
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: None,

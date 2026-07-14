@@ -7,7 +7,8 @@ import SwiftUI
 /// Three interactions:
 /// 1. Tap the row → `onTap()` (consumers normally route this to "begin edit")
 /// 2. Tap a task checkbox → `onToggleTask()`
-/// 3. Long-press → `BlockContextMenu` via `.contextMenu`
+/// 3. Long-press → `BlockContextMenu` when the owner supplies
+///    `onMenuAction`; read-only projections do not expose inert actions.
 ///
 /// When `isEditing` is true, the body renders as a `TextField` with
 /// focus + an `onSubmit` that calls `onCommitEdit(newText)`. Owners
@@ -399,11 +400,10 @@ struct BlockRow: View {
         .onTapGesture {
             handleTap()
         }
-        .contextMenu {
-            BlockContextMenu(blockId: id) { action in
-                onMenuAction?(action)
-            }
-        }
+        .modifier(ActionableBlockContextMenuModifier(
+            blockId: id,
+            onAction: onMenuAction
+        ))
         .sheet(isPresented: $showingDateSheet) {
             DateInputSheet(
                 initialScheduled: scheduledValue,
@@ -1035,5 +1035,23 @@ struct BlockRow: View {
         }
 
         onSetProperties?(updated)
+    }
+}
+
+struct ActionableBlockContextMenuModifier: ViewModifier {
+    let blockId: String
+    let onAction: ((BlockAction) -> Void)?
+
+    var isEnabled: Bool { onAction != nil }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let onAction {
+            content.contextMenu {
+                BlockContextMenu(blockId: blockId, onAction: onAction)
+            }
+        } else {
+            content
+        }
     }
 }

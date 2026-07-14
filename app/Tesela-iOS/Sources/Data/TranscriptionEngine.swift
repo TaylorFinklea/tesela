@@ -386,9 +386,11 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
 @MainActor
 final class ServerTranscriptionEngine: TranscriptionEngine {
     private let mosaic: MockMosaicService
+    private let backendGeneration: UInt64
 
     init(mosaic: MockMosaicService) {
         self.mosaic = mosaic
+        backendGeneration = mosaic.backendGenerationLease
     }
 
     var displayLabel: String {
@@ -396,7 +398,7 @@ final class ServerTranscriptionEngine: TranscriptionEngine {
     }
 
     func transcribe(audio url: URL) async throws -> String {
-        try await mosaic.transcribe(audio: url)
+        try await mosaic.transcribe(audio: url, expectedGeneration: backendGeneration)
     }
 
     func transcribe(samples: [Float]) async throws -> String {
@@ -404,7 +406,7 @@ final class ServerTranscriptionEngine: TranscriptionEngine {
         // temp WAV and reuse the upload path.
         let url = try Self.writeWav(samples: samples)
         defer { try? FileManager.default.removeItem(at: url) }
-        return try await mosaic.transcribe(audio: url)
+        return try await mosaic.transcribe(audio: url, expectedGeneration: backendGeneration)
     }
 
     private static func writeWav(samples: [Float]) throws -> URL {

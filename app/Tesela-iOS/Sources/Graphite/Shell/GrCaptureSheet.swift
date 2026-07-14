@@ -302,6 +302,7 @@ struct GrCaptureSheet: View {
     var context: CaptureContext
     @ObservedObject var recorder: StreamingVoiceRecorder
     @ObservedObject var composer: CaptureComposer
+    let profileIdentity: String
 
     @Environment(\.theme) private var theme
 
@@ -376,7 +377,7 @@ struct GrCaptureSheet: View {
                 // immediately and skip the text-field autofocus so the
                 // keyboard can't fight the presentation.
                 composer.pendingVoiceCapture = false
-                Task { await toggleRecording() }
+                toggleRecording()
             } else {
                 // Defer autofocus until AFTER the present transition
                 // (`.snappy(0.28)` ≈ 280ms) settles, so the keyboard rises
@@ -579,7 +580,7 @@ struct GrCaptureSheet: View {
         HStack(spacing: 10) {
             // Record / stop — the coral disc per `.grm-recbtn`.
             Button {
-                Task { await toggleRecording() }
+                toggleRecording()
             } label: {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 18, weight: .semibold))
@@ -661,11 +662,23 @@ struct GrCaptureSheet: View {
     /// Mirrors `CaptureBar.toggleRecording`: the finished transcript
     /// arrives via `recorder.lastTranscript`, observed by the shell and
     /// fed into `composer` — not a callback on this view.
-    private func toggleRecording() async {
+    private func toggleRecording() {
         if isRecording {
             recorder.stop()
             return
         }
-        _ = await recorder.start(using: engine, preferStreaming: streamingEnabled)
+        let scope = VoiceCaptureScope(
+            profileIdentity: profileIdentity,
+            backendGeneration: mosaic.backendGenerationLease
+        )
+        let transcriber = engine
+        let shouldStream = streamingEnabled
+        Task {
+            _ = await recorder.start(
+                using: transcriber,
+                scope: scope,
+                preferStreaming: shouldStream
+            )
+        }
     }
 }

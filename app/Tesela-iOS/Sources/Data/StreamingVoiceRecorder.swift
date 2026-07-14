@@ -93,6 +93,28 @@ func voiceSessionAction(for event: AudioSessionEvent, isRecording: Bool) -> Audi
     }
 }
 
+/// Identity captured at the instant a voice session starts. Both parts are
+/// required: the profile token changes as soon as the user selects another
+/// profile, while the backend generation can remain on the old attachment
+/// until an in-flight operation drains.
+struct VoiceCaptureScope: Equatable, Sendable {
+    let profileIdentity: String
+    let backendGeneration: UInt64
+
+    static let testing = VoiceCaptureScope(profileIdentity: "test", backendGeneration: 0)
+}
+
+/// A finished transcript carries the session identity it belongs to so a
+/// stable shell can reject it after the user has switched profiles.
+struct VoiceTranscript: Equatable, Sendable {
+    let text: String
+    let scope: VoiceCaptureScope
+
+    func text(ifCurrent currentScope: VoiceCaptureScope) -> String? {
+        scope == currentScope ? text : nil
+    }
+}
+
 /// Voice capture coordinator. Uses `AVAudioEngine` to tap the mic input.
 /// Two paths depending on the active `TranscriptionEngine`:
 ///   • Streaming (`supportsStreaming == true`, e.g. Parakeet Unified):
@@ -126,8 +148,9 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// composer. A *published* property rather than a callback closure:
     /// a closure stored here would capture the SwiftUI view struct and,
     /// firing seconds later, mutate a stale snapshot whose `@State` no
-    /// longer reaches the live view. The consumer sets it back to `nil`.
-    @Published var lastTranscript: String? = nil
+    /// longer reaches the live view. The consumer clears it through
+    /// `clearLastTranscript()`.
+    @Published private(set) var lastTranscript: VoiceTranscript? = nil
 
     /// The live COMMITTED transcript for a streaming session — grows as
     /// the engine advances it. There is deliberately no separate
@@ -157,8 +180,12 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// session — those samples go straight to `appendStreaming` instead.
     private var pendingSamples: [Float] = []
     private var transcriber: TranscriptionEngine?
-    /// Guards against a second transcription starting while one runs.
-    private var isTranscribing = false
+    /// Monotonic session identity. Async callbacks and finalizers may mutate
+    /// UI state only while their captured epoch is still current.
+    private var sessionEpoch: UInt64 = 0
+    private var sessionScope: VoiceCaptureScope?
+    private var transcribingSessionEpoch: UInt64?
+    private var finalizationTask: Task<Void, Never>?
     /// True once `beginStreamingSession` has successfully started a
     /// streaming session on `transcriber` — routes `handleInputBuffer`
     /// and `stop()` through the streaming path instead of the whole-clip
@@ -199,13 +226,20 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// (`VoiceSettingsView`) — when false, always use the whole-clip path
     /// even for an engine that supports streaming.
     @discardableResult
-    func start(using transcriber: TranscriptionEngine, preferStreaming: Bool = true) async -> Bool {
+    func start(
+        using transcriber: TranscriptionEngine,
+        scope: VoiceCaptureScope,
+        preferStreaming: Bool = true
+    ) async -> Bool {
         voiceDiag("start requested")
+        let epoch = beginNewSession(scope: scope)
         guard await ensurePermission() else {
+            guard isCurrentSession(epoch) else { return false }
             voiceDiag("start: microphone permission DENIED")
             state = .denied
             return false
         }
+        guard isCurrentSession(epoch) else { return false }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
@@ -217,10 +251,14 @@ final class StreamingVoiceRecorder: ObservableObject {
             livePartial = nil
 
             if preferStreaming {
-                await beginStreamingSession(using: transcriber)
+                _ = await beginStreamingSession(using: transcriber, epoch: epoch)
             } else {
                 self.transcriber = transcriber
                 streamingSessionActive = false
+            }
+            guard isCurrentSession(epoch) else {
+                try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+                return false
             }
 
             // Set up the input tap. We convert each buffer into 16 kHz
@@ -233,7 +271,7 @@ final class StreamingVoiceRecorder: ObservableObject {
                 return false
             }
             input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
-                self?.handleInputBuffer(buffer)
+                self?.handleInputBuffer(buffer, expectedEpoch: epoch)
             }
             engine.prepare()
             try engine.start()
@@ -244,6 +282,7 @@ final class StreamingVoiceRecorder: ObservableObject {
             voiceDiag("recording started (streaming=\(streamingSessionActive))")
             return true
         } catch {
+            guard isCurrentSession(epoch) else { return false }
             voiceDiag("start FAILED: \(error.localizedDescription)")
             state = .failed(error.localizedDescription)
             return false
@@ -265,25 +304,33 @@ final class StreamingVoiceRecorder: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         stopTimers()
         state = .idle
+        let epoch = sessionEpoch
         if streamingSessionActive {
-            Task { @MainActor [weak self] in await self?.finishStreamingSession() }
+            finalizationTask = Task { @MainActor [weak self] in
+                await self?.finishStreamingSession(expectedEpoch: epoch)
+            }
         } else {
-            Task { @MainActor [weak self] in await self?.transcribeAll() }
+            finalizationTask = Task { @MainActor [weak self] in
+                await self?.transcribeAll(expectedEpoch: epoch)
+            }
         }
     }
 
     func cancel() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-        stopTimers()
-        pendingSamples.removeAll()
-        livePartial = nil
-        if streamingSessionActive, let transcriber {
-            streamingSessionActive = false
-            Task { await transcriber.cancelStreaming() }
-        }
-        state = .idle
+        stopAudioCaptureIfNeeded()
+        invalidateCurrentSession()
+    }
+
+    /// Called synchronously from the app shell when its profile/backend token
+    /// changes. Invalidating before activation begins closes the interval in
+    /// which the selected profile is B but the shared backend is still A.
+    func invalidateForProfileSwitch() {
+        stopAudioCaptureIfNeeded()
+        invalidateCurrentSession()
+    }
+
+    func clearLastTranscript() {
+        lastTranscript = nil
     }
 
     /// Clear a surfaced error so the capture bar returns to the text
@@ -296,6 +343,64 @@ final class StreamingVoiceRecorder: ObservableObject {
         }
     }
 
+    @discardableResult
+    private func beginNewSession(scope: VoiceCaptureScope) -> UInt64 {
+        let streamingTranscriber = streamingSessionActive ? transcriber : nil
+        finalizationTask?.cancel()
+        finalizationTask = nil
+        sessionEpoch &+= 1
+        sessionScope = scope
+        transcriber = nil
+        streamingSessionActive = false
+        transcribingSessionEpoch = nil
+        transcribingChunk = false
+        pendingSamples.removeAll(keepingCapacity: true)
+        livePartial = nil
+        lastTranscript = nil
+        transcriptionError = nil
+        if let streamingTranscriber {
+            Task { await streamingTranscriber.cancelStreaming() }
+        }
+        return sessionEpoch
+    }
+
+    private func invalidateCurrentSession() {
+        let streamingTranscriber = streamingSessionActive ? transcriber : nil
+        finalizationTask?.cancel()
+        finalizationTask = nil
+        sessionEpoch &+= 1
+        sessionScope = nil
+        transcriber = nil
+        streamingSessionActive = false
+        transcribingSessionEpoch = nil
+        transcribingChunk = false
+        pendingSamples.removeAll(keepingCapacity: true)
+        livePartial = nil
+        lastTranscript = nil
+        transcriptionError = nil
+        state = .idle
+        if let streamingTranscriber {
+            Task { await streamingTranscriber.cancelStreaming() }
+        }
+    }
+
+    private func isCurrentSession(_ epoch: UInt64) -> Bool {
+        epoch == sessionEpoch && sessionScope != nil
+    }
+
+    private func stopAudioCaptureIfNeeded() {
+        if isCurrentlyRecording {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: [.notifyOthersOnDeactivation]
+        )
+        stopTimers()
+        state = .idle
+    }
+
     // MARK: - Streaming session (extracted from `start`/`stop`/`handleInputBuffer`
     // so the wiring is testable against a fake `TranscriptionEngine` without
     // spinning up a real `AVAudioEngine`.)
@@ -306,7 +411,19 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// (engine doesn't support streaming, or `startStreaming` throws) the
     /// caller transparently falls back to the whole-clip path.
     @discardableResult
-    func beginStreamingSession(using transcriber: TranscriptionEngine) async -> Bool {
+    func beginStreamingSession(
+        using transcriber: TranscriptionEngine,
+        scope: VoiceCaptureScope = .testing
+    ) async -> Bool {
+        let epoch = beginNewSession(scope: scope)
+        return await beginStreamingSession(using: transcriber, epoch: epoch)
+    }
+
+    private func beginStreamingSession(
+        using transcriber: TranscriptionEngine,
+        epoch: UInt64
+    ) async -> Bool {
+        guard isCurrentSession(epoch) else { return false }
         self.transcriber = transcriber
         guard transcriber.supportsStreaming else {
             streamingSessionActive = false
@@ -314,11 +431,17 @@ final class StreamingVoiceRecorder: ObservableObject {
         }
         do {
             try await transcriber.startStreaming { [weak self] partial in
-                self?.livePartial = partial
+                guard let self, self.isCurrentSession(epoch) else { return }
+                self.livePartial = partial
+            }
+            guard isCurrentSession(epoch) else {
+                await transcriber.cancelStreaming()
+                return false
             }
             streamingSessionActive = true
             return true
         } catch {
+            guard isCurrentSession(epoch) else { return false }
             voiceDiag("startStreaming failed, falling back to whole-clip: \(error.localizedDescription)")
             streamingSessionActive = false
             return false
@@ -328,7 +451,11 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// Feed one converted buffer's worth of samples to the active
     /// streaming session. No-op when no session is active.
     func feedStreaming(_ chunk: [Float]) async {
-        guard streamingSessionActive, let transcriber else { return }
+        await feedStreaming(chunk, expectedEpoch: sessionEpoch)
+    }
+
+    private func feedStreaming(_ chunk: [Float], expectedEpoch: UInt64) async {
+        guard isCurrentSession(expectedEpoch), streamingSessionActive, let transcriber else { return }
         do {
             try await transcriber.appendStreaming(samples: chunk)
         } catch {
@@ -339,21 +466,37 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// Flush and finalize the active streaming session, landing the
     /// result in `lastTranscript` exactly like the whole-clip path.
     func finishStreamingSession() async {
-        guard streamingSessionActive, let transcriber else { return }
+        await finishStreamingSession(expectedEpoch: sessionEpoch)
+    }
+
+    private func finishStreamingSession(expectedEpoch: UInt64) async {
+        guard isCurrentSession(expectedEpoch),
+              streamingSessionActive,
+              let transcriber,
+              let scope = sessionScope
+        else { return }
         streamingSessionActive = false
+        transcribingSessionEpoch = expectedEpoch
         transcribingChunk = true
-        defer { transcribingChunk = false }
+        defer {
+            if transcribingSessionEpoch == expectedEpoch {
+                transcribingSessionEpoch = nil
+                transcribingChunk = false
+            }
+        }
         do {
             let text = try await transcriber.finishStreaming()
+            guard isCurrentSession(expectedEpoch) else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             voiceDiag("finishStreaming done — \(trimmed.count) chars")
             livePartial = nil
             if !trimmed.isEmpty {
-                lastTranscript = trimmed
+                lastTranscript = VoiceTranscript(text: trimmed, scope: scope)
             } else {
                 voiceDiag("finishStreaming produced no text")
             }
         } catch {
+            guard isCurrentSession(expectedEpoch) else { return }
             voiceDiag("finishStreaming FAILED: \(error.localizedDescription)")
             transcriptionError = error.localizedDescription
         }
@@ -361,7 +504,7 @@ final class StreamingVoiceRecorder: ObservableObject {
 
     // MARK: - Audio buffer plumbing
 
-    private func handleInputBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func handleInputBuffer(_ buffer: AVAudioPCMBuffer, expectedEpoch: UInt64) {
         guard let converter else { return }
         // Estimate output capacity from sample-rate ratio.
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
@@ -397,9 +540,10 @@ final class StreamingVoiceRecorder: ObservableObject {
         let rms = n > 0 ? (sumSquares / Float(n)).squareRoot() : 0
         let level = min(1, rms * 6)
         Task { @MainActor in
+            guard self.isCurrentSession(expectedEpoch) else { return }
             self.levelMonitor.push(level)
             if self.streamingSessionActive {
-                await self.feedStreaming(chunk)
+                await self.feedStreaming(chunk, expectedEpoch: expectedEpoch)
             } else {
                 self.pendingSamples.append(contentsOf: chunk)
             }
@@ -514,31 +658,39 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// Parakeet model chunks long audio internally, so there is no need
     /// to pre-window — and pre-windowing only produced sub-300 ms tail
     /// chunks it rejected with "Invalid audio data".
-    private func transcribeAll() async {
-        guard !isTranscribing, let transcriber else { return }
+    private func transcribeAll(expectedEpoch: UInt64) async {
+        guard isCurrentSession(expectedEpoch),
+              transcribingSessionEpoch == nil,
+              let transcriber,
+              let scope = sessionScope
+        else { return }
         let samples = pendingSamples
         pendingSamples.removeAll(keepingCapacity: true)
         guard samples.count >= minimumSamples else {
             voiceDiag("recording too short — \(samples.count) samples (<300ms), skipped")
             return
         }
-        isTranscribing = true
+        transcribingSessionEpoch = expectedEpoch
         transcribingChunk = true
         defer {
-            isTranscribing = false
-            transcribingChunk = false
+            if transcribingSessionEpoch == expectedEpoch {
+                transcribingSessionEpoch = nil
+                transcribingChunk = false
+            }
         }
         voiceDiag("transcribing \(samples.count) samples")
         do {
             let text = try await transcriber.transcribe(samples: samples)
+            guard isCurrentSession(expectedEpoch) else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             voiceDiag("transcription done — \(trimmed.count) chars")
             if !trimmed.isEmpty {
-                lastTranscript = trimmed
+                lastTranscript = VoiceTranscript(text: trimmed, scope: scope)
             } else {
                 voiceDiag("transcription produced no text")
             }
         } catch {
+            guard isCurrentSession(expectedEpoch) else { return }
             voiceDiag("transcription FAILED: \(error.localizedDescription)")
             transcriptionError = error.localizedDescription
         }

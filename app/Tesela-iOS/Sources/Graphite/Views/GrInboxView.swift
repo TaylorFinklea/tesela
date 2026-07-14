@@ -66,10 +66,18 @@ struct GrInboxView: View {
                 existing: target.view,
                 siblings: views,
                 onSave: { record, isNew in
-                    try await saveView(record, isNew: isNew)
+                    mosaic.enqueueBackendMutation { reservation in
+                        try await saveView(
+                            record,
+                            isNew: isNew,
+                            reservation: reservation
+                        )
+                    }
                 },
                 onDelete: { id in
-                    try await deleteView(id: id)
+                    mosaic.enqueueBackendMutation { reservation in
+                        try await deleteView(id: id, reservation: reservation)
+                    }
                 },
                 propertyRegistry: mosaic.propertyRegistry
             )
@@ -165,7 +173,9 @@ struct GrInboxView: View {
             .disabled(views.last?.id == view.id)
             if !view.builtin {
                 Button(role: .destructive) {
-                    Task { try? await deleteView(id: view.id) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await deleteView(id: view.id, reservation: reservation)
+                    }
                 } label: {
                     Label("Delete view", systemImage: "trash")
                 }
@@ -222,13 +232,13 @@ struct GrInboxView: View {
                             .listRowSeparator(.hidden)
                             .swipeActions(edge: .leading, allowsFullSwipe: false) {
                                 Button {
-                                    Task { await triage(row, status: "todo") }
+                                    triage(row, status: "todo")
                                 } label: {
                                     Label("Todo", systemImage: "circle")
                                 }
                                 .tint(theme.fgMuted)
                                 Button {
-                                    Task { await triage(row, status: "doing") }
+                                    triage(row, status: "doing")
                                 } label: {
                                     Label("Doing", systemImage: "circle.lefthalf.filled")
                                 }
@@ -236,7 +246,7 @@ struct GrInboxView: View {
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button {
-                                    Task { await triage(row, status: "done") }
+                                    triage(row, status: "done")
                                 } label: {
                                     Label("Done", systemImage: "checkmark.circle.fill")
                                 }
@@ -331,7 +341,7 @@ struct GrInboxView: View {
                     navigationPath.append(GrPageRoute(slug: item.page_id))
                 },
                 onMove: { item, value in
-                    await moveCard(item, groupByProp: name, value: value)
+                    moveCard(item, groupByProp: name, value: value)
                 }
             )
         } else {
@@ -360,13 +370,20 @@ struct GrInboxView: View {
     /// `.relay` already bumps `refreshTick` internally on a successful
     /// write, but `.http` has no equivalent push — re-querying explicitly
     /// covers both backends uniformly.
-    private func moveCard(_ item: QueryItem, groupByProp: String, value: String) async {
+    private func moveCard(_ item: QueryItem, groupByProp: String, value: String) {
         guard let bid = item.block_id else { return }
-        do {
-            try await mosaic.setBlockProperty(blockId: bid, key: groupByProp.lowercased(), value: value)
-            await runActiveQuery()
-        } catch {
-            // Silent — the sheet already dismissed; the next refresh reconciles.
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.setBlockProperty(
+                    blockId: bid,
+                    key: groupByProp.lowercased(),
+                    value: value,
+                    reservation: reservation
+                )
+                await runActiveQuery()
+            } catch {
+                // Silent — the sheet already dismissed; the next refresh reconciles.
+            }
         }
     }
 
@@ -447,7 +464,7 @@ struct GrInboxView: View {
                     size: 18
                 ) {
                     let next = row.properties["status"] == "done" ? "todo" : "done"
-                    Task { await triage(row, status: next) }
+                    triage(row, status: next)
                 }
                 .frame(width: 30, alignment: .center)
                 .contentShape(Rectangle().inset(by: -8))
@@ -555,16 +572,27 @@ struct GrInboxView: View {
         Task { await runActiveQuery() }
     }
 
-    private func saveView(_ record: SavedView, isNew: Bool) async throws {
-        try await mosaic.saveView(record, isNew: isNew)
+    private func saveView(
+        _ record: SavedView,
+        isNew: Bool,
+        reservation: MockMosaicService.BackendMutationReservation
+    ) async throws {
+        try await mosaic.saveView(
+            record,
+            isNew: isNew,
+            reservation: reservation
+        )
         await load()
         if isNew {
             select(record.id)
         }
     }
 
-    private func deleteView(id: String) async throws {
-        try await mosaic.deleteView(id: id)
+    private func deleteView(
+        id: String,
+        reservation: MockMosaicService.BackendMutationReservation
+    ) async throws {
+        try await mosaic.deleteView(id: id, reservation: reservation)
         if activeViewId == id {
             UserDefaults.standard.removeObject(forKey: selectionKey)
         }
@@ -581,21 +609,31 @@ struct GrInboxView: View {
         var reordered = views
         reordered.swapAt(idx, target)
         views = reordered  // optimistic; load() below re-syncs
-        Task {
-            try? await mosaic.reorderViews(reordered)
+        mosaic.enqueueBackendMutation { reservation in
+            try? await mosaic.reorderViews(
+                reordered,
+                reservation: reservation
+            )
             await load()
         }
     }
 
-    private func triage(_ row: QueryItem, status: String) async {
+    private func triage(_ row: QueryItem, status: String) {
         guard let bid = row.block_id else { return }
-        do {
-            try await mosaic.setBlockProperty(blockId: bid, key: "status", value: status)
-            // Optimistically drop the row — the user is ripping through
-            // the list and wants immediate feedback (mirrors InboxView).
-            rows.removeAll { $0.id == row.id }
-        } catch {
-            // Silent — refresh recovers on next load.
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.setBlockProperty(
+                    blockId: bid,
+                    key: "status",
+                    value: status,
+                    reservation: reservation
+                )
+                // Optimistically drop the row — the user is ripping through
+                // the list and wants immediate feedback (mirrors InboxView).
+                rows.removeAll { $0.id == row.id }
+            } catch {
+                // Silent — refresh recovers on next load.
+            }
         }
     }
 }

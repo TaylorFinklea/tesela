@@ -499,6 +499,7 @@ fn build_main_window(app: &mut tauri::App, url: &str) -> tauri::Result<()> {
     .min_inner_size(900.0, 600.0)
     // Tells the UI to use same-origin (server serves API + UI on one origin).
     .initialization_script("window.__TESELA_API_BASE__ = '';")
+    .disable_drag_drop_handler()
     .build()?;
     Ok(())
 }
@@ -588,5 +589,22 @@ mod tests {
             Mode::Embedded(config) => assert_eq!(config.mosaic, expected),
             Mode::Remote(_) => panic!("expected embedded mode"),
         }
+    }
+
+    #[test]
+    fn main_window_disables_native_drag_drop_interception() {
+        let source = include_str!("main.rs");
+        let window_builder = source
+            .split_once("fn build_main_window")
+            .expect("main window builder exists")
+            .1
+            .split_once("fn build_tray")
+            .expect("tray builder follows main window builder")
+            .0;
+
+        assert!(
+            window_builder.contains(".disable_drag_drop_handler()"),
+            "Tauri's native file-drop handler consumes HTML drag events on macOS"
+        );
     }
 }

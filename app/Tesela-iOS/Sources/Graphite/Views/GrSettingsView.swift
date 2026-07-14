@@ -9,8 +9,7 @@ import UIKit
 /// The PRIMARY purpose (task #156): let the user set the backend server
 /// URL + mode in-app, so device builds no longer need the Mac IP baked in.
 /// The Server / Backend section ports `BackendSettingsView`'s save logic
-/// verbatim (set `backend.mode`/`serverURL`, `mosaic.attach(backend:)`,
-/// `await mosaic.refresh(from:)`) onto Graphite-themed controls.
+/// through the shared backend settings; the shell owns serialized activation.
 ///
 /// No data layer or behavior is rebuilt: it binds the SAME state the
 /// shipping `AppShell` settings bind (`BackendSettings`, `MosaicRegistry`,
@@ -384,15 +383,12 @@ struct GrSettingsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    /// Ported verbatim from `BackendSettingsView.save()` — the core #156
-    /// behavior: persist mode/URL, re-attach, refresh.
+    /// Persist the selection. The shell observes the backend token and owns
+    /// exact-mosaic activation, engine scoping, and refresh.
     @MainActor
     private func save() async {
         backend.mode = pickerMode
         backend.serverURL = urlField
-        mosaic.attach(backend: backend.backend)
-        isReloading = true
-        await mosaic.refresh(from: backend.backend)
         isReloading = false
     }
 
@@ -403,8 +399,6 @@ struct GrSettingsView: View {
         backend.serverURL = "http://127.0.0.1:7474"
         pickerMode = .mock
         urlField = backend.serverURL
-        mosaic.attach(backend: backend.backend)
-        await mosaic.refresh(from: backend.backend)
     }
 
     // ── Mosaics ─────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ use tokio::sync::broadcast;
 use crate::state::{AppState, WsEvent};
 
 const PEERS_FILE: &str = "sync_peers.json";
+const GROUP_TRANSITION_PENDING_RESTART: &str = "group transition pending restart";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
@@ -365,9 +366,9 @@ pub struct PairWithCodeResp {
 fn restart_required_after_pair(
     adopted_group: bool,
     relay_configured: bool,
-    relay_was_configured: bool,
+    _relay_was_configured: bool,
 ) -> bool {
-    relay_configured || (adopted_group && relay_was_configured)
+    adopted_group || relay_configured
 }
 
 pub async fn pair_with_code(
@@ -383,20 +384,25 @@ pub async fn pair_with_code(
             "pairing code is from this device".to_string(),
         ));
     }
-    let mut adopted = false;
-    {
-        let current = s.group_identity.read().await.clone();
-        if current.group_id != parsed.group_id
-            || current.group_key.as_bytes() != &parsed.group_key_bytes
-        {
-            let incoming = parsed.group_identity();
-            tesela_sync::adopt_group_identity(&s.mosaic_root, &incoming)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("adopt: {e}")))?;
-            *s.group_identity.write().await = incoming;
-            adopted = true;
-        }
-    }
+    let adopted = adopt_group_under_write_lease(
+        &s.mosaic_root,
+        &s.group_identity,
+        &s.group_transition_pending_restart,
+        parsed.group_identity(),
+    )
+    .await
+    .map_err(|e| {
+        let status = match &e {
+            tesela_sync::SyncError::Protocol(message)
+                if message == GROUP_TRANSITION_PENDING_RESTART =>
+            {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            tesela_sync::SyncError::Protocol(_) => StatusCode::CONFLICT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, format!("adopt: {e}"))
+    })?;
     let peer = Peer {
         device_id_hex: parsed.device_id.to_hex(),
         url: parsed.url.clone(),
@@ -445,6 +451,34 @@ pub async fn pair_with_code(
         relay_configured,
         restart_required,
     }))
+}
+
+/// Persist and publish a replacement group while holding the one exclusive
+/// identity lease shared with every data-plane request.
+async fn adopt_group_under_write_lease(
+    mosaic_root: &Path,
+    group_identity: &tokio::sync::RwLock<GroupIdentity>,
+    restart_pending: &std::sync::atomic::AtomicBool,
+    incoming: GroupIdentity,
+) -> tesela_sync::SyncResult<bool> {
+    let mut current = group_identity.write().await;
+    if restart_pending.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(tesela_sync::SyncError::Protocol(
+            GROUP_TRANSITION_PENDING_RESTART.into(),
+        ));
+    }
+    if current.group_id == incoming.group_id {
+        if current.group_key.as_bytes() == incoming.group_key.as_bytes() {
+            return Ok(false);
+        }
+        return Err(tesela_sync::SyncError::Protocol(
+            "group key rotation requires a new group id".into(),
+        ));
+    }
+    tesela_sync::adopt_group_identity(mosaic_root, &incoming).await?;
+    *current = incoming;
+    restart_pending.store(true, std::sync::atomic::Ordering::Release);
+    Ok(true)
 }
 
 /// Persist the spine relay URL into the mosaic's `config.toml`, mirroring the
@@ -587,6 +621,98 @@ mod tests {
     use super::*;
     use tesela_core::config::Config;
 
+    #[tokio::test]
+    async fn group_adoption_waits_for_data_plane_readers_before_persisting() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let initial = GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([0x11; 16]),
+            group_key: tesela_sync::GroupKey::from_bytes([0x22; 32]),
+        };
+        tesela_sync::adopt_group_identity(tmp.path(), &initial)
+            .await
+            .unwrap();
+        let identity = Arc::new(tokio::sync::RwLock::new(initial));
+        let restart_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = identity.read().await;
+
+        let incoming = GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([0x33; 16]),
+            group_key: tesela_sync::GroupKey::from_bytes([0x44; 32]),
+        };
+        let root = tmp.path().to_path_buf();
+        let identity_for_adoption = Arc::clone(&identity);
+        let restart_for_adoption = Arc::clone(&restart_pending);
+        let adoption = tokio::spawn(async move {
+            adopt_group_under_write_lease(
+                &root,
+                &identity_for_adoption,
+                &restart_for_adoption,
+                incoming,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!adoption.is_finished());
+        let durable_while_reading = tesela_sync::load_or_create_group_identity(tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(durable_while_reading.group_id, reader.group_id);
+        assert_eq!(
+            durable_while_reading.group_key.as_bytes(),
+            reader.group_key.as_bytes()
+        );
+
+        drop(reader);
+        assert!(adoption.await.unwrap().unwrap());
+        let durable_after = tesela_sync::load_or_create_group_identity(tmp.path())
+            .await
+            .unwrap();
+        let published_after = identity.read().await;
+        assert_eq!(durable_after.group_id, published_after.group_id);
+        assert_eq!(
+            durable_after.group_key.as_bytes(),
+            published_after.group_key.as_bytes()
+        );
+        assert_eq!(published_after.group_id.as_bytes(), &[0x33; 16]);
+        assert!(restart_pending.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn same_group_id_with_different_key_is_rejected_without_publishing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let initial = GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([0x11; 16]),
+            group_key: tesela_sync::GroupKey::from_bytes([0x22; 32]),
+        };
+        tesela_sync::adopt_group_identity(tmp.path(), &initial)
+            .await
+            .unwrap();
+        let identity = tokio::sync::RwLock::new(initial.clone());
+        let restart_pending = std::sync::atomic::AtomicBool::new(false);
+        let incoming = GroupIdentity {
+            group_id: initial.group_id,
+            group_key: tesela_sync::GroupKey::from_bytes([0x44; 32]),
+        };
+
+        let error =
+            adopt_group_under_write_lease(tmp.path(), &identity, &restart_pending, incoming)
+                .await
+                .expect_err("same-id key rotation must be rejected");
+        assert!(error.to_string().contains("new group id"));
+        assert!(!restart_pending.load(std::sync::atomic::Ordering::Acquire));
+
+        let durable = tesela_sync::load_or_create_group_identity(tmp.path())
+            .await
+            .unwrap();
+        let published = identity.read().await;
+        assert_eq!(durable.group_id, initial.group_id);
+        assert_eq!(published.group_id, initial.group_id);
+        assert_eq!(durable.group_key.as_bytes(), initial.group_key.as_bytes());
+        assert_eq!(published.group_key.as_bytes(), initial.group_key.as_bytes());
+    }
+
     /// L1 PV — a paired joiner persists the inviter's relay URL so its next
     /// boot joins the spine. Also asserts the trailing-slash canonicalization
     /// (so the stored URL matches `RelayState::scope_to_identity`'s key).
@@ -620,7 +746,7 @@ mod tests {
     #[test]
     fn adopting_group_with_existing_relay_requires_restart() {
         assert!(restart_required_after_pair(true, false, true));
-        assert!(!restart_required_after_pair(true, false, false));
+        assert!(restart_required_after_pair(true, false, false));
         assert!(!restart_required_after_pair(false, false, true));
         assert!(restart_required_after_pair(false, true, false));
     }

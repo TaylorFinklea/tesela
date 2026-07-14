@@ -1,5 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{
@@ -17,7 +18,13 @@ use tesela_core::{
 };
 use tokio::sync::{broadcast, mpsc};
 
-use crate::state::{AppState, ConnId, WsDelta, WsEvent};
+use crate::state::{AppState, ConnId, GroupScope, WsDelta, WsEvent};
+
+/// Bound the identity read lease held while a group-scoped socket write is
+/// handed to the kernel. Group replacement may wait for a write already in
+/// progress, but a dead or backpressured peer must not block it forever.
+const GROUP_BOUND_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const GROUP_IDENTITY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Bidirectional `/ws` handler (instant-multidevice Phase A).
 ///
@@ -40,21 +47,78 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) ->
     ws.on_upgrade(move |socket| handle_socket(socket, s, conn_id))
 }
 
-async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
+async fn handle_socket(mut socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
+    let canonical_mosaic = match std::fs::canonicalize(&s.mosaic_root) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(error) => {
+            tracing::warn!(
+                mosaic = %s.mosaic_root.display(),
+                "Failed to canonicalize WebSocket mosaic root: {error}"
+            );
+            let _ = socket.close().await;
+            return;
+        }
+    };
+    let session_identity = s.group_identity.read().await;
+    let session_group = GroupScope::capture(&session_identity);
+    let session_group_id = session_group.group_id();
+    let group_id_hex = hex::encode(session_group_id.as_bytes());
+    let session = match serde_json::to_string(&LoroSession {
+        event: "loro_session",
+        mosaic_path: &canonical_mosaic,
+        group_id_hex: &group_id_hex,
+    }) {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!("Failed to serialize WebSocket session identity: {error}");
+            drop(session_identity);
+            let _ = socket.close().await;
+            return;
+        }
+    };
+    let hello_sent = tokio::time::timeout(
+        GROUP_BOUND_SEND_TIMEOUT,
+        socket.send(Message::Text(session.into())),
+    )
+    .await;
+    drop(session_identity);
+    if !matches!(hello_sent, Ok(Ok(()))) {
+        let _ = socket.close().await;
+        return;
+    }
+
     let (mut sink, mut stream) = socket.split();
     let mut ws_rx = s.ws_tx.subscribe();
     let mut delta_rx = s.ws_delta_tx.subscribe();
     let (direct_tx, mut direct_rx) = mpsc::channel::<String>(8);
+    let outbound_group_identity = Arc::clone(&s.group_identity);
 
     // Send task: fans both broadcast channels onto this socket. Text for
     // WsEvents, binary for Loro deltas (skipping this socket's own deltas).
     let mut send_task = tokio::spawn(async move {
+        let mut identity_check = tokio::time::interval(GROUP_IDENTITY_CHECK_INTERVAL);
+        identity_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                _ = identity_check.tick() => {
+                    let current_identity = outbound_group_identity.read().await;
+                    if !session_group.matches(&current_identity) {
+                        break;
+                    }
+                }
                 evt = ws_rx.recv() => match evt {
                     Ok(event) => match serde_json::to_string(&event) {
                         Ok(msg) => {
-                            if sink.send(Message::Text(msg.into())).await.is_err() {
+                            let current_identity = outbound_group_identity.read().await;
+                            if !session_group.matches(&current_identity) {
+                                break;
+                            }
+                            let sent = tokio::time::timeout(
+                                GROUP_BOUND_SEND_TIMEOUT,
+                                sink.send(Message::Text(msg.into())),
+                            )
+                            .await;
+                            if !matches!(sent, Ok(Ok(()))) {
                                 break;
                             }
                         }
@@ -66,13 +130,29 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 delta = delta_rx.recv() => match delta {
-                    Ok(WsDelta { origin, frame }) => {
+                    Ok(WsDelta {
+                        origin,
+                        source_group,
+                        frame,
+                    }) => {
                         // Echo-suppression: never send a delta back to the
                         // socket it arrived on.
                         if origin == Some(conn_id) {
                             continue;
                         }
-                        if sink.send(Message::Binary(frame.into())).await.is_err() {
+                        if !delta_matches_session(source_group, session_group) {
+                            continue;
+                        }
+                        let current_identity = outbound_group_identity.read().await;
+                        if !session_group.matches(&current_identity) {
+                            break;
+                        }
+                        let sent = tokio::time::timeout(
+                            GROUP_BOUND_SEND_TIMEOUT,
+                            sink.send(Message::Binary(frame.into())),
+                        )
+                        .await;
+                        if !matches!(sent, Ok(Ok(()))) {
                             break;
                         }
                     }
@@ -81,7 +161,16 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                 },
                 direct = direct_rx.recv() => match direct {
                     Some(msg) => {
-                        if sink.send(Message::Text(msg.into())).await.is_err() {
+                        let current_identity = outbound_group_identity.read().await;
+                        if !session_group.matches(&current_identity) {
+                            break;
+                        }
+                        let sent = tokio::time::timeout(
+                            GROUP_BOUND_SEND_TIMEOUT,
+                            sink.send(Message::Text(msg.into())),
+                        )
+                        .await;
+                        if !matches!(sent, Ok(Ok(()))) {
                             break;
                         }
                     }
@@ -99,6 +188,10 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
                 Message::Binary(bytes) => {
+                    let current_identity = recv_state.group_identity.read().await;
+                    if !session_group.matches(&current_identity) {
+                        break;
+                    }
                     let outcome = route_inbound_binary(
                         &*recv_state.sync_engine,
                         &recv_state.store,
@@ -107,17 +200,34 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                         &recv_state.ws_delta_tx,
                         &bytes,
                         Some(conn_id),
+                        Some(session_group),
                         recv_state.relay.as_ref(),
                     )
                     .await;
+                    drop(current_identity);
                     barrier_window.observe(outcome);
                 }
                 Message::Text(text) => {
-                    let Some(barrier_id) = parse_loro_barrier(&text) else {
+                    let Some(request) = parse_loro_barrier(&text) else {
                         continue;
                     };
-                    let ok = barrier_window.take();
-                    let Ok(ack) = serialize_loro_barrier_ack(barrier_id, ok) else {
+                    let (current_group, current_group_id_hex) = {
+                        let identity = recv_state.group_identity.read().await;
+                        (
+                            GroupScope::capture(&identity),
+                            hex::encode(identity.group_id.as_bytes()),
+                        )
+                    };
+                    if current_group != session_group {
+                        break;
+                    }
+                    let clean = barrier_window.take();
+                    let Ok(ack) = serialize_loro_barrier_ack(
+                        &request,
+                        clean,
+                        &canonical_mosaic,
+                        &current_group_id_hex,
+                    ) else {
                         continue;
                     };
                     if direct_tx.send(ack).await.is_err() {
@@ -138,6 +248,17 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
         _ = &mut send_task => recv_task.abort(),
         _ = &mut recv_task => send_task.abort(),
     }
+}
+
+fn delta_matches_session(source_group: Option<GroupScope>, session_group: GroupScope) -> bool {
+    source_group.is_none_or(|source_group| source_group == session_group)
+}
+
+#[derive(serde::Serialize)]
+struct LoroSession<'a> {
+    event: &'static str,
+    mosaic_path: &'a str,
+    group_id_hex: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +296,8 @@ impl LoroBarrierWindow {
 struct LoroBarrierRequest {
     event: LoroBarrierRequestEvent,
     barrier_id: uuid::Uuid,
+    expected_mosaic_path: Option<String>,
+    expected_group_id_hex: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -184,29 +307,69 @@ enum LoroBarrierRequestEvent {
 }
 
 #[derive(serde::Serialize)]
-struct LoroBarrierAck {
+struct LoroBarrierAck<'a> {
     event: &'static str,
     barrier_id: uuid::Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mosaic_path: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_id_hex: Option<&'a str>,
     ok: bool,
 }
 
-fn parse_loro_barrier(text: &str) -> Option<uuid::Uuid> {
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedLoroBarrier {
+    barrier_id: uuid::Uuid,
+    expected_mosaic_path: Option<String>,
+    expected_group_id_hex: Option<String>,
+}
+
+fn parse_loro_barrier(text: &str) -> Option<ParsedLoroBarrier> {
     serde_json::from_str::<LoroBarrierRequest>(text)
         .ok()
-        .map(|request| {
+        .and_then(|request| {
             let LoroBarrierRequest {
                 event: LoroBarrierRequestEvent::LoroBarrier,
                 barrier_id,
+                expected_mosaic_path,
+                expected_group_id_hex,
             } = request;
-            barrier_id
+            if expected_group_id_hex.is_some() && expected_mosaic_path.is_none() {
+                return None;
+            }
+            Some(ParsedLoroBarrier {
+                barrier_id,
+                expected_mosaic_path,
+                expected_group_id_hex,
+            })
         })
 }
 
-fn serialize_loro_barrier_ack(barrier_id: uuid::Uuid, ok: bool) -> serde_json::Result<String> {
+fn serialize_loro_barrier_ack(
+    request: &ParsedLoroBarrier,
+    clean: bool,
+    canonical_mosaic: &str,
+    group_id_hex: &str,
+) -> serde_json::Result<String> {
+    let mosaic_path = request
+        .expected_mosaic_path
+        .as_ref()
+        .map(|_| canonical_mosaic);
+    let response_group_id = request.expected_group_id_hex.as_ref().map(|_| group_id_hex);
+    let path_matches = request
+        .expected_mosaic_path
+        .as_deref()
+        .is_none_or(|expected| expected == canonical_mosaic);
+    let group_matches = request
+        .expected_group_id_hex
+        .as_deref()
+        .is_none_or(|expected| expected == group_id_hex);
     serde_json::to_string(&LoroBarrierAck {
         event: "loro_barrier_ack",
-        barrier_id,
-        ok,
+        barrier_id: request.barrier_id,
+        mosaic_path,
+        group_id_hex: response_group_id,
+        ok: clean && path_matches && group_matches,
     })
 }
 
@@ -235,12 +398,14 @@ pub async fn route_inbound_binary(
     ws_delta_tx: &broadcast::Sender<WsDelta>,
     bytes: &[u8],
     origin: Option<ConnId>,
+    source_group: Option<GroupScope>,
     relay: Option<&crate::sync_relay::RelayHandle>,
 ) -> InboundFrameOutcome {
     if is_presence_frame(bytes) {
         // Ephemeral: fan out to the other sockets, never apply/persist.
         let _ = ws_delta_tx.send(WsDelta {
             origin,
+            source_group,
             frame: bytes.to_vec(),
         });
         return InboundFrameOutcome::Presence;
@@ -253,6 +418,7 @@ pub async fn route_inbound_binary(
         ws_delta_tx,
         bytes,
         origin,
+        source_group,
         relay,
     )
     .await
@@ -282,6 +448,7 @@ pub async fn apply_inbound_delta(
     ws_delta_tx: &broadcast::Sender<WsDelta>,
     bytes: &[u8],
     origin: Option<ConnId>,
+    source_group: Option<GroupScope>,
     relay: Option<&crate::sync_relay::RelayHandle>,
 ) -> InboundFrameOutcome {
     let updates = match tesela_sync::decode_loro_relay_payload(bytes) {
@@ -358,6 +525,7 @@ pub async fn apply_inbound_delta(
     // and never touches the relay's broadcast cursor (finding #3).
     let _ = ws_delta_tx.send(WsDelta {
         origin,
+        source_group,
         frame: bytes.to_vec(),
     });
     outcome
@@ -444,6 +612,24 @@ mod tests {
     use std::sync::Arc;
     use tesela_core::stable_uuid_from_slug as note_id_for;
     use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
+
+    fn group_scope(group: u8, key: u8) -> GroupScope {
+        GroupScope::capture(&tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::from_bytes([group; 16]),
+            group_key: tesela_sync::GroupKey::from_bytes([key; 32]),
+        })
+    }
+
+    #[test]
+    fn old_group_delta_never_matches_a_replacement_session() {
+        let old = group_scope(0x11, 0x22);
+        let replacement = group_scope(0x33, 0x44);
+        let rotated_key = group_scope(0x11, 0x55);
+
+        assert!(!delta_matches_session(Some(old), replacement));
+        assert!(!delta_matches_session(Some(old), rotated_key));
+        assert!(delta_matches_session(Some(old), old));
+    }
 
     /// A server engine that materializes to disk, plus the matching store +
     /// index reading from the same mosaic, and a separate "device" engine.
@@ -533,6 +719,7 @@ mod tests {
             &delta_tx,
             &frame,
             Some(origin),
+            None,
             None,
         )
         .await;
@@ -636,6 +823,7 @@ mod tests {
             &frame_a,
             Some(conn_a),
             None,
+            None,
         )
         .await;
         apply_inbound_delta(
@@ -646,6 +834,7 @@ mod tests {
             &delta_tx,
             &frame_c,
             Some(conn_c),
+            None,
             None,
         )
         .await;
@@ -704,6 +893,7 @@ mod tests {
             &frame,
             Some(5),
             None,
+            None,
         )
         .await;
 
@@ -736,6 +926,7 @@ mod tests {
             b"not a tlr2 frame",
             Some(9),
             None,
+            None,
         )
         .await;
 
@@ -749,7 +940,34 @@ mod tests {
             r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111"}"#,
         )
         .expect("strict valid barrier");
-        assert_eq!(id.to_string(), "11111111-1111-4111-8111-111111111111");
+        assert_eq!(
+            id.barrier_id.to_string(),
+            "11111111-1111-4111-8111-111111111111"
+        );
+
+        assert!(
+            parse_loro_barrier(
+                r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111","expected_mosaic_path":"/tmp/mosaic"}"#,
+            )
+            .is_some(),
+            "the optional path-binding key is part of the strict contract"
+        );
+
+        let group_bound = parse_loro_barrier(
+                r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111","expected_mosaic_path":"/tmp/mosaic","expected_group_id_hex":"42424242424242424242424242424242"}"#,
+            )
+            .expect("the optional physical-group binding is part of the strict contract");
+        assert_eq!(
+            group_bound.expected_group_id_hex.as_deref(),
+            Some("42424242424242424242424242424242")
+        );
+        assert!(
+            parse_loro_barrier(
+                r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111","expected_group_id_hex":"42424242424242424242424242424242"}"#,
+            )
+            .is_none(),
+            "a new physical-group binding must also bind the canonical path"
+        );
 
         for invalid in [
             r#"{"event":"loro_barrier","barrier_id":"not-a-uuid"}"#,
@@ -767,8 +985,17 @@ mod tests {
 
     #[test]
     fn barrier_ack_serializes_the_exact_connection_local_contract() {
-        let id = uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
-        let ack = serialize_loro_barrier_ack(id, false).unwrap();
+        let request = parse_loro_barrier(
+            r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111"}"#,
+        )
+        .unwrap();
+        let ack = serialize_loro_barrier_ack(
+            &request,
+            false,
+            "/tmp/mosaic",
+            "42424242424242424242424242424242",
+        )
+        .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&ack).unwrap(),
             serde_json::json!({

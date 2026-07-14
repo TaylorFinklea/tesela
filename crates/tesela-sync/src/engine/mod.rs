@@ -106,6 +106,19 @@ pub struct BlockRelocationOutcome {
     pub notes: Vec<RelocatedNoteVersion>,
 }
 
+/// One cursor-free document export paired with the exact version vector the
+/// exported bytes cover. Callers may advance a delivery baseline to
+/// `version` only after the carrying frame is confirmed sent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportedDocUpdate {
+    /// Stable note id carried by the update.
+    pub note_id: [u8; 16],
+    /// Loro update bytes exported from the requested baseline.
+    pub update_bytes: Vec<u8>,
+    /// Exact document version immediately after this export was captured.
+    pub version: Vec<u8>,
+}
+
 /// Per-note outcome of one inbound relay batch apply
 /// ([`SyncEngine::apply_relay_updates`]). Replaces the old bare `usize`
 /// count, which silently swallowed per-note failures while the callers
@@ -224,10 +237,7 @@ pub trait SyncEngine: Send + Sync {
     /// deliberately sequential; `LoroEngine` specializes unique NoteUpserts
     /// so bulk import can checkpoint the shared derived index once while each
     /// note still completes its own durable snapshot + materialization tail.
-    async fn record_local_batch(
-        &self,
-        payloads: Vec<OpPayload>,
-    ) -> Vec<SyncResult<ContentHash>> {
+    async fn record_local_batch(&self, payloads: Vec<OpPayload>) -> Vec<SyncResult<ContentHash>> {
         let mut results = Vec::with_capacity(payloads.len());
         for payload in payloads {
             results.push(self.record_local(payload).await);
@@ -339,6 +349,32 @@ pub trait SyncEngine: Send + Sync {
         _since: Option<&[u8]>,
     ) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Export multiple notes and pair each update with the exact version it
+    /// carries. The Loro implementation serializes this capture against all
+    /// addressed note mutations so a later edit cannot be accidentally
+    /// checkpointed as if it were already in the frame.
+    async fn export_doc_updates_with_versions(
+        &self,
+        requests: &[([u8; 16], Option<Vec<u8>>)],
+    ) -> Vec<ExportedDocUpdate> {
+        let mut exports = Vec::with_capacity(requests.len());
+        for (note_id, since) in requests {
+            let Some(update_bytes) = self.export_doc_update(*note_id, since.as_deref()).await
+            else {
+                continue;
+            };
+            let Some(version) = self.doc_version(*note_id).await else {
+                continue;
+            };
+            exports.push(ExportedDocUpdate {
+                note_id: *note_id,
+                update_bytes,
+                version,
+            });
+        }
+        exports
     }
 
     /// Import a peer's Loro update bytes into the addressed note's doc
@@ -617,7 +653,8 @@ mod display_table_config_tests {
             "display_group_by": null,
             "display_show_done": null,
         });
-        let record: ViewRecord = serde_json::from_value(json).expect("deserializes without the new field");
+        let record: ViewRecord =
+            serde_json::from_value(json).expect("deserializes without the new field");
         assert_eq!(record.display_table_config, None);
     }
 

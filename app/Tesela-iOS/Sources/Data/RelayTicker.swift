@@ -23,6 +23,310 @@ private actor TickRaceOnce {
     }
 }
 
+struct PendingRelocationNote: Codable, Equatable {
+    let slug: String
+    let version: Data
+}
+
+struct PendingRelocationFrame: Codable, Equatable {
+    let frame: Data
+    let notes: [PendingRelocationNote]
+
+    init(_ prepared: PreparedDeltaFrameRecord) {
+        frame = prepared.frame
+        notes = prepared.notes.map {
+            PendingRelocationNote(slug: $0.slug, version: $0.version)
+        }
+    }
+
+    var prepared: PreparedDeltaFrameRecord {
+        PreparedDeltaFrameRecord(
+            frame: frame,
+            notes: notes.map {
+                PreparedDeltaNoteRecord(slug: $0.slug, version: $0.version)
+            }
+        )
+    }
+}
+
+struct PendingRelocationDelivery: Codable, Equatable {
+    let hubIdentity: String
+    let request: BlockMoveRequest
+    var prepared: PendingRelocationFrame?
+    /// Optional only for decoding build-78 outboxes written before engine
+    /// scoping shipped. New records always persist the sync-group scope. A
+    /// legacy record is decoded only so it can be cleared fail-closed; URL,
+    /// profile, and path cannot prove which physical group authored it.
+    var engineScope: MosaicEngineScope? = nil
+}
+
+struct EngineSessionToken: Equatable, Sendable {
+    let generation: UInt64
+    let scope: MosaicEngineScope
+    let hubMode: Bool
+    let hubIdentity: String?
+}
+
+private struct SuspendedHubLease: Equatable {
+    let scope: MosaicEngineScope
+    let hubIdentity: String
+}
+
+/// Main-actor admission gate for every relay coordinator operation. The FFI
+/// handles are safe to retain across awaits, but APNs/BG, flush, relocation,
+/// and foreground-tick drivers must not use them concurrently or race the
+/// shared tick generation and outcome state.
+@MainActor
+final class RelayOperationAdmission {
+    enum Kind: Equatable {
+        case backgroundCatchup
+        case flush
+        case tick
+        case immediateOutbound
+        case relocation
+    }
+
+    struct Lease: Equatable {
+        fileprivate let generation: UInt64
+        let kind: Kind
+    }
+
+    private var generation: UInt64 = 0
+    private var activeLease: Lease?
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var isBusy: Bool {
+        activeLease != nil
+    }
+
+    func tryAcquire(_ kind: Kind) -> Lease? {
+        guard activeLease == nil else { return nil }
+        generation &+= 1
+        let lease = Lease(generation: generation, kind: kind)
+        activeLease = lease
+        return lease
+    }
+
+    func release(_ lease: Lease) {
+        guard activeLease == lease else { return }
+        activeLease = nil
+        let waiters = idleWaiters
+        idleWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func permits(_ lease: Lease?) -> Bool {
+        activeLease == nil || (lease != nil && activeLease == lease)
+    }
+
+    func isActive(_ lease: Lease) -> Bool {
+        activeLease == lease
+    }
+
+    func waitUntilIdle() async {
+        guard activeLease != nil else { return }
+        await withCheckedContinuation { continuation in
+            idleWaiters.append(continuation)
+        }
+    }
+
+    func acquireWhenIdle(_ kind: Kind) async -> Lease? {
+        while !Task.isCancelled {
+            if let lease = tryAcquire(kind) {
+                return lease
+            }
+            await waitUntilIdle()
+        }
+        return nil
+    }
+}
+
+/// Main-actor admission barrier between ordinary engine work and a block
+/// relocation. Ordinary operations may overlap one another, but relocation
+/// closes admission, drains every operation that already owns a reservation,
+/// and then holds exclusive access through mutation and delivery.
+@MainActor
+final class EngineOperationAdmission {
+    enum Reservation: Equatable {
+        case active
+        case queued
+    }
+
+    struct ExclusiveLease: Equatable {
+        fileprivate let generation: UInt64
+    }
+
+    private var generation: UInt64 = 0
+    private var exclusiveLease: ExclusiveLease?
+    private var operationWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var reservedOperationWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var activeIdleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var allIdleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var queuedReservationCount = 0
+
+    private(set) var activeCount = 0
+    var operationCount: Int {
+        activeCount + queuedReservationCount
+    }
+
+    func tryBeginOperation() -> Bool {
+        guard exclusiveLease == nil else { return false }
+        activeCount += 1
+        return true
+    }
+
+    func beginOperationWhenAvailable() async -> Bool {
+        if tryBeginOperation() {
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
+        }
+    }
+
+    /// Synchronously preserves an edit submitted through a non-async callback.
+    /// A queued reservation counts against profile activation immediately, but
+    /// does not prevent the already-exclusive relocation from draining active
+    /// work and proceeding.
+    func reserveOperation() -> Reservation {
+        if tryBeginOperation() {
+            return .active
+        }
+        queuedReservationCount += 1
+        return .queued
+    }
+
+    func beginReservedOperationWhenAvailable() async -> Bool {
+        guard queuedReservationCount > 0 else { return false }
+        if exclusiveLease == nil {
+            queuedReservationCount -= 1
+            activeCount += 1
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            reservedOperationWaiters.append(continuation)
+        }
+    }
+
+    func finishOperation() {
+        guard activeCount > 0 else { return }
+        activeCount -= 1
+        if activeCount == 0 {
+            let waiters = activeIdleWaiters
+            activeIdleWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+        if operationCount == 0 {
+            let waiters = allIdleWaiters
+            allIdleWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func waitUntilIdle() async {
+        guard operationCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            allIdleWaiters.append(continuation)
+        }
+    }
+
+    func closeForExclusiveAccess() -> ExclusiveLease? {
+        // A synchronously reserved edit is logically ahead of a later move,
+        // even if its Task has not run yet. Do not let a second relocation
+        // leapfrog that preserved edit during the scheduling gap.
+        guard exclusiveLease == nil, queuedReservationCount == 0 else { return nil }
+        generation &+= 1
+        let lease = ExclusiveLease(generation: generation)
+        exclusiveLease = lease
+        return lease
+    }
+
+    func waitUntilExclusiveAccessReady(_ lease: ExclusiveLease) async {
+        guard exclusiveLease == lease else { return }
+        guard activeCount > 0 else { return }
+        await withCheckedContinuation { continuation in
+            activeIdleWaiters.append(continuation)
+        }
+    }
+
+    func finishExclusiveAccess(_ lease: ExclusiveLease) {
+        guard exclusiveLease == lease, activeCount == 0 else { return }
+        exclusiveLease = nil
+
+        // Transfer queued callers into active reservations before resuming
+        // them. Profile activation therefore never observes a false zero
+        // between relocation release and a queued final edit starting.
+        let waiters = operationWaiters
+        operationWaiters.removeAll()
+        let reservedWaiters = reservedOperationWaiters
+        reservedOperationWaiters.removeAll()
+        queuedReservationCount -= reservedWaiters.count
+        activeCount += waiters.count + reservedWaiters.count
+        for waiter in waiters {
+            waiter.resume(returning: true)
+        }
+        for waiter in reservedWaiters {
+            waiter.resume(returning: true)
+        }
+    }
+}
+
+enum BackgroundCatchupOutcome: Equatable {
+    case unavailable
+    case completed(newData: Bool)
+    case failed(String)
+
+    var didRunSuccessfully: Bool {
+        if case .completed = self { return true }
+        return false
+    }
+}
+
+struct RelocationOutboxStore {
+    let url: URL
+
+    init(url: URL = Self.defaultURL()) {
+        self.url = url
+    }
+
+    func load() throws -> PendingRelocationDelivery? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try JSONDecoder().decode(
+            PendingRelocationDelivery.self,
+            from: Data(contentsOf: url)
+        )
+    }
+
+    func save(_ delivery: PendingRelocationDelivery) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(delivery).write(to: url, options: .atomic)
+    }
+
+    func clear() throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    private static func defaultURL() -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Tesela", isDirectory: true)
+            .appendingPathComponent("relocation-outbox.json")
+    }
+}
+
 /// Background poll loop driving the iOS-side WAN relay sync.
 ///
 /// Lives at the app shell level (one instance for the app's lifetime),
@@ -47,6 +351,10 @@ private actor TickRaceOnce {
 /// already independent of Mac reachability after first pairing.
 @MainActor
 final class RelayTicker: ObservableObject {
+    /// One process-wide engine owner. Background tasks and the visible shell
+    /// must never open independent Loro handles on the same group root.
+    static let shared = RelayTicker()
+
     /// Wall-clock of the most recent successful tick (either direction).
     @Published private(set) var lastTickAt: Date? = nil
     /// Most recent error string from a failing tick; cleared on next
@@ -143,17 +451,43 @@ final class RelayTicker: ObservableObject {
     /// still fire after the gate closes.
     var hubMode: Bool = false {
         didSet {
+            if hubMode != oldValue {
+                engineSessionGeneration &+= 1
+            }
             if hubMode && !oldValue {
                 dropCoordinator()
+                if pendingRelocation?.hubIdentity == liveHubIdentity {
+                    Task { [weak self] in
+                        _ = await self?.retryPendingRelocation()
+                    }
+                }
             }
         }
     }
+    /// A suspended, already-verified HTTP hub may temporarily hand its exact
+    /// group-scoped engine to the relay path. The lease prevents a profile or
+    /// transport activation that completes in the background from being
+    /// overwritten by a stale foreground `hubMode = true` restoration.
+    private var suspendedHubLease: SuspendedHubLease?
+    private var backgroundTransitionGeneration: UInt64 = 0
+    private var backgroundFlushesInFlight = 0
+    private var backgroundFlushWaiters: [CheckedContinuation<Void, Never>] = []
 
     // Owned FFI handles. nil until the first successful `ensure()`;
     // dropped on tick error so the next tick rebuilds. Caching keeps
     // the HTTP-to-Mac fetch (for the pairing code) to once per app
     // session in the happy path.
     private var engine: SyncEngineHandle? = nil
+    private(set) var activeEngineScope: MosaicEngineScope = .legacy
+    private var engineSessionGeneration: UInt64 = 0
+    /// Ordinary edits hold this across record → exact frame → identity-bound
+    /// send → baseline commit. Activation waits for zero, so an edit started
+    /// against A cannot resume after an await and mutate or send through B.
+    private let engineOperationAdmission = EngineOperationAdmission()
+    private var engineOperationsInFlight: Int {
+        engineOperationAdmission.operationCount
+    }
+    private var engineActivationInFlight = false
     private var relay: RelayClientHandle? = nil
     /// The APNs device token we last successfully registered with the relay
     /// (sync durability P3b). Guards `maybeRegisterApnsToken` so we POST
@@ -166,6 +500,7 @@ final class RelayTicker: ObservableObject {
     /// registered) without attaching Console.app.
     @Published var apnsNote: String = "—"
     private var coordinator: SyncCoordinator? = nil
+    private let relayOperationAdmission = RelayOperationAdmission()
 
     private var loopTask: Task<Void, Never>? = nil
 
@@ -198,6 +533,26 @@ final class RelayTicker: ObservableObject {
     /// misses a frame still self-heals on note re-open via
     /// `bootstrapNoteIfNeeded` (full server-snapshot catch-up).
     private var lastPushedVV: [String: Data] = [:]
+    private let relocationOutboxStore: RelocationOutboxStore
+    private var pendingRelocation: PendingRelocationDelivery?
+    private var relocationDeliveryInFlight = false
+    private var relocationIdleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var hubBootstrapInFlight = 0
+    private var hubActivationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var relocationRetryTask: Task<Void, Never>?
+    private var relocationRetryDelaySeconds: UInt64 = 2
+    private var liveDeltaSender: ((Data, String) async -> Bool)?
+    private var liveHubIdentity: String?
+    private var relocationOutboxLoadError: String?
+
+    var engineSessionToken: EngineSessionToken {
+        EngineSessionToken(
+            generation: engineSessionGeneration,
+            scope: activeEngineScope,
+            hubMode: hubMode,
+            hubIdentity: liveHubIdentity
+        )
+    }
 
     /// Last successful/attempted catch-up time per slug, for the resident
     /// catch-up debounce in `bootstrapNoteIfNeeded`. Keeps the resident
@@ -273,9 +628,8 @@ final class RelayTicker: ObservableObject {
     /// bootstrap and made the tail poll start past every op — a silent,
     /// permanent inbound stall. A fresh identity now starts at 0, which
     /// makes `compactionSeq > inboundCursorSeq` true → snapshot bootstrap
-    /// runs. The pre-scoping bare keys are migrated once (adopted by the
-    /// first pairing that builds a coordinator post-upgrade, so in-place
-    /// upgrades keep their progress) and then removed.
+    /// runs. Pre-scoping bare keys have no group provenance and are
+    /// quarantined rather than adopted into a clean group-scoped store.
     static let legacyInboundCursorKey = "relay.inboundCursorSeq"
     static let legacyOutboundCursorKey = "relay.outboundCursorNtp"
     static func cursorScope(relayUrl: String, groupIdHex: String) -> String {
@@ -413,13 +767,26 @@ final class RelayTicker: ObservableObject {
     /// sandbox until B.3.4 swaps the read path to local-first.
     var onAppliedChanges: (() -> Void)? = nil
 
-    init(tickIntervalSeconds: UInt64 = 2) {
+    init(
+        tickIntervalSeconds: UInt64 = 2,
+        relocationOutboxURL: URL? = nil
+    ) {
         // Default 2 s in the foreground — keeps Web→iOS lag close to
         // instant on a healthy network without thrashing battery (the
         // tick body is just a relay GET if there's nothing new). On
         // consecutive errors the exponential backoff still caps the
         // poll at ~60 s so a down relay doesn't drain the device.
         self.tickIntervalSeconds = tickIntervalSeconds
+        let store = RelocationOutboxStore(
+            url: relocationOutboxURL ?? RelocationOutboxStore().url
+        )
+        relocationOutboxStore = store
+        do {
+            pendingRelocation = try store.load()
+        } catch {
+            pendingRelocation = nil
+            relocationOutboxLoadError = error.localizedDescription
+        }
     }
 
     /// Late-bind the mosaic this ticker uses to fetch pairing codes.
@@ -445,6 +812,237 @@ final class RelayTicker: ObservableObject {
             if isRunning {
                 Task { await self.tickOnce() }
             }
+        }
+    }
+
+    func configureLiveDeltaSender(_ sender: @escaping (Data, String) async -> Bool) {
+        liveDeltaSender = sender
+        if pendingRelocation != nil {
+            Task { [weak self] in
+                _ = await self?.retryPendingRelocation()
+            }
+        }
+    }
+
+    func configureLiveHub(identity: String?) {
+        let normalized = identity?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized != liveHubIdentity {
+            engineSessionGeneration &+= 1
+        }
+        liveHubIdentity = normalized
+        if pendingRelocation?.hubIdentity == liveHubIdentity {
+            Task { [weak self] in
+                _ = await self?.retryPendingRelocation()
+            }
+        }
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    var hubActivationIsSafe: Bool {
+        Self.isHubActivationSafe(
+            engineOperationsInFlight: engineOperationsInFlight,
+            engineActivationInFlight: engineActivationInFlight,
+            relayOperationInFlight: relayOperationAdmission.isBusy,
+            backgroundFlushInFlight: backgroundFlushesInFlight > 0,
+            relocationInFlight: relocationDeliveryInFlight,
+            bootstrapInFlight: hubBootstrapInFlight,
+            pendingPrepared: pendingRelocation.map { $0.prepared != nil },
+            hasLiveHubIdentity: liveHubIdentity != nil
+        )
+    }
+
+    /// An unprepared record means the engine mutation may already exist but
+    /// its exact two-note frame has not reached durable outbox state yet. A
+    /// profile switch must leave the current hub attached until that staging
+    /// finishes. On a cold launch there is no attached hub, so activation may
+    /// proceed only far enough to re-bind this exact identity and resume it.
+    var unpreparedRelocationHubIdentity: String? {
+        guard let pendingRelocation, pendingRelocation.prepared == nil else {
+            return nil
+        }
+        return pendingRelocation.hubIdentity
+    }
+
+    var unpreparedRelocationEngineScope: MosaicEngineScope? {
+        guard let pendingRelocation, pendingRelocation.prepared == nil else {
+            return nil
+        }
+        return pendingRelocation.engineScope
+    }
+
+    static func isHubActivationSafe(
+        engineOperationsInFlight: Int,
+        engineActivationInFlight: Bool = false,
+        relayOperationInFlight: Bool = false,
+        backgroundFlushInFlight: Bool = false,
+        relocationInFlight: Bool,
+        bootstrapInFlight: Int,
+        pendingPrepared: Bool?,
+        hasLiveHubIdentity: Bool
+    ) -> Bool {
+        guard engineOperationsInFlight == 0,
+              !engineActivationInFlight,
+              !relayOperationInFlight,
+              !backgroundFlushInFlight,
+              !relocationInFlight,
+              bootstrapInFlight == 0
+        else { return false }
+        // nil = no pending move; true = the exact frame is already durable.
+        // A cold launch (no live identity) must be allowed to re-activate the
+        // pending move's own hub or an unprepared outbox would deadlock before
+        // it could ever be staged.
+        return pendingPrepared != false || !hasLiveHubIdentity
+    }
+
+    func waitUntilHubActivationIsSafe() async {
+        guard !hubActivationIsSafe else { return }
+        await withCheckedContinuation { continuation in
+            hubActivationWaiters.append(continuation)
+        }
+    }
+
+    private func finishRelocationDelivery() {
+        relocationDeliveryInFlight = false
+        let waiters = relocationIdleWaiters
+        relocationIdleWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func waitUntilRelocationDeliveryFinishes() async {
+        guard relocationDeliveryInFlight else { return }
+        await withCheckedContinuation { continuation in
+            relocationIdleWaiters.append(continuation)
+        }
+    }
+
+    private func finishHubBootstrap() {
+        hubBootstrapInFlight = max(0, hubBootstrapInFlight - 1)
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func finishEngineOperation() {
+        engineOperationAdmission.finishOperation()
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func finishExclusiveEngineAccess(
+        _ lease: EngineOperationAdmission.ExclusiveLease
+    ) {
+        engineOperationAdmission.finishExclusiveAccess(lease)
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func finishRelayOperation(_ lease: RelayOperationAdmission.Lease) {
+        relayOperationAdmission.release(lease)
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func tryAcquireImmediateOutbound() -> RelayOperationAdmission.Lease? {
+        guard pendingRelocation == nil else { return nil }
+        return relayOperationAdmission.tryAcquire(.immediateOutbound)
+    }
+
+    private func beginBackgroundFlush() {
+        backgroundFlushesInFlight += 1
+    }
+
+    private func finishBackgroundFlush() {
+        backgroundFlushesInFlight = max(0, backgroundFlushesInFlight - 1)
+        if backgroundFlushesInFlight == 0 {
+            let waiters = backgroundFlushWaiters
+            backgroundFlushWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+        resumeHubActivationWaitersIfSafe()
+    }
+
+    private func waitUntilBackgroundFlushesFinish() async {
+        guard backgroundFlushesInFlight > 0 else { return }
+        await withCheckedContinuation { continuation in
+            backgroundFlushWaiters.append(continuation)
+        }
+    }
+
+    private func waitUntilEngineIsIdle() async {
+        await engineOperationAdmission.waitUntilIdle()
+    }
+
+    private func validatedEngineSession(
+        requiredSession: EngineSessionToken?
+    ) -> EngineSessionToken? {
+        let session = requiredSession ?? engineSessionToken
+        guard session == engineSessionToken else { return nil }
+        // During activation hubMode is fail-closed before a verified identity
+        // is published. A queued UI task from the prior profile must not open
+        // or mutate whichever engine happens to become active next.
+        if session.hubMode, session.hubIdentity == nil { return nil }
+        return session
+    }
+
+    private func beginEngineOperationWhenAvailable(
+        requiredSession: EngineSessionToken?
+    ) async -> EngineSessionToken? {
+        guard let session = validatedEngineSession(requiredSession: requiredSession),
+              await engineOperationAdmission.beginOperationWhenAvailable()
+        else { return nil }
+        guard isCurrentEngineSession(session) else {
+            finishEngineOperation()
+            return nil
+        }
+        return session
+    }
+
+    /// Synchronous callers reserve immediately while admission is open. If a
+    /// relocation has already closed the gate, preserve the exact edit and
+    /// session in a queued task instead of silently dropping it.
+    private func enqueueEngineOperation(
+        requiredSession: EngineSessionToken?,
+        operation: @MainActor @escaping (EngineSessionToken) async -> Void
+    ) {
+        guard let session = validatedEngineSession(requiredSession: requiredSession) else {
+            return
+        }
+        switch engineOperationAdmission.reserveOperation() {
+        case .active:
+            Task { @MainActor [self] in
+                defer { finishEngineOperation() }
+                guard isCurrentEngineSession(session) else { return }
+                await operation(session)
+            }
+        case .queued:
+            Task { @MainActor [self] in
+                guard await engineOperationAdmission.beginReservedOperationWhenAvailable() else {
+                    return
+                }
+                defer { finishEngineOperation() }
+                guard isCurrentEngineSession(session) else { return }
+                await operation(session)
+            }
+        }
+    }
+
+    private func isCurrentEngineSession(_ session: EngineSessionToken) -> Bool {
+        Self.isEngineSessionCurrent(required: session, current: engineSessionToken)
+    }
+
+    static func isEngineSessionCurrent(
+        required: EngineSessionToken,
+        current: EngineSessionToken
+    ) -> Bool {
+        required == current
+    }
+
+    private func resumeHubActivationWaitersIfSafe() {
+        guard hubActivationIsSafe else { return }
+        let waiters = hubActivationWaiters
+        hubActivationWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 
@@ -495,9 +1093,19 @@ final class RelayTicker: ObservableObject {
     /// races a concurrent edit or imports a snapshot captured mid-edit never
     /// loses data — even mid-typing, the user's in-engine edit survives the
     /// merge.
-    func bootstrapNoteIfNeeded(slug: String) async {
+    func bootstrapNoteIfNeeded(
+        slug: String,
+        requiredHubIdentity: String? = nil
+    ) async {
         guard let engine else { return }
         guard let mosaic else { return }
+        if let requiredHubIdentity, requiredHubIdentity != liveHubIdentity {
+            return
+        }
+        let boundHubIdentity = requiredHubIdentity ?? (hubMode ? liveHubIdentity : nil)
+        if hubMode, boundHubIdentity == nil { return }
+        hubBootstrapInFlight += 1
+        defer { finishHubBootstrap() }
         let resident = await engine.noteVersion(slug: slug) != nil
         if resident {
             // Resident → catch-up, but debounced so we don't fetch a full
@@ -514,7 +1122,13 @@ final class RelayTicker: ObservableObject {
             guard let bytes = try await mosaic.fetchLoroSnapshot(slug: slug) else {
                 return  // server has no doc for this slug yet (404)
             }
+            if let boundHubIdentity, boundHubIdentity != liveHubIdentity {
+                return
+            }
             try await engine.importNoteSnapshot(slug: slug, bytes: bytes)
+            if let boundHubIdentity, boundHubIdentity != liveHubIdentity {
+                return
+            }
             // Part A (WS-push clobber, 2026-06-02): seed the per-note push
             // baseline from the freshly-imported server base, so the FIRST
             // `produceDeltaFrame` for this note exports `updates(baseVV)` =
@@ -551,7 +1165,57 @@ final class RelayTicker: ObservableObject {
         }
     }
 
-    func recordAndPush(slug: String, title: String, content: String, createdAtMillis: Int64) async {
+    func recordAndPush(
+        slug: String,
+        title: String,
+        content: String,
+        createdAtMillis: Int64,
+        requiredSession: EngineSessionToken? = nil
+    ) async {
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: requiredSession
+        ) else {
+            return
+        }
+        defer { finishEngineOperation() }
+        await recordAndPushUnderLease(
+            slug: slug,
+            title: title,
+            content: content,
+            createdAtMillis: createdAtMillis,
+            session: session
+        )
+    }
+
+    /// Reserve the activation barrier synchronously, before the unstructured
+    /// task is enqueued. The service's legacy `onLocalWrite` seam is
+    /// synchronous; reserving inside the task leaves a switch window where
+    /// activation can observe zero operations and silently discard the edit.
+    func enqueueRecordAndPush(
+        slug: String,
+        title: String,
+        content: String,
+        createdAtMillis: Int64,
+        requiredSession: EngineSessionToken? = nil
+    ) {
+        enqueueEngineOperation(requiredSession: requiredSession) { [self] session in
+            await recordAndPushUnderLease(
+                slug: slug,
+                title: title,
+                content: content,
+                createdAtMillis: createdAtMillis,
+                session: session
+            )
+        }
+    }
+
+    private func recordAndPushUnderLease(
+        slug: String,
+        title: String,
+        content: String,
+        createdAtMillis: Int64,
+        session: EngineSessionToken
+    ) async {
         // Ensure the engine is open. This is purely local (SQLite +
         // sandbox path), so it succeeds even when the relay/Mac is
         // unreachable. If it can't even open SQLite, surface the error
@@ -571,7 +1235,11 @@ final class RelayTicker: ObservableObject {
         // local edit so this note's BlockUpserts resolve to the server's
         // existing tree nodes (no rival TreeIDs / duplicate bullets). No-op
         // once the doc is resident; best-effort otherwise.
-        await bootstrapNoteIfNeeded(slug: slug)
+        await bootstrapNoteIfNeeded(
+            slug: slug,
+            requiredHubIdentity: session.hubIdentity
+        )
+        guard isCurrentEngineSession(session) else { return }
         // Part A (WS-push clobber, 2026-06-02): if the note is resident from a
         // PRIOR session's local edits, `bootstrapNoteIfNeeded` early-returns
         // on the resident debounce (or its catch-up fetch failed), so it never
@@ -615,12 +1283,19 @@ final class RelayTicker: ObservableObject {
         // re-inject the same edit through the cached-pairing relay path
         // into the shared engine. Return BEFORE the coordinator block;
         // local durability above is intact (Part E2).
-        if hubMode { return }
+        if session.hubMode {
+            await deliverHubDelta(slug: slug, session: session)
+            return
+        }
         // Best-effort push: if the coordinator is ready (i.e. we've paired
         // with the Mac at least once), drain the op to the relay
         // immediately so the other side sees it without waiting a full
         // tick. If pairing hasn't happened or the network is down, the
         // regular tick loop will catch up later.
+        guard let relayLease = tryAcquireImmediateOutbound() else {
+            return
+        }
+        defer { finishRelayOperation(relayLease) }
         invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
@@ -632,6 +1307,458 @@ final class RelayTicker: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Finish a hub-mode local write inside the same engine-operation lease
+    /// that recorded it. The exact hub identity and engine scope are captured
+    /// before the first await, so activation cannot redirect the frame to a
+    /// newly selected profile. The baseline advances only after the socket's
+    /// path-bound barrier acknowledgement succeeds.
+    private func deliverHubDelta(
+        slug: String,
+        session: EngineSessionToken
+    ) async {
+        guard session.hubMode,
+              let hubIdentity = session.hubIdentity,
+              let liveDeltaSender,
+              isCurrentEngineSession(session),
+              let prepared = await produceDeltaFrame(slug: slug),
+              isCurrentEngineSession(session)
+        else { return }
+        let delivered = await liveDeltaSender(prepared.frame, hubIdentity)
+        guard delivered, isCurrentEngineSession(session) else { return }
+        await commitPushedDelta(prepared)
+    }
+
+    /// Move one complete block subtree through the authoritative Rust engine.
+    /// The request's move id is supplied by the sheet and remains stable across
+    /// exact retries. No Swift-side block arrays are edited here.
+    func relocateSubtree(
+        _ request: BlockMoveRequest,
+        requiredHubIdentity: String? = nil
+    ) async throws -> BlockRelocationOutcomeRecord {
+        do {
+            if let requiredHubIdentity, requiredHubIdentity != liveHubIdentity {
+                throw FfiSyncError.RelocationRecoveryRequired(
+                    moveId: request.moveId,
+                    message: "The active mosaic changed before this move could be staged. Switch back and retry the exact move."
+                )
+            }
+            try await openEngineIfNeeded()
+            guard let engine else {
+                throw FfiSyncError.Other(message: "engine open failed")
+            }
+
+            let slugs = Array(Set([request.sourceSlug, request.destinationSlug])).sorted()
+            for slug in slugs {
+                await bootstrapNoteIfNeeded(
+                    slug: slug,
+                    requiredHubIdentity: requiredHubIdentity
+                )
+                if let requiredHubIdentity, requiredHubIdentity != liveHubIdentity {
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: request.moveId,
+                        message: "The active mosaic changed while this move was being staged. Switch back and retry the exact move."
+                    )
+                }
+                if lastPushedVV[slug] == nil {
+                    lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+                }
+            }
+
+            if let requiredHubIdentity, requiredHubIdentity != liveHubIdentity {
+                throw FfiSyncError.RelocationRecoveryRequired(
+                    moveId: request.moveId,
+                    message: "The active mosaic changed before this move could be applied. Switch back and retry the exact move."
+                )
+            }
+            let outcome = try await engine.relocateBlockSubtree(
+                request: BlockRelocationRecord(
+                    moveId: request.moveId,
+                    sourceSlug: request.sourceSlug,
+                    rootBid: request.rootBid,
+                    destinationSlug: request.destinationSlug,
+                    targetBid: nil,
+                    placement: .append
+                )
+            )
+
+            if !hubMode,
+               let relayLease = tryAcquireImmediateOutbound() {
+                defer { finishRelayOperation(relayLease) }
+                invalidateCoordinatorIfRepaired()
+                if coordinator == nil {
+                    try? await ensureCoordinator()
+                }
+                if let coordinator {
+                    do {
+                        let outbound = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+                        noteOutboundOutcome(outbound)
+                    } catch {
+                        lastError = error.localizedDescription
+                    }
+                }
+            }
+            return outcome
+        } catch {
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Apply and deliver one relocation as a durable two-note unit. Hub mode
+    /// writes the request to an atomic on-disk outbox before touching the
+    /// engine, then keeps the exact prepared frame until the server's barrier
+    /// acknowledgement succeeds. Relay mode already has its own durable
+    /// engine-backed outbound queue, so it only performs the relocation.
+    func moveSubtreeAndDeliver(_ request: BlockMoveRequest) async throws -> [String] {
+        if let relocationOutboxLoadError {
+            throw FfiSyncError.Other(
+                message: "A saved block move could not be recovered: \(relocationOutboxLoadError)"
+            )
+        }
+
+        if let pendingRelocation, pendingRelocation.request != request {
+            guard hubMode else {
+                throw FfiSyncError.Other(
+                    message: "A previous block move is still waiting for its desktop. Switch back before starting another move."
+                )
+            }
+            guard await retryPendingRelocation() else {
+                throw FfiSyncError.Other(
+                    message: "A previous block move is still waiting for the desktop. Reconnect before starting another move."
+                )
+            }
+        }
+
+        if pendingRelocation != nil, !hubMode {
+            throw FfiSyncError.Other(
+                message: "A saved block move is still waiting for its desktop. Switch back before starting another move."
+            )
+        }
+
+        guard !relocationDeliveryInFlight else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: request.moveId,
+                message: "This move is already being delivered. Retry the same move after it finishes."
+            )
+        }
+        relocationDeliveryInFlight = true
+        defer { finishRelocationDelivery() }
+        guard let relocationLease = await relayOperationAdmission.acquireWhenIdle(.relocation) else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: request.moveId,
+                message: "The move was cancelled before its local transaction could start. Retry the same move."
+            )
+        }
+        defer { finishRelayOperation(relocationLease) }
+        guard let engineExclusiveLease = engineOperationAdmission.closeForExclusiveAccess() else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: request.moveId,
+                message: "Another local transaction is still closing. Retry this exact move."
+            )
+        }
+        defer { finishExclusiveEngineAccess(engineExclusiveLease) }
+        await engineOperationAdmission.waitUntilExclusiveAccessReady(engineExclusiveLease)
+
+        guard hubMode else {
+            return try await relocateSubtree(request).notes.map(\.slug)
+        }
+
+        if pendingRelocation == nil {
+            guard let liveHubIdentity else {
+                throw FfiSyncError.Other(message: "No live desktop sync destination is configured.")
+            }
+            let delivery = PendingRelocationDelivery(
+                hubIdentity: liveHubIdentity,
+                request: request,
+                prepared: nil,
+                engineScope: activeEngineScope
+            )
+            do {
+                try relocationOutboxStore.save(delivery)
+                pendingRelocation = delivery
+            } catch {
+                throw FfiSyncError.Other(
+                    message: "The move could not be queued safely: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        do {
+            return try await deliverPendingRelocation()
+        } catch let relocationError as FfiSyncError {
+            if Self.isTerminalRelocationError(relocationError) {
+                do {
+                    try clearPendingRelocation()
+                } catch {
+                    scheduleRelocationRetry()
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: request.moveId,
+                        message: "The desktop rejected this move, but its saved delivery record could not be cleared. Retry this exact move."
+                    )
+                }
+                throw relocationError
+            }
+            switch relocationError {
+            case .RelocationRecoveryRequired:
+                scheduleRelocationRetry()
+                throw relocationError
+            default:
+                scheduleRelocationRetry()
+                throw FfiSyncError.RelocationRecoveryRequired(
+                    moveId: request.moveId,
+                    message: "The move is saved locally but is still waiting for the desktop. Retry this exact move."
+                )
+            }
+        } catch {
+            scheduleRelocationRetry()
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: request.moveId,
+                message: "The move is saved locally but is still waiting for the desktop. Retry this exact move."
+            )
+        }
+    }
+
+    @discardableResult
+    func retryPendingRelocation() async -> Bool {
+        guard hubMode, pendingRelocation != nil else { return pendingRelocation == nil }
+        guard !relocationDeliveryInFlight else { return false }
+        relocationDeliveryInFlight = true
+        defer { finishRelocationDelivery() }
+        guard let relocationLease = await relayOperationAdmission.acquireWhenIdle(.relocation) else {
+            return false
+        }
+        defer { finishRelayOperation(relocationLease) }
+        guard let engineExclusiveLease = engineOperationAdmission.closeForExclusiveAccess() else {
+            return false
+        }
+        defer { finishExclusiveEngineAccess(engineExclusiveLease) }
+        await engineOperationAdmission.waitUntilExclusiveAccessReady(engineExclusiveLease)
+
+        do {
+            let changed = try await deliverPendingRelocation()
+            if !changed.isEmpty { onAppliedChanges?() }
+            lastError = nil
+            return true
+        } catch let relocationError as FfiSyncError {
+            if Self.isTerminalRelocationError(relocationError) {
+                do {
+                    try clearPendingRelocation()
+                    lastError = relocationError.localizedDescription
+                    return true
+                } catch {
+                    lastError = "A rejected saved block move could not be cleared: \(error.localizedDescription)"
+                    scheduleRelocationRetry()
+                    return false
+                }
+            }
+            lastError = relocationError.localizedDescription
+            scheduleRelocationRetry()
+            return false
+        } catch {
+            lastError = error.localizedDescription
+            scheduleRelocationRetry()
+            return false
+        }
+    }
+
+    var hasPendingRelocation: Bool {
+        pendingRelocation != nil
+    }
+
+    private func deliverPendingRelocation() async throws -> [String] {
+        guard var delivery = pendingRelocation else { return [] }
+        guard let deliveryScope = delivery.engineScope else {
+            // Build 78 did not persist the physical group namespace. A URL,
+            // profile, and path can all be reused after the mosaic at that
+            // path is replaced, so adopting this frame into the active scope
+            // would be a fail-open cross-group mutation. Clear it as a
+            // terminal conflict and require the user to issue a fresh move.
+            throw FfiSyncError.RelocationConflict(
+                message: "A block move saved by an older build cannot be matched safely to this mosaic. It was not replayed; retry the move."
+            )
+        }
+        guard delivery.hubIdentity == liveHubIdentity else {
+            throw FfiSyncError.Other(
+                message: "This block move belongs to another mosaic. Switch back to its desktop before retrying."
+            )
+        }
+        if deliveryScope != activeEngineScope {
+            throw FfiSyncError.Other(
+                message: "This block move belongs to another local mosaic. Switch back before retrying."
+            )
+        }
+
+        let prepared: PreparedDeltaFrameRecord
+        if let staged = delivery.prepared {
+            prepared = staged.prepared
+        } else {
+            let outcome: BlockRelocationOutcomeRecord
+            do {
+                outcome = try await relocateSubtree(
+                    delivery.request,
+                    requiredHubIdentity: delivery.hubIdentity
+                )
+            } catch let error as FfiSyncError {
+                switch error {
+                case .RelocationRejected, .RelocationConflict:
+                    throw error
+                case .RelocationRecoveryRequired:
+                    throw error
+                default:
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: delivery.request.moveId,
+                        message: "The move may already be saved locally. Retry this exact move."
+                    )
+                }
+            }
+
+            do {
+                guard delivery.hubIdentity == liveHubIdentity else {
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: delivery.request.moveId,
+                        message: "The active mosaic changed before this move's sync frame could be prepared. Switch back and retry the exact move."
+                    )
+                }
+                guard let frame = try await prepareRelocationDeltaFrame(outcome) else {
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: delivery.request.moveId,
+                        message: "The move is saved locally but its sync frame could not be prepared. Retry this exact move."
+                    )
+                }
+                guard delivery.hubIdentity == liveHubIdentity else {
+                    throw FfiSyncError.RelocationRecoveryRequired(
+                        moveId: delivery.request.moveId,
+                        message: "The active mosaic changed while this move's sync frame was being prepared. Switch back and retry the exact move."
+                    )
+                }
+                prepared = frame
+                delivery.prepared = PendingRelocationFrame(frame)
+                try relocationOutboxStore.save(delivery)
+                pendingRelocation = delivery
+            } catch let error as FfiSyncError {
+                if case .RelocationRecoveryRequired = error { throw error }
+                throw FfiSyncError.RelocationRecoveryRequired(
+                    moveId: delivery.request.moveId,
+                    message: "The move is saved locally but its sync frame could not be prepared. Retry this exact move."
+                )
+            } catch {
+                throw FfiSyncError.RelocationRecoveryRequired(
+                    moveId: delivery.request.moveId,
+                    message: "The move is saved locally but its sync frame could not be persisted. Retry this exact move."
+                )
+            }
+        }
+
+        guard delivery.hubIdentity == liveHubIdentity else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: delivery.request.moveId,
+                message: "The active mosaic changed while preparing this move. Switch back and retry the exact move."
+            )
+        }
+        guard let liveDeltaSender,
+              await liveDeltaSender(prepared.frame, delivery.hubIdentity) else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: delivery.request.moveId,
+                message: "The move is saved locally but could not reach the desktop. Reconnect and retry this exact move."
+            )
+        }
+        guard delivery.hubIdentity == liveHubIdentity else {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: delivery.request.moveId,
+                message: "The active mosaic changed while delivering this move. Switch back and retry the exact move."
+            )
+        }
+
+        await commitPushedDelta(prepared)
+        do {
+            try clearPendingRelocation()
+        } catch {
+            throw FfiSyncError.RelocationRecoveryRequired(
+                moveId: delivery.request.moveId,
+                message: "The desktop confirmed the move, but local delivery cleanup failed. Retry this exact move."
+            )
+        }
+        return [delivery.request.sourceSlug, delivery.request.destinationSlug]
+    }
+
+    static func clearPendingRelocationState(
+        _ pending: inout PendingRelocationDelivery?,
+        removePersistedState: () throws -> Void
+    ) throws {
+        try removePersistedState()
+        pending = nil
+    }
+
+    static func isTerminalRelocationError(_ error: FfiSyncError) -> Bool {
+        switch error {
+        case .RelocationRejected, .RelocationConflict:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func clearPendingRelocation() throws {
+        let store = relocationOutboxStore
+        try Self.clearPendingRelocationState(&pendingRelocation) {
+            try store.clear()
+        }
+        relocationOutboxLoadError = nil
+        relocationRetryTask?.cancel()
+        relocationRetryTask = nil
+        relocationRetryDelaySeconds = 2
+    }
+
+    private func scheduleRelocationRetry() {
+        guard pendingRelocation != nil, relocationRetryTask == nil else { return }
+        let delay = relocationRetryDelaySeconds
+        relocationRetryDelaySeconds = min(relocationRetryDelaySeconds * 2, 32)
+        relocationRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.relocationRetryTask = nil
+            _ = await self.retryPendingRelocation()
+        }
+    }
+
+    static func hubIdentity(
+        serverURL: String,
+        profileID: UUID?,
+        mosaicPath: String?,
+        groupIdHex: String? = nil
+    ) -> String {
+        let url = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        let legacy = "\(url)|\(profileID?.uuidString.lowercased() ?? "legacy")|\(mosaicPath ?? "")"
+        guard let groupIdHex else { return legacy }
+        return "\(legacy)|\(groupIdHex.lowercased())"
+    }
+
+    /// Prepare one destination-first live frame for every note changed by a
+    /// relocation. Each note exports from the transaction's exact pre-version,
+    /// and the returned versions are the only baselines safe to commit after
+    /// the frame is confirmed sent.
+    func prepareRelocationDeltaFrame(
+        _ outcome: BlockRelocationOutcomeRecord
+    ) async throws -> PreparedDeltaFrameRecord? {
+        try await openEngineIfNeeded()
+        guard let engine else {
+            throw FfiSyncError.Other(message: "engine open failed")
+        }
+        let requests = outcome.notes
+            .reversed()
+            .filter(\.changed)
+            .map {
+                NoteDeltaRequestRecord(
+                    slug: $0.slug,
+                    sinceVersion: $0.preVersion
+                )
+            }
+        guard !requests.isEmpty else { return nil }
+        return try await engine.prepareDeltaFrame(requests: requests)
     }
 
     /// Fold a `tickOutbound` outcome into the published status (audit A7).
@@ -683,7 +1810,54 @@ final class RelayTicker: ObservableObject {
         blockIdHex: String,
         utf16Offset: Int,
         utf16DeleteLen: Int,
-        insert: String
+        insert: String,
+        requiredSession: EngineSessionToken? = nil
+    ) async {
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: requiredSession
+        ) else {
+            return
+        }
+        defer { finishEngineOperation() }
+        await spliceAndPushUnderLease(
+            slug: slug,
+            blockIdHex: blockIdHex,
+            utf16Offset: utf16Offset,
+            utf16DeleteLen: utf16DeleteLen,
+            insert: insert,
+            session: session
+        )
+    }
+
+    /// Synchronous reservation companion to `enqueueRecordAndPush`; closes
+    /// the same pre-task activation window for character splices.
+    func enqueueSpliceAndPush(
+        slug: String,
+        blockIdHex: String,
+        utf16Offset: Int,
+        utf16DeleteLen: Int,
+        insert: String,
+        requiredSession: EngineSessionToken? = nil
+    ) {
+        enqueueEngineOperation(requiredSession: requiredSession) { [self] session in
+            await spliceAndPushUnderLease(
+                slug: slug,
+                blockIdHex: blockIdHex,
+                utf16Offset: utf16Offset,
+                utf16DeleteLen: utf16DeleteLen,
+                insert: insert,
+                session: session
+            )
+        }
+    }
+
+    private func spliceAndPushUnderLease(
+        slug: String,
+        blockIdHex: String,
+        utf16Offset: Int,
+        utf16DeleteLen: Int,
+        insert: String,
+        session: EngineSessionToken
     ) async {
         do {
             try await openEngineIfNeeded()
@@ -697,7 +1871,11 @@ final class RelayTicker: ObservableObject {
         // nodes. No-op once resident; best-effort otherwise. (A splice is
         // an in-place edit — the block node must already exist, which the
         // base guarantees for a note the user can see.)
-        await bootstrapNoteIfNeeded(slug: slug)
+        await bootstrapNoteIfNeeded(
+            slug: slug,
+            requiredHubIdentity: session.hubIdentity
+        )
+        guard isCurrentEngineSession(session) else { return }
         // Part A: seed the per-note push floor BEFORE recording this edit
         // so the first delta exports `updates(floor)` = this edit only,
         // not a full snapshot. Seed only when absent (don't regress a
@@ -726,7 +1904,15 @@ final class RelayTicker: ObservableObject {
         // Engine durability is guaranteed. In hub mode the live `/ws`
         // socket owns delivery (the caller pushes a delta after this
         // returns), so the relay coordinator must NOT also drain this op.
-        if hubMode { return }
+        if session.hubMode {
+            await deliverHubDelta(slug: slug, session: session)
+            return
+        }
+        guard let relayLease = tryAcquireImmediateOutbound() else {
+            lastSpliceDiag += " queued"
+            return
+        }
+        defer { finishRelayOperation(relayLease) }
         invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
@@ -769,8 +1955,15 @@ final class RelayTicker: ObservableObject {
         slug: String,
         bidHex: String,
         key: String,
-        value: String
+        value: String,
+        requiredSession: EngineSessionToken? = nil
     ) async -> Bool {
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: requiredSession
+        ) else {
+            return false
+        }
+        defer { finishEngineOperation() }
         do {
             try await openEngineIfNeeded()
         } catch {
@@ -781,7 +1974,11 @@ final class RelayTicker: ObservableObject {
         // Part D: shared base before the first local edit (no-op once
         // resident) — the block node must exist for the property op to
         // address it, which the base guarantees for a note the user sees.
-        await bootstrapNoteIfNeeded(slug: slug)
+        await bootstrapNoteIfNeeded(
+            slug: slug,
+            requiredHubIdentity: session.hubIdentity
+        )
+        guard isCurrentEngineSession(session) else { return false }
         // Part A: seed the per-note push floor BEFORE recording so the
         // next delta exports only this edit, never a full snapshot.
         if lastPushedVV[slug] == nil {
@@ -806,7 +2003,14 @@ final class RelayTicker: ObservableObject {
         // Engine durability is guaranteed. In hub mode the live `/ws`
         // socket owns delivery (the caller pushes the delta after this
         // returns), so the relay coordinator must NOT also drain this op.
-        if hubMode { return true }
+        if session.hubMode {
+            await deliverHubDelta(slug: slug, session: session)
+            return true
+        }
+        guard let relayLease = tryAcquireImmediateOutbound() else {
+            return true
+        }
+        defer { finishRelayOperation(relayLease) }
         invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
@@ -865,6 +2069,10 @@ final class RelayTicker: ObservableObject {
     /// snapshot bootstrap when a pairing exists). Returns nil when the
     /// engine can't open.
     func viewsList() async -> [ViewRecord]? {
+        guard await beginEngineOperationWhenAvailable(requiredSession: nil) != nil else {
+            return nil
+        }
+        defer { finishEngineOperation() }
         do {
             try await openEngineIfNeeded()
         } catch {
@@ -894,6 +2102,10 @@ final class RelayTicker: ObservableObject {
     /// including notes never materialized to local disk on this device.
     /// Powers `[[` link autocomplete. nil when the engine can't open.
     func indexEntries() async -> [IndexEntryRecord]? {
+        guard await beginEngineOperationWhenAvailable(requiredSession: nil) != nil else {
+            return nil
+        }
+        defer { finishEngineOperation() }
         do {
             try await openEngineIfNeeded()
         } catch {
@@ -908,7 +2120,14 @@ final class RelayTicker: ObservableObject {
     /// op to the relay so other devices converge. Throws when the engine
     /// can't open or the upsert is rejected — the editor surfaces the
     /// message instead of pretending the save landed.
-    func viewsUpsertAndPush(_ record: ViewRecord) async throws {
+    func viewsUpsertAndPush(
+        _ record: ViewRecord,
+        requiredSession: EngineSessionToken? = nil
+    ) async throws {
+        guard await beginEngineOperationWhenAvailable(requiredSession: requiredSession) != nil else {
+            throw FfiSyncError.Other(message: "mosaic activation changed before the view save began")
+        }
+        defer { finishEngineOperation() }
         try await openEngineIfNeeded()
         guard let engine else {
             throw FfiSyncError.Other(message: "engine open failed")
@@ -920,7 +2139,14 @@ final class RelayTicker: ObservableObject {
     /// Delete a saved view and drain the op. The engine's builtin guard
     /// surfaces as a thrown `FfiSyncError` (builtins are editable, never
     /// deletable); an already-gone id is an idempotent no-op.
-    func viewsDeleteAndPush(viewId: String) async throws {
+    func viewsDeleteAndPush(
+        viewId: String,
+        requiredSession: EngineSessionToken? = nil
+    ) async throws {
+        guard await beginEngineOperationWhenAvailable(requiredSession: requiredSession) != nil else {
+            throw FfiSyncError.Other(message: "mosaic activation changed before the view delete began")
+        }
+        defer { finishEngineOperation() }
         try await openEngineIfNeeded()
         guard let engine else {
             throw FfiSyncError.Other(message: "engine open failed")
@@ -937,6 +2163,10 @@ final class RelayTicker: ObservableObject {
     /// tick loop drains the op later.
     private func drainViewsWrite() async {
         if hubMode { return }
+        guard let relayLease = tryAcquireImmediateOutbound() else {
+            return
+        }
+        defer { finishRelayOperation(relayLease) }
         invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
@@ -956,6 +2186,10 @@ final class RelayTicker: ObservableObject {
     /// and reconciles its `UITextView`. Returns nil if no engine is open or
     /// the note/block is absent.
     func readBlockText(slug: String, blockIdHex: String) async -> String? {
+        guard await beginEngineOperationWhenAvailable(requiredSession: nil) != nil else {
+            return nil
+        }
+        defer { finishEngineOperation() }
         guard let engine else { return nil }
         return try? await engine.readBlockText(slug: slug, blockIdHex: blockIdHex)
     }
@@ -970,7 +2204,27 @@ final class RelayTicker: ObservableObject {
     /// delta is NOT re-broadcast — the server owns fan-out; the phone
     /// only applies what it receives. Returns whether ≥1 update applied.
     @discardableResult
-    func applyInboundDelta(_ frame: Data) async -> Bool {
+    func applyInboundDelta(
+        _ frame: Data,
+        requiredHubIdentity: String? = nil
+    ) async -> Bool {
+        let requiredSession: EngineSessionToken?
+        if let requiredHubIdentity {
+            let current = engineSessionToken
+            guard current.hubMode,
+                  current.hubIdentity == requiredHubIdentity
+            else { return false }
+            requiredSession = current
+        } else {
+            requiredSession = nil
+        }
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: requiredSession
+        ) else {
+            return false
+        }
+        defer { finishEngineOperation() }
+        if session.hubMode, requiredHubIdentity == nil { return false }
         do {
             try await openEngineIfNeeded()
         } catch {
@@ -1006,7 +2260,10 @@ final class RelayTicker: ObservableObject {
             if !forcedCatchupInFlight.contains(slug) {
                 forcedCatchupInFlight.insert(slug)
                 lastCatchupAt[slug] = nil
-                await bootstrapNoteIfNeeded(slug: slug)
+                await bootstrapNoteIfNeeded(
+                    slug: slug,
+                    requiredHubIdentity: session.hubIdentity
+                )
                 forcedCatchupInFlight.remove(slug)
             }
         }
@@ -1056,7 +2313,7 @@ final class RelayTicker: ObservableObject {
     /// (`LiveSyncSocket.sendDelta` returns `true`). A dropped send leaves the
     /// baseline back, so the next produce re-includes the dropped ops — that's
     /// the dropped-frame self-heal that full snapshots used to give for free.
-    func produceDeltaFrame(slug: String) async -> Data? {
+    func produceDeltaFrame(slug: String) async -> PreparedDeltaFrameRecord? {
         do {
             try await openEngineIfNeeded()
         } catch {
@@ -1066,7 +2323,9 @@ final class RelayTicker: ObservableObject {
         guard let engine else { return nil }
         let sinceVv = lastPushedVV[slug]
         do {
-            return try await engine.produceNoteDelta(slug: slug, sinceVv: sinceVv)
+            return try await engine.prepareDeltaFrame(requests: [
+                NoteDeltaRequestRecord(slug: slug, sinceVersion: sinceVv)
+            ])
         } catch {
             lastError = error.localizedDescription
             return nil
@@ -1075,15 +2334,28 @@ final class RelayTicker: ObservableObject {
 
     /// Advance the per-note delta baseline AFTER a frame produced by
     /// [`produceDeltaFrame(slug:)`] was confirmed sent over the live WS.
-    /// Reads the post-edit VV fresh from the engine (the caller recorded the
-    /// edit before producing), so the NEXT frame is a delta relative to this
-    /// confirmed push. Call this ONLY when `sendDelta` returned `true`; if the
-    /// send was dropped, do NOT call it, so the dropped ops re-ship next time.
-    func commitPushedDelta(slug: String) async {
-        guard let engine else { return }
-        if let vv = await engine.noteVersion(slug: slug) {
-            lastPushedVV[slug] = vv
+    /// Commits only the exact per-note versions captured with `prepared`.
+    /// Never re-reads the engine after the network await: a concurrent edit
+    /// may already be newer than this frame and must remain pending.
+    func commitPushedDelta(_ prepared: PreparedDeltaFrameRecord) async {
+        lastPushedVV = Self.baselinesAfterDelivery(
+            existing: lastPushedVV,
+            prepared: prepared,
+            delivered: true
+        )
+    }
+
+    static func baselinesAfterDelivery(
+        existing: [String: Data],
+        prepared: PreparedDeltaFrameRecord,
+        delivered: Bool
+    ) -> [String: Data] {
+        guard delivered else { return existing }
+        var updated = existing
+        for note in prepared.notes {
+            updated[note.slug] = note.version
         }
+        return updated
     }
 
     func start() {
@@ -1114,6 +2386,66 @@ final class RelayTicker: ObservableObject {
         start()
     }
 
+    /// Suspend the foreground transport before scheduling the final relay
+    /// flush. A hub session becomes relay-eligible only while its socket is
+    /// suspended, and only against the already-active group scope.
+    static func canSuspendForBackgroundRelay(
+        relocationInFlight: Bool,
+        hasPendingRelocation: Bool
+    ) -> Bool {
+        !relocationInFlight && !hasPendingRelocation
+    }
+
+    static func shouldCommitBackgroundTransition(
+        issuedGeneration: UInt64,
+        currentGeneration: UInt64
+    ) -> Bool {
+        issuedGeneration == currentGeneration
+    }
+
+    func suspendForBackground() {
+        stop()
+        guard Self.canSuspendForBackgroundRelay(
+            relocationInFlight: relocationDeliveryInFlight,
+            hasPendingRelocation: pendingRelocation != nil
+        ) else { return }
+        guard suspendedHubLease == nil,
+              hubMode,
+              let liveHubIdentity
+        else { return }
+        suspendedHubLease = SuspendedHubLease(
+            scope: activeEngineScope,
+            hubIdentity: liveHubIdentity
+        )
+        hubMode = false
+    }
+
+    /// Wait for any APNs/BG relay operation to release the shared engine,
+    /// then restore foreground hub routing before reconnecting the socket.
+    func resumeFromBackground() async {
+        backgroundTransitionGeneration &+= 1
+        guard let lease = suspendedHubLease else { return }
+        while backgroundFlushesInFlight > 0
+            || relayOperationAdmission.isBusy
+            || engineOperationsInFlight > 0 {
+            if backgroundFlushesInFlight > 0 {
+                await waitUntilBackgroundFlushesFinish()
+            }
+            if relayOperationAdmission.isBusy {
+                await relayOperationAdmission.waitUntilIdle()
+            }
+            if engineOperationsInFlight > 0 {
+                await waitUntilEngineIsIdle()
+            }
+        }
+        suspendedHubLease = nil
+        guard !hubMode,
+              activeEngineScope == lease.scope,
+              liveHubIdentity == lease.hubIdentity
+        else { return }
+        hubMode = true
+    }
+
     /// Drain the outbound queue to the relay BEFORE iOS suspends the app —
     /// call this from the shell's scenePhase → `.background` hook instead of
     /// a bare `stop()`. Stops the tick loop (so no concurrent ticks), then
@@ -1128,6 +2460,9 @@ final class RelayTicker: ObservableObject {
     /// closes the gap to the relay so OTHER devices can pull it.
     func flushOnBackground() {
         stop()
+        backgroundTransitionGeneration &+= 1
+        let transitionGeneration = backgroundTransitionGeneration
+        beginBackgroundFlush()
         let app = UIApplication.shared
         var bgTask: UIBackgroundTaskIdentifier = .invalid
         bgTask = app.beginBackgroundTask(withName: "relay-flush-on-background") {
@@ -1138,11 +2473,25 @@ final class RelayTicker: ObservableObject {
             }
         }
         Task { [weak self] in
-            _ = await self?.flushPendingOutbound()
-            if bgTask != .invalid {
-                app.endBackgroundTask(bgTask)
-                bgTask = .invalid
+            defer {
+                self?.finishBackgroundFlush()
+                if bgTask != .invalid {
+                    app.endBackgroundTask(bgTask)
+                    bgTask = .invalid
+                }
             }
+            guard let self else { return }
+            await self.waitUntilRelocationDeliveryFinishes()
+            guard Self.shouldCommitBackgroundTransition(
+                issuedGeneration: transitionGeneration,
+                currentGeneration: self.backgroundTransitionGeneration
+            ) else { return }
+            guard Self.canSuspendForBackgroundRelay(
+                relocationInFlight: self.relocationDeliveryInFlight,
+                hasPendingRelocation: self.pendingRelocation != nil
+            ) else { return }
+            self.suspendForBackground()
+            _ = await self.flushPendingOutbound()
         }
     }
 
@@ -1193,13 +2542,28 @@ final class RelayTicker: ObservableObject {
     /// nothing new is direct evidence the loop itself had stopped making
     /// progress.
     private func tickOnce() async {
+        guard pendingRelocation == nil else { return }
+        guard let relayLease = relayOperationAdmission.tryAcquire(.tick) else {
+            return
+        }
         tickGeneration &+= 1
         let myGeneration = tickGeneration
-        let finishedInTime = await Self.raceAgainstTimeout(seconds: Self.tickTimeoutSeconds) { [weak self] in
-            await self?.runSingleTick(generation: myGeneration)
+        let finishedInTime = await Self.raceAgainstTimeout(seconds: Self.tickTimeoutSeconds) {
+            await self.runSingleTick(
+                generation: myGeneration,
+                relayOperationLease: relayLease
+            )
         }
         guard !finishedInTime else { return }
+        // The timeout continuation and work completion can become runnable
+        // together. If the work already released this exact lease, its real
+        // outcome won; never let a stale timeout mutate a newer operation.
+        guard relayOperationAdmission.isActive(relayLease) else { return }
         guard Self.shouldCommitTick(issuedGeneration: myGeneration, currentGeneration: tickGeneration) else { return }
+        // The admitted work is deliberately non-cancelling and still owns
+        // the relay lease. Supersede its generation now so a late finish can
+        // release that lease but cannot overwrite this timeout outcome.
+        tickGeneration &+= 1
         lastError = "sync tick exceeded \(Self.tickTimeoutSeconds)s without finishing — abandoned so the loop keeps going (tesela-96y)"
         consecutiveErrors = consecutiveErrors &+ 1
         // The abandoned tick may still be mid-flight against the SAME
@@ -1216,7 +2580,15 @@ final class RelayTicker: ObservableObject {
     /// `shouldCommitTick(issuedGeneration: generation, ...)` so a result
     /// computed under a superseded generation is silently discarded
     /// instead of racing a newer tick's writes.
-    private func runSingleTick(generation: UInt64) async {
+    private func runSingleTick(
+        generation: UInt64,
+        relayOperationLease: RelayOperationAdmission.Lease
+    ) async {
+        defer { finishRelayOperation(relayOperationLease) }
+        await runSingleTickUnderRelayAdmission(generation: generation)
+    }
+
+    private func runSingleTickUnderRelayAdmission(generation: UInt64) async {
         // Hub mode: the live `/ws` socket is the sync hub; the relay poll
         // loop is gated off (Part E2). The runLoop keeps sleeping/waking;
         // each wake is a no-op until `hubMode` flips back to false.
@@ -1224,9 +2596,12 @@ final class RelayTicker: ObservableObject {
         invalidateCoordinatorIfRepaired()
         do {
             if coordinator == nil {
-                try await ensureCoordinator()
+                try await ensureCoordinator(requiredTickGeneration: generation)
             }
-            guard let coordinator else { return }
+            guard let coordinator,
+                  let tickEngine = engine,
+                  let tickRelay = relay
+            else { return }
             // Capture the scope WITH the coordinator: a re-pair completing
             // during the awaits below swaps self.cursorScope to the new
             // identity, and persisting the OLD group's cursor under the NEW
@@ -1280,13 +2655,18 @@ final class RelayTicker: ObservableObject {
             // applies that failed past the retry budget. A delta can never
             // heal these; import the relay's deposited snapshot for exactly
             // those notes or they silently freeze.
-            if !inbound.needsCatchupNoteIdsHex.isEmpty, let relay, let engine {
+            if !inbound.needsCatchupNoteIdsHex.isEmpty {
                 await catchUpFromRelaySnapshots(
                     idsHex: inbound.needsCatchupNoteIdsHex,
-                    relay: relay,
-                    engine: engine
+                    relay: tickRelay,
+                    engine: tickEngine,
+                    generation: generation
                 )
             }
+            guard Self.shouldCommitTick(
+                issuedGeneration: generation,
+                currentGeneration: tickGeneration
+            ) else { return }
             // Stranded-behind-compaction convergence fix (mirrors the desktop
             // `tick()`): an empty/zero-applied poll is NOT proof we're caught
             // up. When the relay's GC watermark (`compactionSeq`) is past our
@@ -1298,26 +2678,44 @@ final class RelayTicker: ObservableObject {
                 applied: Int(inbound.applied),
                 compactionSeq: inbound.compactionSeq,
                 cursor: inbound.newCursorSeq
-            ), let relay, let engine, let scope = tickScope {
+            ), let scope = tickScope {
                 await runSnapshotBootstrap(
-                    engine: engine,
-                    relay: relay,
+                    engine: tickEngine,
+                    relay: tickRelay,
                     coordinator: coordinator,
-                    scope: scope
+                    scope: scope,
+                    generation: generation
                 )
             }
+            guard Self.shouldCommitTick(
+                issuedGeneration: generation,
+                currentGeneration: tickGeneration
+            ) else { return }
             // Sync durability P3b: once we have a relay handle + an APNs
             // device token (captured by AppDelegate at launch), register it
             // so the relay can silent-push our other devices on deposit.
             // Idempotent + best-effort; the guard makes this a no-op on every
             // tick after the first successful registration.
-            await maybeRegisterApnsToken()
+            await maybeRegisterApnsToken(
+                relay: tickRelay,
+                scope: tickScope,
+                generation: generation
+            )
+            guard Self.shouldCommitTick(
+                issuedGeneration: generation,
+                currentGeneration: tickGeneration
+            ) else { return }
             // tesela-zpr: mirror the server's snapshot-deposit cadence gate
             // so iOS contributes its resident notes to the relay's snapshot
             // pool too (durability — see `depositSnapshotsIfDue`'s doc
             // comment). Best-effort; a failure here doesn't fail the tick.
-            if let relay, let engine, let scope = tickScope {
-                await depositSnapshotsIfDue(relay: relay, engine: engine, scope: scope)
+            if let scope = tickScope {
+                await depositSnapshotsIfDue(
+                    relay: tickRelay,
+                    engine: tickEngine,
+                    scope: scope,
+                    generation: generation
+                )
             }
         } catch let err as FfiSyncError {
             guard Self.shouldCommitTick(issuedGeneration: generation, currentGeneration: tickGeneration) else { return }
@@ -1336,13 +2734,99 @@ final class RelayTicker: ObservableObject {
     /// the engine + the MockMosaicService local-fallback both read
     /// from here so iOS-authored writes are visible to local reads
     /// even before any pairing has happened.
-    private static func mosaicRootURL() -> URL {
-        let docs = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        )[0]
-        return docs.appendingPathComponent("sync-ios-mosaic")
+    /// Select one physical mosaic's local CRDT namespace. Call only after the
+    /// activation barrier is clear. Dropping the old handle before copying or
+    /// opening prevents a live engine from writing into a directory while it
+    /// is being adopted by the canonical scope.
+    func activateEngine(
+        scope: MosaicEngineScope,
+        relayOperationLease: RelayOperationAdmission.Lease? = nil
+    ) async throws {
+        guard relayOperationAdmission.permits(relayOperationLease) else {
+            throw FfiSyncError.Other(
+                message: "The previous mosaic is still finishing a relay operation."
+            )
+        }
+        if activeEngineScope == scope, engine != nil { return }
+        guard engineOperationsInFlight == 0,
+              !engineActivationInFlight,
+              !relocationDeliveryInFlight,
+              hubBootstrapInFlight == 0
+        else {
+            throw FfiSyncError.Other(
+                message: "The previous mosaic is still finishing a local operation."
+            )
+        }
+        engineActivationInFlight = true
+        defer {
+            engineActivationInFlight = false
+            resumeHubActivationWaitersIfSafe()
+        }
+
+        engineSessionGeneration &+= 1
+        tickGeneration &+= 1
+        dropCoordinator()
+        engine = nil
+        lastPushedVV = [:]
+        lastCatchupAt = [:]
+        forcedCatchupInFlight = []
+        viewsSeeded = false
+        relayURL = nil
+        lastRegisteredApnsKey = nil
+        lastApplied = 0
+        lastSent = 0
+        inboundCursorSeq = 0
+        lastSuccessfulPollAt = nil
+        lastAppliedAt = nil
+        lastDepositAt = nil
+        lastDepositError = nil
+        relocationRetryTask?.cancel()
+        relocationRetryTask = nil
+        relocationRetryDelaySeconds = 2
+        activeEngineScope = scope
+
+        try await prepareStorageForActiveScope()
+        try await openEngineIfNeeded()
     }
+
+    private func prepareStorageForActiveScope() async throws {
+        try await Self.prepareStorage(for: activeEngineScope)
+    }
+
+    static func prepareStorage(
+        for scope: MosaicEngineScope,
+        documentsURL: URL? = nil
+    ) async throws {
+        let root = scope.rootURL(documentsURL: documentsURL)
+        guard scope != .legacy else {
+            try FileManager.default.createDirectory(
+                at: root,
+                withIntermediateDirectories: true
+            )
+            return
+        }
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: root.path) {
+            return
+        }
+        precondition(!Self.automaticallyAdoptsLegacyEngineStore)
+        try await Task.detached(priority: .utility) {
+            // A build-78 engine root has no durable group provenance. A
+            // current pairing proves the destination, not which group wrote
+            // those legacy bytes, so automatic adoption can contaminate a
+            // replacement profile. Leave the legacy root untouched as a
+            // recovery artifact and bootstrap this verified scope cleanly.
+            try FileManager.default.createDirectory(
+                at: root,
+                withIntermediateDirectories: true
+            )
+        }.value
+    }
+
+    /// The unscoped pre-build-79 root is retained only for explicit recovery;
+    /// automatic adoption cannot prove its authoring group.
+    static let automaticallyAdoptsLegacyEngineStore = false
 
     /// Open the local engine if not already open. **Network-free** —
     /// only needs SQLite + a stable device id, both of which are
@@ -1357,7 +2841,7 @@ final class RelayTicker: ObservableObject {
     /// flight local writes.
     func openEngineIfNeeded() async throws {
         if engine != nil { return }
-        let mosaicRoot = Self.mosaicRootURL()
+        let mosaicRoot = activeEngineScope.rootURL()
         try? FileManager.default.createDirectory(
             at: mosaicRoot,
             withIntermediateDirectories: true
@@ -1384,7 +2868,7 @@ final class RelayTicker: ObservableObject {
     /// unreachable: once we've paired once on any network we can
     /// reach Mac on, we can keep talking to the relay forever
     /// regardless of Mac's HTTP reachability.
-    private func ensureCoordinator() async throws {
+    private func ensureCoordinator(requiredTickGeneration: UInt64? = nil) async throws {
         guard let mosaic else {
             // The ticker outran the host's `.task` setup — scenePhase
             // becoming .active fires `start()` before AppShell's
@@ -1398,6 +2882,7 @@ final class RelayTicker: ObservableObject {
             // fresh tick the moment the host wires us up.
             return
         }
+        let expectedScope = activeEngineScope
         try await openEngineIfNeeded()
         guard let engine else {
             throw FfiSyncError.Other(message: "engine open failed")
@@ -1416,7 +2901,12 @@ final class RelayTicker: ObservableObject {
                 let server = try await mosaic.fetchPairingCode()
                 codeStr = server.code
             }
-            try await buildCoordinator(engine: engine, codeStr: codeStr)
+            try await buildCoordinator(
+                engine: engine,
+                codeStr: codeStr,
+                expectedScope: expectedScope,
+                requiredTickGeneration: requiredTickGeneration
+            )
             // Survived the build → cache the code for future ticks.
             if cached == nil {
                 KeychainPairingCache.save(codeStr)
@@ -1452,6 +2942,8 @@ final class RelayTicker: ObservableObject {
         switch ffi {
         case .InvalidPairingCode:
             return true
+        case .RelocationRejected, .RelocationConflict, .RelocationRecoveryRequired:
+            return false
         case .Other(let message):
             // `SyncError::Crypto` verify failures from
             // `register_or_recover`/`verify_registration` — both hijack
@@ -1484,8 +2976,19 @@ final class RelayTicker: ObservableObject {
     /// Inner half of `ensureCoordinator`: decode `codeStr`, build the
     /// relay client + coordinator, restore persisted cursors. Pure —
     /// no HTTP to Mac.
-    private func buildCoordinator(engine: SyncEngineHandle, codeStr: String) async throws {
+    private func buildCoordinator(
+        engine: SyncEngineHandle,
+        codeStr: String,
+        expectedScope: MosaicEngineScope,
+        requiredTickGeneration: UInt64?
+    ) async throws {
         let pairing = try decodePairingCode(code: codeStr)
+        let pairingScope = MosaicEngineScope(groupIdHex: pairing.groupIdHex)
+        guard pairingScope == expectedScope else {
+            throw FfiSyncError.Other(
+                message: "The cached relay pairing belongs to another mosaic. Re-pair before syncing."
+            )
+        }
         guard let relayURL = pairing.relayUrl else {
             throw FfiSyncError.Other(message: "Mac has no relay configured")
         }
@@ -1509,7 +3012,7 @@ final class RelayTicker: ObservableObject {
         // fetches the new group's ops from the start, instead of replaying
         // a stale-high cursor that silently black-holes inbound forever.
         let scope = Self.cursorScope(relayUrl: relayURL, groupIdHex: pairing.groupIdHex)
-        Self.migrateLegacyCursors(toScope: scope)
+        Self.quarantineLegacyCursors()
         if let inbound = UserDefaults.standard.object(forKey: Self.inboundCursorKey(scope: scope)) as? Int64 {
             await coordinator.setInboundCursorSeq(seq: inbound)
             inboundCursorSeq = inbound
@@ -1533,8 +3036,12 @@ final class RelayTicker: ObservableObject {
             engine: engine,
             relay: relay,
             coordinator: coordinator,
-            scope: scope
+            scope: scope,
+            generation: requiredTickGeneration
         )
+        guard activeEngineScope == expectedScope,
+              requiredTickGeneration == nil || requiredTickGeneration == tickGeneration
+        else { throw CancellationError() }
         self.relay = relay
         self.coordinator = coordinator
         self.cursorScope = scope
@@ -1570,10 +3077,12 @@ final class RelayTicker: ObservableObject {
         engine: SyncEngineHandle,
         relay: RelayClientHandle,
         coordinator: SyncCoordinator,
-        scope: String
+        scope: String,
+        generation: UInt64? = nil
     ) async {
         do {
             let snaps = try await relay.fetchSnapshots()
+            guard generation == nil || generation == tickGeneration else { return }
             if Self.shouldRunSnapshotBootstrap(
                 compactionSeq: snaps.compactionSeq,
                 inboundCursorSeq: inboundCursorSeq
@@ -1583,6 +3092,7 @@ final class RelayTicker: ObservableObject {
                 for s in snaps.snapshots {
                     do {
                         try await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                        guard generation == nil || generation == tickGeneration else { return }
                         imported += 1
                     } catch {
                         failed += 1
@@ -1597,6 +3107,7 @@ final class RelayTicker: ObservableObject {
                     // every future bootstrap a no-op. On partial failure the
                     // cursor holds, so the next rebuild/tick retries the imports.
                     await coordinator.setInboundCursorSeq(seq: snaps.compactionSeq)
+                    guard generation == nil || generation == tickGeneration else { return }
                     inboundCursorSeq = snaps.compactionSeq
                     UserDefaults.standard.set(
                         snaps.compactionSeq,
@@ -1605,31 +3116,25 @@ final class RelayTicker: ObservableObject {
                 } else {
                     lastError = "snapshot bootstrap: \(failed) of \(snaps.snapshots.count) imports failed; retrying"
                 }
-                if imported > 0 { onAppliedChanges?() }
+                guard generation == nil || generation == tickGeneration else { return }
+                if imported > 0 {
+                    lastAppliedAt = Date()
+                    onAppliedChanges?()
+                }
             }
         } catch {
             // Leave the cursor as-is; the regular poll handles the un-GC'd tail.
         }
     }
 
-    /// One-time migration (audit A5): cursors persisted under the
-    /// pre-scoping bare keys carry no identity, so they're treated as
-    /// belonging to the CURRENT pairing once (the first coordinator built
-    /// post-upgrade adopts them — in-place upgrades keep their progress)
-    /// and then re-keyed; the bare keys are removed either way.
-    static func migrateLegacyCursors(toScope scope: String, defaults: UserDefaults = .standard) {
-        if let inbound = defaults.object(forKey: legacyInboundCursorKey) as? Int64 {
-            if defaults.object(forKey: inboundCursorKey(scope: scope)) == nil {
-                defaults.set(inbound, forKey: inboundCursorKey(scope: scope))
-            }
-            defaults.removeObject(forKey: legacyInboundCursorKey)
-        }
-        if let outbound = defaults.object(forKey: legacyOutboundCursorKey) as? Int64 {
-            if defaults.object(forKey: outboundCursorKey(scope: scope)) == nil {
-                defaults.set(outbound, forKey: outboundCursorKey(scope: scope))
-            }
-            defaults.removeObject(forKey: legacyOutboundCursorKey)
-        }
+    /// Build-78 cursors were stored without relay/group provenance. The
+    /// matching unscoped engine bytes are deliberately not adopted into a
+    /// group-scoped root, so carrying these cursors forward would pair an
+    /// empty engine with stale progress and skip history. Existing scoped
+    /// cursors remain authoritative; bare keys are deletion-only quarantine.
+    static func quarantineLegacyCursors(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: legacyInboundCursorKey)
+        defaults.removeObject(forKey: legacyOutboundCursorKey)
     }
 
     /// Tear down the live coordinator when the cached pairing code no
@@ -1674,23 +3179,27 @@ final class RelayTicker: ObservableObject {
     private func catchUpFromRelaySnapshots(
         idsHex: [String],
         relay: RelayClientHandle,
-        engine: SyncEngineHandle
+        engine: SyncEngineHandle,
+        generation: UInt64
     ) async {
         let wanted = Set(idsHex.map { $0.lowercased() })
         do {
             let snaps = try await relay.fetchSnapshots()
+            guard generation == tickGeneration else { return }
             var imported = 0
             for s in snaps.snapshots {
                 let idHex = s.streamId.map { String(format: "%02x", $0) }.joined()
                 guard wanted.contains(idHex) else { continue }
                 do {
                     try await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                    guard generation == tickGeneration else { return }
                     imported += 1
                 } catch {
                     // Leave it for the next surfacing; the import is the
                     // same authoritative re-base the bootstrap uses.
                 }
             }
+            guard generation == tickGeneration else { return }
             if imported > 0 { onAppliedChanges?() }
         } catch {
             // Snapshot fetch failed (network). Best-effort: a pending
@@ -1717,12 +3226,14 @@ final class RelayTicker: ObservableObject {
     private func depositSnapshotsIfDue(
         relay: RelayClientHandle,
         engine: SyncEngineHandle,
-        scope: String
+        scope: String,
+        generation: UInt64
     ) async {
         let key = Self.snapshotDepositAtKey(scope: scope)
         let lastAt = (UserDefaults.standard.object(forKey: key) as? Double).map(Date.init(timeIntervalSince1970:))
         guard Self.shouldDepositSnapshots(lastDepositAt: lastAt, now: Date()) else { return }
         let snapshots = await engine.exportAllNoteSnapshots()
+        guard generation == tickGeneration else { return }
         guard !snapshots.isEmpty else { return }
         do {
             _ = try await relay.putSnapshotsChunked(
@@ -1730,6 +3241,7 @@ final class RelayTicker: ObservableObject {
                 snapshots: snapshots,
                 budgetBytes: Self.snapshotDepositBudgetBytes
             )
+            guard generation == tickGeneration else { return }
             // tesela-c7s F1: the deposit durably landed each note's snapshot on
             // the relay — re-anchor any STRANDED outbound cursor to its
             // snapshot-time version (forwarded verbatim from the records just
@@ -1744,11 +3256,13 @@ final class RelayTicker: ObservableObject {
             // rewound; healthy cursors are untouched (engine-side
             // `broadcast_cursor_needs_repair`).
             await engine.repairBroadcastCursorsAfterSnapshot(deposited: snapshots)
+            guard generation == tickGeneration else { return }
             let depositedAt = Date()
             UserDefaults.standard.set(depositedAt.timeIntervalSince1970, forKey: key)
             lastDepositAt = depositedAt
             lastDepositError = nil
         } catch {
+            guard generation == tickGeneration else { return }
             // Best-effort: leave the cadence stamp unset so the next tick
             // retries promptly instead of waiting out the full window.
             // Deliberately NOT swallowed silently (tesela-96y): a dedicated
@@ -1775,6 +3289,21 @@ final class RelayTicker: ObservableObject {
     /// was pending" OR "we never managed to build a coordinator" —
     /// callers use the return only as a lower bound.
     func flushPendingOutbound() async -> UInt32 {
+        guard !hubMode else { return 0 }
+        guard pendingRelocation == nil else { return 0 }
+        guard let relayLease = await relayOperationAdmission.acquireWhenIdle(.flush) else {
+            return 0
+        }
+        defer { finishRelayOperation(relayLease) }
+        guard !hubMode else { return 0 }
+        guard pendingRelocation == nil else { return 0 }
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: engineSessionToken
+        ) else {
+            return 0
+        }
+        defer { finishEngineOperation() }
+        guard isCurrentEngineSession(session) else { return 0 }
         invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
@@ -1783,6 +3312,13 @@ final class RelayTicker: ObservableObject {
         do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             noteOutboundOutcome(outcome)
+            if let relay {
+                await maybeRegisterApnsToken(
+                    relay: relay,
+                    scope: cursorScope,
+                    generation: tickGeneration
+                )
+            }
             return outcome.opsSent
         } catch {
             lastError = error.localizedDescription
@@ -1790,18 +3326,97 @@ final class RelayTicker: ObservableObject {
         }
     }
 
-    /// One-shot relay catch-up for a BACKGROUND launch (a BGProcessingTask),
-    /// when the foreground tick loop isn't running. Opens the engine +
-    /// coordinator from persisted state, then runs a full tick (drain
-    /// outbound + pull inbound) so a suspended device both DELIVERS a
-    /// stranded capture and CATCHES UP on peers' edits without being
-    /// foregrounded. Self-sufficient — safe to call from the app-level
-    /// BGTask handler with a fresh `RelayTicker()` (no shell exists on a
-    /// background launch, so there's no second engine handle to conflict).
-    /// Sync-durability Phase 2a.
-    func runBackgroundCatchup() async {
-        try? await ensureCoordinator()
-        await tickOnce()
+    /// One-shot relay catch-up for a background wake. The app uses the shared
+    /// ticker so a warm-process APNs callback cannot open a second Loro handle
+    /// on the shell's physical root. A cold launch derives the exact engine
+    /// scope directly from the cached pairing code; it does not depend on a
+    /// shell-owned `MockMosaicService` being connected.
+    func runBackgroundCatchup() async -> BackgroundCatchupOutcome {
+        guard !hubMode else { return .unavailable }
+        guard pendingRelocation == nil else { return .unavailable }
+        guard let relayLease = relayOperationAdmission.tryAcquire(.backgroundCatchup) else {
+            return .unavailable
+        }
+        defer { finishRelayOperation(relayLease) }
+        guard let code = KeychainPairingCache.load() else { return .unavailable }
+
+        let pairing: PairingCodeRecord
+        do {
+            pairing = try decodePairingCode(code: code)
+        } catch {
+            if Self.isDefinitivePairingFailure(error) {
+                KeychainPairingCache.clear()
+            }
+            lastError = error.localizedDescription
+            return .failed(error.localizedDescription)
+        }
+        guard let scope = Self.backgroundEngineScope(pairing: pairing) else {
+            return .unavailable
+        }
+        // A warm visible shell may intentionally be attached to a different
+        // profile than the cached relay pairing. Never switch that live UI
+        // behind its back; the next wake for the selected relay profile can
+        // perform the catch-up.
+        if mosaic != nil, activeEngineScope != scope {
+            return .unavailable
+        }
+
+        do {
+            try await activateEngine(
+                scope: scope,
+                relayOperationLease: relayLease
+            )
+            guard let session = await beginEngineOperationWhenAvailable(
+                requiredSession: engineSessionToken
+            ) else {
+                return .unavailable
+            }
+            defer { finishEngineOperation() }
+            guard !session.hubMode,
+                  session.scope == scope,
+                  isCurrentEngineSession(session),
+                  let engine
+            else { return .unavailable }
+
+            let priorPoll = lastSuccessfulPollAt
+            let priorApply = lastAppliedAt
+            invalidateCoordinatorIfRepaired()
+            if coordinator == nil {
+                try await buildCoordinator(
+                    engine: engine,
+                    codeStr: code,
+                    expectedScope: scope,
+                    requiredTickGeneration: nil
+                )
+            }
+            guard isCurrentEngineSession(session) else { return .unavailable }
+            // Do not use tickOnce's timeout race here. Its timeout is
+            // intentionally non-cancelling, so it can return while the old
+            // runSingleTick still mutates the shared engine. A background
+            // wake must retain its operation lease until the real tick ends.
+            tickGeneration &+= 1
+            let backgroundGeneration = tickGeneration
+            await runSingleTickUnderRelayAdmission(generation: backgroundGeneration)
+            guard lastSuccessfulPollAt != priorPoll, lastError == nil else {
+                return .failed(lastError ?? "Background relay catch-up did not complete.")
+            }
+            return .completed(newData: lastAppliedAt != priorApply)
+        } catch {
+            if Self.isDefinitivePairingFailure(error) {
+                KeychainPairingCache.clear()
+            }
+            lastError = error.localizedDescription
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    static func backgroundEngineScope(
+        pairing: PairingCodeRecord
+    ) -> MosaicEngineScope? {
+        guard let relayURL = pairing.relayUrl,
+              !relayURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return MosaicEngineScope(groupIdHex: pairing.groupIdHex)
     }
 
     /// Register this device's APNs token with the relay (sync durability
@@ -1812,11 +3427,12 @@ final class RelayTicker: ObservableObject {
     /// the token and the handle are ready; POSTs once per token (re-POSTs on
     /// rotation). Best-effort — a failure just retries on a later tick and
     /// never surfaces as a sync error.
-    private func maybeRegisterApnsToken() async {
-        guard let relay else {
-            apnsNote = "no relay handle yet"
-            return
-        }
+    private func maybeRegisterApnsToken(
+        relay: RelayClientHandle,
+        scope: String?,
+        generation: UInt64
+    ) async {
+        guard generation == tickGeneration else { return }
         guard let token = AppDelegate.deviceTokenHex else {
             // No APNs token captured. Surface WHY: a registration error
             // (entitlement/Push/network) vs still pending.
@@ -1828,16 +3444,18 @@ final class RelayTicker: ObservableObject {
         // re-pair changes the scope → re-register with the NEW relay so it has
         // a token to background-push (2026-06-24 HA→CF gap). cursorScope is set
         // by the coordinator we ticked through to get here.
-        let key = Self.apnsRegistrationKey(token: token, scope: cursorScope)
+        let key = Self.apnsRegistrationKey(token: token, scope: scope)
         if key == lastRegisteredApnsKey {
             apnsNote = "registered ✓ (\(token.prefix(8))…)"
             return
         }
         do {
             try await relay.registerDevice(apnsToken: token)
+            guard generation == tickGeneration else { return }
             lastRegisteredApnsKey = key
             apnsNote = "registered ✓ (\(token.prefix(8))…)"
         } catch {
+            guard generation == tickGeneration else { return }
             // Leave lastRegisteredApnsKey unset so the next tick retries.
             apnsNote = "POST /devices failed: \(error.localizedDescription)"
         }

@@ -25,6 +25,7 @@ struct PageView: View {
     @State private var showOpenPages: Bool = false
     @State private var editingBlockId: String? = nil
     @State private var collapsedBlockIds: Set<String> = []
+    @State private var moveIntent: BlockMoveIntent?
 
     var body: some View {
         ScrollView {
@@ -93,6 +94,9 @@ struct PageView: View {
                 onJump: { _ in /* Phase 15: navigate to a different page */ }
             )
             .environment(\.theme, theme)
+        }
+        .sheet(item: $moveIntent) { intent in
+            BlockMoveSheet(mosaic: mosaic, intent: intent)
         }
         .onAppear {
             // Mock: pre-populate with a couple of tags so the strip
@@ -200,10 +204,23 @@ struct PageView: View {
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 },
                 onSkipRecurrence: {
-                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.recurBump(
+                            blockId: block.id,
+                            mode: .skip,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
         }
@@ -289,7 +306,7 @@ struct PageView: View {
               blocks[idx].kind == .task
         else { return }
         blocks[idx].done.toggle()
-        Task { await mosaic.pushPage(id: page.id, blocks: blocks) }
+        mosaic.schedulePagePush(id: page.id, blocks: blocks)
     }
 
     private func handlePageAction(_ action: BlockAction, on block: Block) {
@@ -302,7 +319,14 @@ struct PageView: View {
             UIPasteboard.general.string = "tesela://block/\(block.id)"
         case .indent:
             mosaic.indentPageBlock(pageId: page.id, blockId: block.id, by: 1)
-        case .promote, .convertToTag, .moveTo:
+        case .moveTo:
+            editingBlockId = nil
+            moveIntent = BlockMoveIntent(
+                sourceSlug: page.id,
+                rootBid: block.id,
+                preview: block.displayText
+            )
+        case .promote, .convertToTag:
             break
         }
     }

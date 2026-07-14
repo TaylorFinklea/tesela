@@ -7,7 +7,7 @@
 //! FFI-clean (owned data, no borrows in public signatures, no generics
 //! in trait methods), so each expansion is a mechanical wrap.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,9 +22,16 @@ use tesela_sync::crypto::relay_auth::{
 use tesela_sync::{
     decode_loro_relay_payload, decode_pairing_code as decode_pairing_code_inner,
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
-    engine::SyncEngine, oplog::op::OpPayload, transport::relay::RelayClient, DeviceId, GroupId,
-    GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, PropOp, PropScalar,
-    SyncEnvelope, TableColumnConfig as InnerTableColumnConfig, ViewRecord as InnerViewRecord,
+    engine::SyncEngine,
+    engine::{
+        BlockRelocationRequest as InnerBlockRelocationRequest, BlockRelocationStatus,
+        MovePlacement, RelocationNoteSeed,
+    },
+    oplog::op::OpPayload,
+    transport::relay::RelayClient,
+    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode,
+    PropOp, PropScalar, SyncEnvelope, TableColumnConfig as InnerTableColumnConfig,
+    ViewRecord as InnerViewRecord,
 };
 use tokio::sync::Mutex;
 
@@ -42,6 +49,15 @@ pub enum FfiSyncError {
         /// Free-text reason; safe to surface to users.
         message: String,
     },
+    /// Authoritative relocation preconditions were not satisfied.
+    #[error("relocation rejected: {message}")]
+    RelocationRejected { message: String },
+    /// A relocation idempotency key was reused with different arguments.
+    #[error("relocation conflict: {message}")]
+    RelocationConflict { message: String },
+    /// An interrupted relocation must be retried with the exact same request.
+    #[error("relocation {move_id} requires recovery: {message}")]
+    RelocationRecoveryRequired { move_id: String, message: String },
     /// A wrapped error we couldn't more usefully classify yet.
     #[error("{message}")]
     Other {
@@ -52,8 +68,22 @@ pub enum FfiSyncError {
 
 impl From<tesela_sync::SyncError> for FfiSyncError {
     fn from(e: tesela_sync::SyncError) -> Self {
-        FfiSyncError::Other {
-            message: e.to_string(),
+        match e {
+            tesela_sync::SyncError::RelocationRejected(message) => {
+                FfiSyncError::RelocationRejected { message }
+            }
+            tesela_sync::SyncError::RelocationConflict(message) => {
+                FfiSyncError::RelocationConflict { message }
+            }
+            tesela_sync::SyncError::RelocationRecoveryRequired { move_id, message } => {
+                FfiSyncError::RelocationRecoveryRequired {
+                    move_id: format_dashed_uuid(&move_id),
+                    message,
+                }
+            }
+            other => FfiSyncError::Other {
+                message: other.to_string(),
+            },
         }
     }
 }
@@ -144,6 +174,73 @@ pub struct DeltaApplyOutcome {
     /// Hex (32-char) note ids carried by the frame, so the caller knows
     /// which note(s) to request a snapshot for.
     pub note_ids_hex: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum BlockMovePlacement {
+    Before,
+    Inside,
+    After,
+    Append,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum BlockMoveStatus {
+    Applied,
+    Replayed,
+    NoOp,
+}
+
+/// Swift-facing relocation request. Rust derives note identity and trusted
+/// daily-note seeds so retries cannot drift with UI-supplied metadata.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BlockRelocationRecord {
+    pub move_id: String,
+    pub source_slug: String,
+    pub root_bid: String,
+    pub destination_slug: String,
+    pub target_bid: Option<String>,
+    pub placement: BlockMovePlacement,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RelocatedNoteRecord {
+    pub note_id_hex: String,
+    pub slug: String,
+    pub pre_version: Vec<u8>,
+    pub changed: bool,
+    pub created: bool,
+}
+
+/// Durable relocation result returned to Swift so both affected note
+/// projections can be refreshed without guessing.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BlockRelocationOutcomeRecord {
+    pub move_id: String,
+    pub status: BlockMoveStatus,
+    pub notes: Vec<RelocatedNoteRecord>,
+}
+
+/// One note and delivery baseline requested for a cursor-free live delta.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct NoteDeltaRequestRecord {
+    pub slug: String,
+    pub since_version: Option<Vec<u8>>,
+}
+
+/// Exact version of one note carried by a prepared live-delta frame.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PreparedDeltaNoteRecord {
+    pub slug: String,
+    pub version: Vec<u8>,
+}
+
+/// One TLR2 frame, potentially carrying several notes, plus the exact
+/// per-note versions callers may commit only after confirmed delivery.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PreparedDeltaFrameRecord {
+    pub frame: Vec<u8>,
+    pub notes: Vec<PreparedDeltaNoteRecord>,
 }
 
 /// The opaque relay-presence wire payload (Option-B iOS presence). Mirrors
@@ -567,15 +664,33 @@ fn parse_hex_16(s: &str) -> Option<[u8; 16]> {
 /// Parse a block id from EITHER a 32-char dashless hex string OR a 36-char
 /// dashed UUID (`019e7a50-4404-...`). Web + iOS block ids are dashed UUIDs,
 /// while the engine stores/`hex_id`s them dashless — so the FFI accepts both
-/// by stripping dashes before the 16-byte hex parse. `None` on any other
-/// shape (wrong length, non-hex chars).
+/// exact wire shapes. `None` on any other shape (wrong length, misplaced
+/// dashes, or non-hex chars).
 fn parse_block_id_hex(s: &str) -> Option<[u8; 16]> {
-    if s.contains('-') {
-        let stripped: String = s.chars().filter(|c| *c != '-').collect();
-        parse_hex_16(&stripped)
-    } else {
-        parse_hex_16(s)
+    if s.len() == 32 {
+        return parse_hex_16(s);
     }
+    if s.len() != 36 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let dash_positions = [8, 13, 18, 23];
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if dash_positions.contains(&index) {
+            if byte != b'-' {
+                return None;
+            }
+        } else if nibble(byte).is_none() {
+            return None;
+        }
+    }
+    let mut dashless = String::with_capacity(32);
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if !dash_positions.contains(&index) {
+            dashless.push(byte as char);
+        }
+    }
+    parse_hex_16(&dashless)
 }
 
 fn parse_hex_32(s: &str) -> Option<[u8; 32]> {
@@ -859,6 +974,99 @@ impl SyncEngineHandle {
         Ok(hex_encode(&hash.0))
     }
 
+    /// Relocate one complete stable-id block subtree through the authoritative
+    /// engine transaction. Swift supplies a stable `move_id` so an interrupted
+    /// request can retry exactly without duplicating the subtree.
+    pub async fn relocate_block_subtree(
+        &self,
+        request: BlockRelocationRecord,
+    ) -> Result<BlockRelocationOutcomeRecord, FfiSyncError> {
+        let move_id = parse_block_id_hex(&request.move_id).ok_or_else(|| FfiSyncError::Other {
+            message: "move_id must be 32 hex chars or a dashed UUID".into(),
+        })?;
+        let root_bid =
+            parse_block_id_hex(&request.root_bid).ok_or_else(|| FfiSyncError::Other {
+                message: "root_bid must be 32 hex chars or a dashed UUID".into(),
+            })?;
+        let target_bid = match request.target_bid.as_deref() {
+            Some(value) => Some(
+                parse_block_id_hex(value).ok_or_else(|| FfiSyncError::Other {
+                    message: "target_bid must be 32 hex chars or a dashed UUID".into(),
+                })?,
+            ),
+            None => None,
+        };
+        let source_note_id = stable_uuid_from_slug(&request.source_slug);
+        let destination_note_id = stable_uuid_from_slug(&request.destination_slug);
+        let placement = match request.placement {
+            BlockMovePlacement::Before => MovePlacement::Before,
+            BlockMovePlacement::Inside => MovePlacement::Inside,
+            BlockMovePlacement::After => MovePlacement::After,
+            BlockMovePlacement::Append => MovePlacement::Append,
+        };
+        let destination_date =
+            chrono::NaiveDate::parse_from_str(&request.destination_slug, "%Y-%m-%d")
+                .ok()
+                .filter(|date| date.format("%Y-%m-%d").to_string() == request.destination_slug);
+        let destination_seed = if source_note_id != destination_note_id
+            && placement == MovePlacement::Append
+            && target_bid.is_none()
+        {
+            destination_date.map(|date| {
+                let config = tesela_core::daily::DailyNoteConfig::default();
+                RelocationNoteSeed {
+                    display_alias: Some(request.destination_slug.clone()),
+                    title: tesela_core::daily::daily_note_title(date, &config),
+                    content: tesela_core::daily::daily_note_content(date, &config),
+                    created_at_millis: date
+                        .and_hms_opt(0, 0, 0)
+                        .expect("midnight is valid")
+                        .and_utc()
+                        .timestamp_millis(),
+                }
+            })
+        } else {
+            None
+        };
+
+        let outcome = self
+            .inner
+            .relocate_subtree(InnerBlockRelocationRequest {
+                move_id,
+                source_note_id,
+                source_slug: request.source_slug,
+                root_bid,
+                destination_note_id,
+                destination_slug: request.destination_slug,
+                target_bid,
+                placement,
+                destination_seed,
+            })
+            .await
+            .map_err(FfiSyncError::from)?;
+        let status = match outcome.status {
+            BlockRelocationStatus::Applied => BlockMoveStatus::Applied,
+            BlockRelocationStatus::Replayed => BlockMoveStatus::Replayed,
+            BlockRelocationStatus::NoOp => BlockMoveStatus::NoOp,
+        };
+
+        Ok(BlockRelocationOutcomeRecord {
+            move_id: format_dashed_uuid(&outcome.move_id),
+            status,
+            notes: outcome
+                .notes
+                .into_iter()
+                .map(|note| RelocatedNoteRecord {
+                    note_id_hex: hex_encode(&note.note_id),
+                    slug: note.slug,
+                    pre_version: note.pre_version,
+                    changed: note.changed,
+                    created: note.created,
+                })
+                .collect(),
+        })
+    }
+
     /// Produce the live Loro delta for a just-changed note, framed as a
     /// single TLR2 relay frame ready to push over the instant-multidevice
     /// WebSocket. Computes the note id with the same blake3-truncation
@@ -900,6 +1108,70 @@ impl SyncEngineHandle {
         }])
         .map_err(FfiSyncError::from)?;
         Ok(Some(frame))
+    }
+
+    /// Prepare one cursor-free TLR2 frame for every requested note and pair
+    /// it with exact frame-associated post-export version vectors. Multiple
+    /// notes (notably the source and destination of one relocation) travel in
+    /// the same frame and must be checkpointed together after a confirmed
+    /// send. Duplicate slugs are rejected rather than ambiguously choosing a
+    /// baseline.
+    pub async fn prepare_delta_frame(
+        &self,
+        requests: Vec<NoteDeltaRequestRecord>,
+    ) -> Result<Option<PreparedDeltaFrameRecord>, FfiSyncError> {
+        if requests.is_empty() {
+            return Ok(None);
+        }
+        let mut seen = HashSet::with_capacity(requests.len());
+        let mut slugs_by_id = HashMap::with_capacity(requests.len());
+        let mut engine_requests = Vec::with_capacity(requests.len());
+        for request in requests {
+            let note_id = stable_uuid_from_slug(&request.slug);
+            if !seen.insert(note_id) {
+                return Err(FfiSyncError::Other {
+                    message: format!("duplicate delta note {}", request.slug),
+                });
+            }
+            slugs_by_id.insert(note_id, request.slug);
+            engine_requests.push((note_id, request.since_version));
+        }
+
+        let exports = self
+            .inner
+            .export_doc_updates_with_versions(&engine_requests)
+            .await;
+        if exports.len() != engine_requests.len()
+            || exports
+                .iter()
+                .zip(engine_requests.iter())
+                .any(|(export, request)| export.note_id != request.0)
+        {
+            return Err(FfiSyncError::Other {
+                message: "delta frame preparation omitted a requested note".into(),
+            });
+        }
+        if exports.is_empty() {
+            return Ok(None);
+        }
+        let frame_updates: Vec<LoroDocUpdate> = exports
+            .iter()
+            .map(|export| LoroDocUpdate {
+                doc: export.note_id,
+                update_bytes: export.update_bytes.clone(),
+            })
+            .collect();
+        let frame = encode_loro_relay_payload(&frame_updates).map_err(FfiSyncError::from)?;
+        let notes = exports
+            .into_iter()
+            .map(|export| PreparedDeltaNoteRecord {
+                slug: slugs_by_id
+                    .remove(&export.note_id)
+                    .expect("every export came from one request"),
+                version: export.version,
+            })
+            .collect();
+        Ok(Some(PreparedDeltaFrameRecord { frame, notes }))
     }
 
     /// Apply a TLR2-framed delta frame received over the instant-multidevice
@@ -1057,7 +1329,10 @@ impl SyncEngineHandle {
         cursor_bytes: Vec<u8>,
     ) -> Result<Option<u32>, FfiSyncError> {
         let note_id = stable_uuid_from_slug(&slug);
-        Ok(self.inner.resolve_block_cursor(note_id, &cursor_bytes).await)
+        Ok(self
+            .inner
+            .resolve_block_cursor(note_id, &cursor_bytes)
+            .await)
     }
 
     /// Set ONE property on a block through the engine's typed
@@ -2175,7 +2450,10 @@ mod tests {
         let (gk, gid) = presence_fixture();
         let inner = b"PRES{\"peer\":\"aa\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}".to_vec();
         let outer = presence_seal(gk.clone(), gid.clone(), inner.clone());
-        assert!(!outer.is_empty(), "seal of a valid frame must produce bytes");
+        assert!(
+            !outer.is_empty(),
+            "seal of a valid frame must produce bytes"
+        );
         let opened = presence_open(gk, gid, outer).expect("opens under the same group");
         assert_eq!(opened, inner);
     }
@@ -2236,8 +2514,8 @@ mod tests {
         let auth = derive_relay_auth_key(&key, &GroupId::from_bytes(gid));
         let path = format!("/groups/{}/presence/ws", hex_encode(&gid));
         let canonical = canonical_request("GET", &path, "", &h.nonce_b64, h.ts, "");
-        let expected =
-            base64::engine::general_purpose::STANDARD.encode(compute_request_mac(&auth, &canonical));
+        let expected = base64::engine::general_purpose::STANDARD
+            .encode(compute_request_mac(&auth, &canonical));
 
         assert_eq!(h.mac_b64, expected);
         assert_eq!(h.group_hex, hex_encode(&gid));
@@ -2322,6 +2600,307 @@ mod tests {
         SyncEngineHandle::open_loro(dir.to_string_lossy().into_owned(), device_hex.to_string())
             .await
             .expect("open_loro")
+    }
+
+    #[tokio::test]
+    async fn ffi_relocate_subtree_cross_note_moves_complete_nested_subtree_and_returns_two_versions(
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let source = "2026-07-13".to_string();
+        let destination = "2026-07-14".to_string();
+
+        handle
+            .record_note_upsert_by_slug(
+                source.clone(),
+                "Sunday, July 13, 2026".into(),
+                "- parent <!-- bid:10101010-1010-1010-1010-101010101010 -->\n  - child <!-- bid:20202020-2020-2020-2020-202020202020 -->\n- stays <!-- bid:30303030-3030-3030-3030-303030303030 -->\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+        handle
+            .record_note_upsert_by_slug(
+                destination.clone(),
+                "Monday, July 14, 2026".into(),
+                "- destination <!-- bid:40404040-4040-4040-4040-404040404040 -->\n".into(),
+                2,
+            )
+            .await
+            .unwrap();
+
+        let outcome = handle
+            .relocate_block_subtree(BlockRelocationRecord {
+                move_id: "50505050-5050-5050-5050-505050505050".into(),
+                source_slug: source.clone(),
+                root_bid: "10101010-1010-1010-1010-101010101010".into(),
+                destination_slug: destination.clone(),
+                target_bid: None,
+                placement: BlockMovePlacement::Append,
+            })
+            .await
+            .expect("relocation through FFI");
+
+        assert_eq!(outcome.status, BlockMoveStatus::Applied);
+        assert_eq!(outcome.notes.len(), 2);
+        assert_eq!(outcome.notes[0].slug, source);
+        assert_eq!(outcome.notes[1].slug, destination);
+        assert!(outcome.notes.iter().all(|note| note.changed));
+        assert!(outcome
+            .notes
+            .iter()
+            .all(|note| !note.pre_version.is_empty()));
+
+        let source_markdown =
+            tokio::fs::read_to_string(dir.path().join("notes").join(format!("{source}.md")))
+                .await
+                .unwrap();
+        let destination_markdown =
+            tokio::fs::read_to_string(dir.path().join("notes").join(format!("{destination}.md")))
+                .await
+                .unwrap();
+        assert!(!source_markdown.contains("parent"));
+        assert!(!source_markdown.contains("child"));
+        assert!(source_markdown.contains("stays"));
+        assert!(destination_markdown.contains("parent"));
+        assert!(destination_markdown.contains("  - child"));
+    }
+
+    #[tokio::test]
+    async fn ffi_relocate_subtree_missing_daily_seed_replays_and_conflicts_after_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let device = generate_device_id_hex();
+        let handle = open_handle(dir.path(), &device).await;
+        let source = "relocation-source".to_string();
+        let destination = "2026-07-15".to_string();
+        handle
+            .record_note_upsert_by_slug(
+                source.clone(),
+                "Source".into(),
+                "- root <!-- bid:61616161-6161-6161-6161-616161616161 -->\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+        let request = BlockRelocationRecord {
+            move_id: "71717171-7171-7171-7171-717171717171".into(),
+            source_slug: source,
+            root_bid: "61616161-6161-6161-6161-616161616161".into(),
+            destination_slug: destination.clone(),
+            target_bid: None,
+            placement: BlockMovePlacement::Append,
+        };
+
+        let applied = handle
+            .relocate_block_subtree(request.clone())
+            .await
+            .unwrap();
+        assert_eq!(applied.status, BlockMoveStatus::Applied);
+        assert!(applied.notes[1].created);
+        let daily =
+            tokio::fs::read_to_string(dir.path().join("notes").join(format!("{destination}.md")))
+                .await
+                .unwrap();
+        assert!(
+            daily.contains("title:"),
+            "canonical daily seed retained: {daily}"
+        );
+        assert_eq!(
+            daily.matches("root").count(),
+            1,
+            "subtree appears once: {daily}"
+        );
+
+        let replayed = handle
+            .relocate_block_subtree(request.clone())
+            .await
+            .unwrap();
+        assert_eq!(replayed.status, BlockMoveStatus::Replayed);
+        drop(handle);
+
+        let reopened = open_handle(dir.path(), &device).await;
+        let replayed_after_reopen = reopened
+            .relocate_block_subtree(request.clone())
+            .await
+            .unwrap();
+        assert_eq!(replayed_after_reopen.status, BlockMoveStatus::Replayed);
+
+        let mut conflicting = request;
+        conflicting.destination_slug = "2026-07-16".into();
+        let error = reopened
+            .relocate_block_subtree(conflicting)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, FfiSyncError::RelocationConflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn ffi_relocation_delta_is_one_frame_with_exact_committable_versions() {
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        let a = open_handle(&dir_a.path(), &generate_device_id_hex()).await;
+        let b = open_handle(&dir_b.path(), &generate_device_id_hex()).await;
+        let source = "2026-07-13".to_string();
+        let destination = "2026-07-14".to_string();
+        let root = "81818181-8181-8181-8181-818181818181";
+        let child = "82828282-8282-8282-8282-828282828282";
+        let stays = "83838383-8383-8383-8383-838383838383";
+
+        a.record_note_upsert_by_slug(
+            source.clone(),
+            "Source".into(),
+            format!(
+                "- parent <!-- bid:{root} -->\n  - child <!-- bid:{child} -->\n- stays <!-- bid:{stays} -->\n"
+            ),
+            1,
+        )
+        .await
+        .unwrap();
+        a.record_note_upsert_by_slug(
+            destination.clone(),
+            "Destination".into(),
+            "- destination <!-- bid:84848484-8484-8484-8484-848484848484 -->\n".into(),
+            2,
+        )
+        .await
+        .unwrap();
+
+        for slug in [&source, &destination] {
+            let bootstrap = a
+                .produce_note_delta(slug.clone(), None)
+                .await
+                .unwrap()
+                .expect("bootstrap frame");
+            b.apply_delta_frame(bootstrap).await.unwrap();
+        }
+
+        let outcome = a
+            .relocate_block_subtree(BlockRelocationRecord {
+                move_id: "85858585-8585-8585-8585-858585858585".into(),
+                source_slug: source.clone(),
+                root_bid: root.into(),
+                destination_slug: destination.clone(),
+                target_bid: None,
+                placement: BlockMovePlacement::Append,
+            })
+            .await
+            .unwrap();
+        let prepared = a
+            .prepare_delta_frame(
+                outcome
+                    .notes
+                    .iter()
+                    .rev()
+                    .filter(|note| note.changed)
+                    .map(|note| NoteDeltaRequestRecord {
+                        slug: note.slug.clone(),
+                        since_version: Some(note.pre_version.clone()),
+                    })
+                    .collect(),
+            )
+            .await
+            .unwrap()
+            .expect("one prepared relocation frame");
+
+        assert_eq!(prepared.notes.len(), 2);
+        assert_eq!(prepared.notes[0].slug, destination);
+        assert_eq!(prepared.notes[1].slug, source);
+        let decoded = decode_loro_relay_payload(&prepared.frame)
+            .unwrap()
+            .expect("TLR2 payload");
+        assert_eq!(decoded.len(), 2, "both notes travel in one frame");
+        assert_eq!(decoded[0].doc, stable_uuid_from_slug(&destination));
+        assert_eq!(decoded[1].doc, stable_uuid_from_slug(&source));
+        for note in &prepared.notes {
+            assert_eq!(
+                Some(note.version.clone()),
+                a.note_version(note.slug.clone()).await,
+                "prepared baseline is the exact exported version"
+            );
+        }
+
+        let applied = b.apply_delta_frame(prepared.frame.clone()).await.unwrap();
+        assert_eq!(applied.applied, 2);
+        for slug in [&source, &destination] {
+            let id = stable_uuid_from_slug(slug);
+            assert_eq!(a.inner.render_note(id).await, b.inner.render_note(id).await);
+        }
+
+        let committed_source = prepared
+            .notes
+            .iter()
+            .find(|note| note.slug == source)
+            .expect("source version")
+            .version
+            .clone();
+        a.set_block_property(source.clone(), stays.into(), "status".into(), "done".into())
+            .await
+            .unwrap();
+        assert_ne!(
+            Some(committed_source.clone()),
+            a.note_version(source.clone()).await,
+            "a later edit advances beyond the frame-associated baseline"
+        );
+        let follow_up = a
+            .prepare_delta_frame(vec![NoteDeltaRequestRecord {
+                slug: source.clone(),
+                since_version: Some(committed_source),
+            }])
+            .await
+            .unwrap()
+            .expect("follow-up frame");
+        b.apply_delta_frame(follow_up.frame).await.unwrap();
+        assert!(b
+            .inner
+            .render_note(stable_uuid_from_slug(&source))
+            .await
+            .unwrap()
+            .contains("status:: done"));
+    }
+
+    #[tokio::test]
+    async fn prepare_delta_frame_rejects_a_partial_multi_note_export() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let resident = "resident".to_string();
+        handle
+            .record_note_upsert_by_slug(
+                resident.clone(),
+                "Resident".into(),
+                "- present <!-- bid:86868686-8686-8686-8686-868686868686 -->\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+
+        let error = handle
+            .prepare_delta_frame(vec![
+                NoteDeltaRequestRecord {
+                    slug: resident,
+                    since_version: None,
+                },
+                NoteDeltaRequestRecord {
+                    slug: "not-resident".into(),
+                    since_version: None,
+                },
+            ])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            FfiSyncError::Other { message }
+                if message == "delta frame preparation omitted a requested note"
+        ));
+    }
+
+    #[test]
+    fn block_id_parser_accepts_only_dashless_or_canonical_uuid() {
+        assert!(parse_block_id_hex("91919191919191919191919191919191").is_some());
+        assert!(parse_block_id_hex("91919191-9191-9191-9191-919191919191").is_some());
+        assert!(parse_block_id_hex("91919191-9191-9191-9191-919191919191-").is_none());
+        assert!(parse_block_id_hex("919191919191-91919191919191919191").is_none());
+        assert!(parse_block_id_hex("91919191_9191_9191_9191_919191919191").is_none());
     }
 
     /// Phase 1 cursors: the cross-device caret flow through the FFI — A mints
@@ -2688,7 +3267,9 @@ mod tests {
         a.record_note_upsert_by_slug(
             slug.clone(),
             slug.clone(),
-            format!("---\ntitle: {slug}\n---\n\n- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"),
+            format!(
+                "---\ntitle: {slug}\n---\n\n- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"
+            ),
             1,
         )
         .await

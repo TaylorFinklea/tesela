@@ -21,6 +21,8 @@
 #   cargo run -p tesela-sync-ffi --features cli --bin uniffi-bindgen -- \
 #     generate --library target/debug/libtesela_sync_ffi.dylib \
 #     --language swift --out-dir app/Tesela-iOS/Generated
+#   perl -pi -e 's/[ \t]+$//' app/Tesela-iOS/Generated/tesela_sync_ffi.swift \
+#     app/Tesela-iOS/Generated/tesela_sync_ffiFFI.h
 #   cp app/Tesela-iOS/Generated/tesela_sync_ffiFFI.h app/Tesela-iOS/CFFI/tesela_sync_ffiFFI.h
 #   cp app/Tesela-iOS/Generated/tesela_sync_ffiFFI.modulemap app/Tesela-iOS/CFFI/module.modulemap
 #
@@ -41,6 +43,12 @@ trap '/bin/rm -rf "$TMP"' EXIT
 cargo run -p tesela-sync-ffi --features cli --bin uniffi-bindgen -- \
   generate --library "$ROOT/target/debug/libtesela_sync_ffi.dylib" \
   --language swift --out-dir "$TMP"
+# UniFFI's Swift templates emit trailing spaces on blank lines and selected
+# initializer arguments. Keep generated artifacts whitespace-clean without
+# weakening the byte-for-byte drift check.
+perl -pi -e 's/[ \t]+$//' \
+  "$TMP/tesela_sync_ffi.swift" \
+  "$TMP/tesela_sync_ffiFFI.h"
 
 echo "==> 3/3  diff against the checked-in artifacts"
 DRIFTED=()

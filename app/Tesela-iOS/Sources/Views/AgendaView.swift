@@ -70,7 +70,7 @@ struct AgendaView: View {
                     onTapMosaic: { showMosaicSwitcher = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
-                    Task { await mosaic.refresh(from: backend.backend) }
+                    Task { _ = await mosaic.refreshAttachedBackend() }
                 }
                 content
                     .refreshable { await load() }
@@ -90,7 +90,12 @@ struct AgendaView: View {
             }
             .sheet(item: $rescheduleTarget) { target in
                 RescheduleSheet(row: target) { iso, time, recurrence in
-                    Task { await applyReschedule(blockId: target.block_id, iso: iso, time: time, recurrence: recurrence) }
+                    applyReschedule(
+                        blockId: target.block_id,
+                        iso: iso,
+                        time: time,
+                        recurrence: recurrence
+                    )
                     rescheduleTarget = nil
                 } onCancel: {
                     rescheduleTarget = nil
@@ -98,7 +103,7 @@ struct AgendaView: View {
             }
             .sheet(item: $bulkTarget) { target in
                 BulkRescheduleSheet(target: target) { iso, time in
-                    Task { await applyBulkReschedule(target: target, iso: iso, time: time) }
+                    applyBulkReschedule(target: target, iso: iso, time: time)
                     bulkTarget = nil
                 } onCancel: {
                     bulkTarget = nil
@@ -191,9 +196,9 @@ struct AgendaView: View {
             ForEach(rows) { row in
                 AgendaRowView(
                     row: row,
-                    onToggleDone: { Task { await applyMarkDone(row) } },
+                    onToggleDone: { applyMarkDone(row) },
                     onReschedule: { rescheduleTarget = row },
-                    onSkip: { Task { await applySkip(row) } },
+                    onSkip: { applySkip(row) },
                     onOpenSource: { navigationPath.append(DailyPageRoute(slug: row.source_note_id)) }
                 )
                 .listRowBackground(theme.bg2)
@@ -236,9 +241,9 @@ struct AgendaView: View {
                 ForEach(rows) { row in
                     AgendaRowView(
                         row: row,
-                        onToggleDone: { Task { await applyMarkDone(row) } },
+                        onToggleDone: { applyMarkDone(row) },
                         onReschedule: { rescheduleTarget = row },
-                        onSkip: { Task { await applySkip(row) } },
+                        onSkip: { applySkip(row) },
                         onOpenSource: { navigationPath.append(DailyPageRoute(slug: row.source_note_id)) }
                     )
                     .listRowBackground(theme.bg2)
@@ -325,53 +330,85 @@ struct AgendaView: View {
         rows = result
     }
 
-    private func applyMarkDone(_ row: AgendaRow) async {
+    private func applyMarkDone(_ row: AgendaRow) {
         guard row.is_anchor else { return }
-        do {
-            try await mosaic.setBlockProperty(blockId: row.block_id, key: "status", value: "done")
-            await load()
-        } catch {
-            // Silent — connection banner surfaces server failures.
-        }
-    }
-
-    private func applyReschedule(blockId: String, iso: String, time: String?, recurrence: String?) async {
-        let value = time.map { "\(iso) \($0)" } ?? iso
-        do {
-            try await mosaic.setBlockProperty(blockId: blockId, key: "scheduled", value: value)
-            if let recurrence {
-                try await mosaic.setBlockProperty(blockId: blockId, key: "recurring", value: recurrence)
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.setBlockProperty(
+                    blockId: row.block_id,
+                    key: "status",
+                    value: "done",
+                    reservation: reservation
+                )
+                await load()
+            } catch {
+                // Silent — connection banner surfaces server failures.
             }
-            await load()
-        } catch {
-            // Silent.
         }
     }
 
-    private func applyBulkReschedule(target: BulkRescheduleTarget, iso: String, time: String?) async {
+    private func applyReschedule(blockId: String, iso: String, time: String?, recurrence: String?) {
+        let value = time.map { "\(iso) \($0)" } ?? iso
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.setBlockProperty(
+                    blockId: blockId,
+                    key: "scheduled",
+                    value: value,
+                    reservation: reservation
+                )
+                if let recurrence {
+                    try await mosaic.setBlockProperty(
+                        blockId: blockId,
+                        key: "recurring",
+                        value: recurrence,
+                        reservation: reservation
+                    )
+                }
+                await load()
+            } catch {
+                // Silent.
+            }
+        }
+    }
+
+    private func applyBulkReschedule(target: BulkRescheduleTarget, iso: String, time: String?) {
         let value = time.map { "\(iso) \($0)" } ?? iso
         let key = target.field.rawValue  // "deadline" | "scheduled"
         // Fire setBlockProperty for each row in parallel — no batch
         // endpoint, but the row counts here are tens at most so a
         // TaskGroup over them is fine.
-        await withTaskGroup(of: Void.self) { group in
-            for row in target.rows {
-                let bid = row.block_id
-                group.addTask {
-                    try? await mosaic.setBlockProperty(blockId: bid, key: key, value: value)
+        mosaic.enqueueBackendMutation { reservation in
+            await withTaskGroup(of: Void.self) { group in
+                for row in target.rows {
+                    let bid = row.block_id
+                    group.addTask {
+                        try? await mosaic.setBlockProperty(
+                            blockId: bid,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 }
             }
+            await load()
         }
-        await load()
     }
 
-    private func applySkip(_ row: AgendaRow) async {
+    private func applySkip(_ row: AgendaRow) {
         guard row.is_anchor, row.recurrence != nil else { return }
-        do {
-            try await mosaic.recurBump(blockId: row.block_id, mode: .skip)
-            await load()
-        } catch {
-            // Silent.
+        mosaic.enqueueBackendMutation { reservation in
+            do {
+                try await mosaic.recurBump(
+                    blockId: row.block_id,
+                    mode: .skip,
+                    reservation: reservation
+                )
+                await load()
+            } catch {
+                // Silent.
+            }
         }
     }
 

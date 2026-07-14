@@ -696,3 +696,58 @@ because none is a server-ordering proof. HTTP queues are awaited through live
 requests, successors, and Promise-capable fallbacks. Offline, timed-out, or
 client-minted states fail closed with retry feedback; relocation never guesses
 that the source is current.
+
+### 2026-07-13 — Relocation delivery is bound to physical mosaic identity and exclusive local admission
+
+The shipped relocation UI exposed two independent no-op boundaries: Tauri's
+native file-drop handler intercepted WebKit drag events, and iOS displayed
+`Move to…` without a UniFFI relocation path. Repairing those boundaries also
+made the cross-profile delivery contract explicit:
+
+- **A live hub identity is canonical path plus sync group, not URL or local
+  profile id.** `/mosaics/current` returns both values atomically. WebSocket
+  clients prove the exact pair in their hello before deltas or barriers are
+  accepted. HTTP data-plane requests carry the expected group and hold a
+  group read lease through the handler; pair/switch adoption holds the write
+  lease through durable and in-memory publication. A path-reused replacement
+  therefore cannot receive an old move or ordinary write.
+- **Group adoption is a restart boundary, and group IDs identify keys.** A
+  successful adoption atomically closes the current process's data plane; only
+  health, current-mosaic observation, and restart remain available until a new
+  process owns engines, relays, and sockets for the adopted identity. Reusing a
+  group ID with different key bytes is rejected; key rotation must allocate a
+  new group ID. This makes the HTTP group-ID proof exact rather than a partial
+  key hint.
+- **iOS engine storage and recovery state are group-scoped.** A profile switch
+  activates the physical group namespace before opening its engine. Legacy
+  unscoped engine bytes and cursors are quarantined instead of being adopted,
+  and a build-78 relocation outbox with no physical scope is rejected rather
+  than replayed into whichever mosaic is active now.
+- **Profile activation is latest-wins and fail-closed.** The selection mutation
+  closes new user-write admission before publishing the new profile and
+  invalidates any older activation lease. Already-reserved writes remain
+  pinned to their original backend/generation and drain before detach. The new
+  backend becomes editable only after its first refresh and path/group proof;
+  failed activation stays detached and non-writable.
+- **A move owns one exclusive engine-and-transport interval.** Existing engine
+  writes drain before relocation staging. New engine operations queue behind
+  it, while the exact request, prepared multi-note frame, and per-note commit
+  baselines remain in the scoped outbox until the bound WebSocket acknowledges
+  delivery. Relay ticks, APNs/background catch-up, final background flush, and
+  another relocation cannot overlap this interval or dual-deliver the frame.
+  Foreground resume invalidates stale queued background transitions.
+- **The process has one relay engine owner.** Foreground ticks, immediate
+  outbound work, background/APNs work, relocation, and final flush use shared
+  admission on `RelayTicker.shared`; timeout bookkeeping belongs to the exact
+  lease even when the underlying non-cancellable Rust call outlives the UI
+  timeout. Voice capture also carries the profile/generation scope and cannot
+  publish into a newly selected mosaic.
+- **Old sockets retire; identity leases are bounded.** WebSocket sessions
+  recheck their captured identity while idle and actively close after group
+  replacement. Group-bound socket writes have a finite timeout while holding
+  the read lease, so adoption cannot wait forever behind a backpressured peer.
+
+These rules prefer a visible retry or temporarily frozen data surface over a
+best-effort write to an identity that has changed. The relocation operation
+continues to live only in the Rust/Loro engine; Swift never implements a
+copy/delete fallback.

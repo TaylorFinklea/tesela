@@ -650,7 +650,10 @@ async fn validate_logseq_plan(
             ));
         }
         let Some(parent) = target.parent() else {
-            return Err((StatusCode::BAD_REQUEST, "target path has no parent".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "target path has no parent".to_string(),
+            ));
         };
         let canonical_parent = tokio::fs::canonicalize(parent)
             .await
@@ -658,7 +661,10 @@ async fn validate_logseq_plan(
         if canonical_parent != canonical_notes {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("target escapes mosaic notes directory: {}", target.display()),
+                format!(
+                    "target escapes mosaic notes directory: {}",
+                    target.display()
+                ),
             ));
         }
     }
@@ -815,13 +821,8 @@ pub async fn import_logseq(
     }
 
     let handle = import_engine_for_mosaic(&state, &mosaic).await?;
-    let outcome = apply_logseq_to_engine(
-        &plan,
-        &ApplyDecisions::default(),
-        &mosaic,
-        &handle,
-    )
-    .await?;
+    let outcome =
+        apply_logseq_to_engine(&plan, &ApplyDecisions::default(), &mosaic, &handle).await?;
     stdout.push_str(&logseq_outcome_summary(&outcome));
     let stderr = outcome.errors.join("\n");
     Ok(Json(ImportResponse {
@@ -1106,6 +1107,7 @@ fn which_exists(name: &str) -> bool {
 #[derive(Debug, Serialize)]
 pub struct CurrentMosaicResponse {
     pub path: String,
+    pub group_id_hex: String,
     pub config_path: String,
     pub config_default_mosaic: Option<String>,
     /// Parent directory under which new mosaics should be created by
@@ -1126,6 +1128,11 @@ pub struct CurrentMosaicResponse {
 pub async fn get_current_mosaic(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CurrentMosaicResponse>, (StatusCode, String)> {
+    let canonical_mosaic = std::fs::canonicalize(&state.mosaic_root).map_err(internal_io)?;
+    let group_id_hex = {
+        let identity = state.group_identity.read().await;
+        hex::encode(identity.group_id.as_bytes())
+    };
     let config_path = Config::default_path();
     let config_default = if config_path.exists() {
         Config::load(&config_path)
@@ -1137,7 +1144,8 @@ pub async fn get_current_mosaic(
         None
     };
     Ok(Json(CurrentMosaicResponse {
-        path: state.mosaic_root.to_string_lossy().into_owned(),
+        path: canonical_mosaic.to_string_lossy().into_owned(),
+        group_id_hex,
         config_path: config_path.to_string_lossy().into_owned(),
         config_default_mosaic: config_default,
         suggested_root: Config::mosaic_root_dir().to_string_lossy().into_owned(),
@@ -1244,13 +1252,8 @@ pub async fn create_mosaic(
             .map_err(internal)?
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
             let handle = open_temporary_import_engine(&path).await?;
-            let outcome = apply_logseq_to_engine(
-                &plan,
-                &ApplyDecisions::default(),
-                &path,
-                &handle,
-            )
-            .await?;
+            let outcome =
+                apply_logseq_to_engine(&plan, &ApplyDecisions::default(), &path, &handle).await?;
             import_success = Some(outcome.errors.is_empty());
             import_stdout = Some(format!(
                 "{}{}",
@@ -1402,16 +1405,23 @@ pub struct SwitchMosaicRequest {
 pub async fn switch_mosaic(
     Json(req): Json<SwitchMosaicRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let target = PathBuf::from(&req.path);
+    let response = switch_mosaic_at_config_path(Path::new(&req.path), &Config::default_path())?;
+    Ok(Json(response))
+}
+
+fn switch_mosaic_at_config_path(
+    target: &Path,
+    config_path: &Path,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     if !target.join(".tesela").exists() {
         return Err((
             StatusCode::BAD_REQUEST,
             format!("{} is not a mosaic (no `.tesela/` dir)", target.display()),
         ));
     }
-    let config_path = Config::default_path();
+    let target = std::fs::canonicalize(target).map_err(internal_io)?;
     let mut cfg = if config_path.exists() {
-        Config::load(&config_path).map_err(server_error)?
+        Config::load(config_path).map_err(server_error)?
     } else {
         if let Some(parent) = config_path.parent() {
             std::fs::create_dir_all(parent).map_err(internal_io)?;
@@ -1419,11 +1429,11 @@ pub async fn switch_mosaic(
         Config::default()
     };
     cfg.general.default_mosaic = Some(target.clone());
-    cfg.save(&config_path).map_err(server_error)?;
-    Ok(Json(serde_json::json!({
+    cfg.save(config_path).map_err(server_error)?;
+    Ok(serde_json::json!({
         "config_path": config_path.to_string_lossy(),
         "default_mosaic": target.to_string_lossy(),
-    })))
+    }))
 }
 
 /// Gracefully shut down (clean-shutdown auto-backup runs), and if no
@@ -1560,6 +1570,28 @@ fn server_error<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn switch_mosaic_persists_and_returns_the_canonical_target() {
+        let temp = TempDir::new().unwrap();
+        let mosaic = temp.path().join("real-mosaic");
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+        let alias = temp.path().join("mosaic-alias");
+        std::os::unix::fs::symlink(&mosaic, &alias).unwrap();
+        let config_path = temp.path().join("config").join("config.toml");
+
+        let response = switch_mosaic_at_config_path(&alias, &config_path).unwrap();
+        let canonical = std::fs::canonicalize(&mosaic).unwrap();
+        assert_eq!(
+            response
+                .get("default_mosaic")
+                .and_then(|value| value.as_str()),
+            Some(canonical.to_string_lossy().as_ref())
+        );
+
+        let persisted = Config::load(&config_path).unwrap();
+        assert_eq!(persisted.general.default_mosaic, Some(canonical));
+    }
 
     #[test]
     fn respawn_detached_command_clears_parent_watchdog_env_before_exec() {

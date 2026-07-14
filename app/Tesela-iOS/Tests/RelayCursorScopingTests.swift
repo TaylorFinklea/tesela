@@ -8,7 +8,7 @@ import XCTest
 /// — a global cursor replayed against a different relay/group (re-pair,
 /// relay DB wipe, the HA→CF migration) silently black-holes inbound
 /// forever. These tests pin the exact key strings (changing them orphans
-/// every device's persisted cursors) and the one-shot legacy migration.
+/// every device's persisted cursors) and fail-closed legacy quarantine.
 @MainActor
 final class RelayCursorScopingTests: XCTestCase {
 
@@ -51,7 +51,7 @@ final class RelayCursorScopingTests: XCTestCase {
     }
 
     func testLegacyKeysAreTheBareStrings() {
-        // The migration looks for exactly these pre-scoping keys.
+        // The quarantine looks for exactly these pre-scoping keys.
         XCTAssertEqual(RelayTicker.legacyInboundCursorKey, "relay.inboundCursorSeq")
         XCTAssertEqual(RelayTicker.legacyOutboundCursorKey, "relay.outboundCursorNtp")
     }
@@ -67,52 +67,57 @@ final class RelayCursorScopingTests: XCTestCase {
         XCTAssertNotEqual(RelayTicker.inboundCursorKey(scope: a), RelayTicker.outboundCursorKey(scope: a))
     }
 
-    // MARK: Legacy migration
+    // MARK: Legacy quarantine
 
-    func testLegacyCursorsAdoptedByFirstScopeThenRemoved() {
+    func testLegacyCursorsAreNotAdoptedIntoFreshScopedStore() async throws {
         defaults.set(Int64(42), forKey: RelayTicker.legacyInboundCursorKey)
         defaults.set(Int64(7), forKey: RelayTicker.legacyOutboundCursorKey)
 
-        let scope = RelayTicker.cursorScope(relayUrl: "https://relay.example", groupIdHex: "aa")
-        RelayTicker.migrateLegacyCursors(toScope: scope, defaults: defaults)
+        let documents = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let engineScope = MosaicEngineScope(groupIdHex: "aa")
+        let scopedRoot = engineScope.rootURL(documentsURL: documents)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scopedRoot.path))
+        try await RelayTicker.prepareStorage(for: engineScope, documentsURL: documents)
 
-        // Adopted under the scoped keys (in-place upgrades keep progress)…
-        XCTAssertEqual(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: scope)) as? Int64, 42)
-        XCTAssertEqual(defaults.object(forKey: RelayTicker.outboundCursorKey(scope: scope)) as? Int64, 7)
-        // …and the bare keys are GONE so no later pairing re-adopts them.
+        let scope = RelayTicker.cursorScope(relayUrl: "https://relay.example", groupIdHex: "aa")
+        RelayTicker.quarantineLegacyCursors(defaults: defaults)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: scopedRoot.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scopedRoot.path), [])
+        XCTAssertNil(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: scope)))
+        XCTAssertNil(defaults.object(forKey: RelayTicker.outboundCursorKey(scope: scope)))
         XCTAssertNil(defaults.object(forKey: RelayTicker.legacyInboundCursorKey))
         XCTAssertNil(defaults.object(forKey: RelayTicker.legacyOutboundCursorKey))
     }
 
-    func testLegacyCursorsAdoptedOnlyOnce() {
+    func testNoScopeEverAdoptsAQuarantinedLegacyCursor() {
         defaults.set(Int64(42), forKey: RelayTicker.legacyInboundCursorKey)
 
         let first = RelayTicker.cursorScope(relayUrl: "https://relay-a.example", groupIdHex: "aa")
-        RelayTicker.migrateLegacyCursors(toScope: first, defaults: defaults)
+        RelayTicker.quarantineLegacyCursors(defaults: defaults)
         let second = RelayTicker.cursorScope(relayUrl: "https://relay-b.example", groupIdHex: "bb")
-        RelayTicker.migrateLegacyCursors(toScope: second, defaults: defaults)
+        RelayTicker.quarantineLegacyCursors(defaults: defaults)
 
-        // The first pairing post-upgrade owns the legacy progress; a later
-        // DIFFERENT identity starts fresh (cursor 0 → snapshot bootstrap).
-        XCTAssertEqual(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: first)) as? Int64, 42)
+        XCTAssertNil(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: first)))
         XCTAssertNil(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: second)))
     }
 
-    func testLegacyMigrationNeverOverwritesAnExistingScopedCursor() {
+    func testLegacyQuarantineNeverRemovesAnExistingScopedCursor() {
         let scope = RelayTicker.cursorScope(relayUrl: "https://relay.example", groupIdHex: "aa")
         defaults.set(Int64(100), forKey: RelayTicker.inboundCursorKey(scope: scope))
         defaults.set(Int64(42), forKey: RelayTicker.legacyInboundCursorKey)
 
-        RelayTicker.migrateLegacyCursors(toScope: scope, defaults: defaults)
+        RelayTicker.quarantineLegacyCursors(defaults: defaults)
 
-        // Scoped progress wins; the stale bare key is still removed.
         XCTAssertEqual(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: scope)) as? Int64, 100)
         XCTAssertNil(defaults.object(forKey: RelayTicker.legacyInboundCursorKey))
     }
 
-    func testMigrationWithNoLegacyKeysIsANoOp() {
+    func testQuarantineWithNoLegacyKeysIsANoOp() {
         let scope = RelayTicker.cursorScope(relayUrl: "https://relay.example", groupIdHex: "aa")
-        RelayTicker.migrateLegacyCursors(toScope: scope, defaults: defaults)
+        RelayTicker.quarantineLegacyCursors(defaults: defaults)
         XCTAssertNil(defaults.object(forKey: RelayTicker.inboundCursorKey(scope: scope)))
         XCTAssertNil(defaults.object(forKey: RelayTicker.outboundCursorKey(scope: scope)))
     }

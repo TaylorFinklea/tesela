@@ -32,8 +32,8 @@
 use crate::device::DeviceId;
 use crate::engine::{
     cursor::PeerCursor, BlockRelocationOutcome, BlockRelocationRequest, BlockRelocationStatus,
-    LocalCursor, MovePlacement, PendingImport, RelayApplyReport, RelocatedNoteVersion, SyncEngine,
-    CATCHUP_BACKOFF_SHIFT_CAP, MAX_CATCHUP_ATTEMPTS,
+    ExportedDocUpdate, LocalCursor, MovePlacement, PendingImport, RelayApplyReport,
+    RelocatedNoteVersion, SyncEngine, CATCHUP_BACKOFF_SHIFT_CAP, MAX_CATCHUP_ATTEMPTS,
 };
 use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
@@ -41,10 +41,10 @@ use crate::oplog::op::{ContentHash, EncodedOp, OpPayload, PropOp};
 use crate::PropScalar;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
+use loro::cursor::{Cursor, Side};
 use loro::{
     ExportMode, LoroDoc, LoroText, LoroTree, TreeID, TreeParentId, UpdateOptions, VersionVector,
 };
-use loro::cursor::{Cursor, Side};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -562,8 +562,8 @@ impl LoroEngine {
                 outbound_strand_alarms: AtomicU64::new(0),
             }),
         };
-        let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION
-            || !engine.index_matches_loaded_docs().await;
+        let needs_rebuild =
+            stored_version != INDEX_SCHEMA_VERSION || !engine.index_matches_loaded_docs().await;
         if needs_rebuild {
             engine.rebuild_index_from_docs().await;
             engine.save_index_snapshot(&snapshot_dir).await;
@@ -641,9 +641,7 @@ impl LoroEngine {
             // still takes the incremental path — `updates(vv)` there is a real
             // non-empty delta of the ops current holds that vv lacks.
             Some(bytes) => match VersionVector::decode(bytes) {
-                Ok(vv) if vv.includes_vv(&doc.oplog_vv()) => {
-                    doc.export(ExportMode::Snapshot).ok()
-                }
+                Ok(vv) if vv.includes_vv(&doc.oplog_vv()) => doc.export(ExportMode::Snapshot).ok(),
                 Ok(vv) => doc
                     .export(ExportMode::updates(&vv))
                     .ok()
@@ -652,6 +650,45 @@ impl LoroEngine {
             },
             None => doc.export(ExportMode::Snapshot).ok(),
         }
+    }
+
+    /// Capture a cursor-free multi-note export and the exact version vectors
+    /// carried by it while holding every addressed note's apply lock. Locks
+    /// are acquired in note-id order, matching relocation's deadlock rule.
+    pub async fn export_doc_updates_with_versions(
+        &self,
+        requests: &[([u8; 16], Option<Vec<u8>>)],
+    ) -> Vec<ExportedDocUpdate> {
+        let mut note_ids: Vec<[u8; 16]> = requests.iter().map(|(id, _)| *id).collect();
+        note_ids.sort_unstable();
+        note_ids.dedup();
+
+        let mut locks = Vec::with_capacity(note_ids.len());
+        for note_id in note_ids {
+            locks.push(self.apply_lock_for_note(note_id).await);
+        }
+        let mut guards = Vec::with_capacity(locks.len());
+        for lock in locks {
+            guards.push(lock.lock_owned().await);
+        }
+
+        let mut exports = Vec::with_capacity(requests.len());
+        for (note_id, since) in requests {
+            let Some(update_bytes) = self.export_doc_update(*note_id, since.as_deref()).await
+            else {
+                continue;
+            };
+            let Some(version) = self.doc_version(*note_id).await else {
+                continue;
+            };
+            exports.push(ExportedDocUpdate {
+                note_id: *note_id,
+                update_bytes,
+                version,
+            });
+        }
+        drop(guards);
+        exports
     }
 
     /// Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -768,7 +805,11 @@ impl LoroEngine {
     /// to its CURRENT utf16 offset in this engine's doc, accounting for edits
     /// applied since it was minted. `None` if the cursor can't be placed (e.g.
     /// its block was deleted).
-    pub async fn resolve_block_cursor(&self, note_id: [u8; 16], cursor_bytes: &[u8]) -> Option<u32> {
+    pub async fn resolve_block_cursor(
+        &self,
+        note_id: [u8; 16],
+        cursor_bytes: &[u8],
+    ) -> Option<u32> {
         let doc = self.doc_for_note_mut(note_id).await;
         let cursor = Cursor::decode(cursor_bytes).ok()?;
         let pos = doc.get_cursor_pos(&cursor).ok()?;
@@ -902,10 +943,7 @@ impl LoroEngine {
     ///   repair the cursor (= snapshot vv) is strictly behind `current` and the
     ///   next `produce` ships that edit incrementally. (Re-reading the vv at
     ///   confirm time would instead skip it.)
-    pub async fn repair_broadcast_cursors_after_snapshot(
-        &self,
-        committed: &[([u8; 16], Vec<u8>)],
-    ) {
+    pub async fn repair_broadcast_cursors_after_snapshot(&self, committed: &[([u8; 16], Vec<u8>)]) {
         if committed.is_empty() {
             return;
         }
@@ -1360,10 +1398,7 @@ impl LoroEngine {
         match docs.get(&note_id) {
             Some(doc) => {
                 let bytes = doc.export(ExportMode::Snapshot).map_err(|e| {
-                    SyncError::Storage(format!(
-                        "snapshot export for {}: {e}",
-                        hex_id(&note_id)
-                    ))
+                    SyncError::Storage(format!("snapshot export for {}: {e}", hex_id(&note_id)))
                 })?;
                 let tmp = unique_tmp(&path);
                 tokio::fs::write(&tmp, &bytes).await.map_err(|e| {
@@ -1499,7 +1534,13 @@ impl LoroEngine {
     /// — every note whose inbound update is currently stuck behind a missing
     /// base, with when it first stalled and which peers' ops it carried.
     pub async fn pending_import_notes(&self) -> Vec<PendingImport> {
-        self.inner.pending_imports.read().await.values().cloned().collect()
+        self.inner
+            .pending_imports
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Notes that have stayed pending past one full inbound apply pass and so
@@ -1880,7 +1921,9 @@ impl LoroEngine {
                 let json = serde_json::to_string(cfg).map_err(|e| {
                     SyncError::Storage(format!("display_table_config serialize: {e}"))
                 })?;
-                entry.insert("display_table_config", json.as_str()).map_err(ins)?;
+                entry
+                    .insert("display_table_config", json.as_str())
+                    .map_err(ins)?;
             }
             None => {
                 let _ = entry.delete("display_table_config");
@@ -2763,10 +2806,7 @@ impl SyncEngine for LoroEngine {
         }
     }
 
-    async fn record_local_batch(
-        &self,
-        payloads: Vec<OpPayload>,
-    ) -> Vec<SyncResult<ContentHash>> {
+    async fn record_local_batch(&self, payloads: Vec<OpPayload>) -> Vec<SyncResult<ContentHash>> {
         let mut note_ids = HashSet::with_capacity(payloads.len());
         let unique_note_upserts = payloads.iter().all(|payload| match payload {
             OpPayload::NoteUpsert { note_id, .. } => note_ids.insert(*note_id),
@@ -2865,6 +2905,13 @@ impl SyncEngine for LoroEngine {
     /// live WS path uses (does NOT touch the relay broadcast cursor).
     async fn export_doc_update(&self, note_id: [u8; 16], since: Option<&[u8]>) -> Option<Vec<u8>> {
         LoroEngine::export_doc_update(self, note_id, since).await
+    }
+
+    async fn export_doc_updates_with_versions(
+        &self,
+        requests: &[([u8; 16], Option<Vec<u8>>)],
+    ) -> Vec<ExportedDocUpdate> {
+        LoroEngine::export_doc_updates_with_versions(self, requests).await
     }
 
     /// Trait-level override forwarding to the inherent

@@ -20,7 +20,10 @@ pub mod ws;
 use std::sync::Arc;
 
 use axum::{
-    http::StatusCode,
+    extract::{Request, State},
+    http::{Method, StatusCode},
+    middleware::{from_fn_with_state, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -31,7 +34,10 @@ use tracing::Level;
 
 use crate::state::AppState;
 
+const EXPECTED_GROUP_HEADER: &str = "x-tesela-expected-group";
+
 pub fn build(state: AppState) -> Router {
+    let state = Arc::new(state);
     let app = Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
@@ -230,6 +236,11 @@ pub fn build(state: AppState) -> Router {
     };
 
     app
+        // An attached client may bind any HTTP operation to the physical
+        // group it verified over WebSocket. The guard holds the group's read
+        // lock through the complete handler, making validation atomic with
+        // the read or mutation instead of opening another check/use race.
+        .layer(from_fn_with_state(Arc::clone(&state), expected_group_gate))
         // Request/response tracing for live sync-delivery visibility.
         // make_span at INFO emits method+uri; on_response at INFO emits
         // status+latency under that span — one INFO line per request at
@@ -239,7 +250,113 @@ pub fn build(state: AppState) -> Router {
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
-        .with_state(Arc::new(state))
+        .with_state(state)
+}
+
+async fn expected_group_gate(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    if state
+        .group_transition_pending_restart
+        .load(std::sync::atomic::Ordering::Acquire)
+        && restart_pending_blocks(path)
+    {
+        return restart_pending_response();
+    }
+
+    // A request that replaces the group cannot also hold the current group's
+    // read lease through its handler: that would self-deadlock when the route
+    // acquires the write lock. Group selection/pairing is intentionally an
+    // unbound control-plane operation; attached data-plane calls are bound.
+    let replaces_group = request.method() == Method::POST && matches!(path, "/sync/peer/pair-code");
+    if replaces_group {
+        if request.headers().contains_key(EXPECTED_GROUP_HEADER) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "group_replacement_cannot_be_bound",
+                })),
+            )
+                .into_response();
+        }
+        return next.run(request).await;
+    }
+
+    let expected = match request.headers().get(EXPECTED_GROUP_HEADER) {
+        Some(raw_expected) => {
+            let Ok(raw_expected) = raw_expected.to_str() else {
+                return invalid_expected_group("expected group header is not UTF-8");
+            };
+            let normalized = raw_expected.trim().to_ascii_lowercase();
+            let Ok(bytes) = hex::decode(&normalized) else {
+                return invalid_expected_group("expected group header is not hex");
+            };
+            if bytes.len() != 16 {
+                return invalid_expected_group("expected group header must encode 16 bytes");
+            }
+            Some((normalized, bytes))
+        }
+        None => None,
+    };
+
+    // Every data-plane handler takes a read lease, including legacy/web calls
+    // without an identity header. The header adds an exact-group comparison;
+    // it is not what creates transition serialization. Pairing holds the
+    // matching write lease while it durably adopts and publishes a new group.
+    let identity = Arc::clone(&state.group_identity).read_owned().await;
+    if state
+        .group_transition_pending_restart
+        .load(std::sync::atomic::Ordering::Acquire)
+        && restart_pending_blocks(path)
+    {
+        return restart_pending_response();
+    }
+    if let Some((normalized_expected, expected_bytes)) = expected {
+        if expected_bytes.as_slice() != identity.group_id.as_bytes() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "mosaic_group_mismatch",
+                    "expected_group_id_hex": normalized_expected,
+                    "current_group_id_hex": hex::encode(identity.group_id.as_bytes()),
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let response = next.run(request).await;
+    drop(identity);
+    response
+}
+
+fn restart_pending_blocks(path: &str) -> bool {
+    !matches!(path, "/health" | "/mosaics/current" | "/server/restart")
+}
+
+fn restart_pending_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": "group_transition_pending_restart",
+            "restart_required": true,
+        })),
+    )
+        .into_response()
+}
+
+fn invalid_expected_group(message: &'static str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "invalid_expected_group",
+            "message": message,
+        })),
+    )
+        .into_response()
 }
 
 async fn health() -> (StatusCode, Json<serde_json::Value>) {
@@ -255,4 +372,28 @@ async fn info() -> (StatusCode, Json<serde_json::Value>) {
         StatusCode::OK,
         Json(json!({ "device_name": crate::device_display_name() })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_restart_gate_allows_only_observation_and_restart_controls() {
+        for path in ["/health", "/mosaics/current", "/server/restart"] {
+            assert!(
+                !restart_pending_blocks(path),
+                "control path blocked: {path}"
+            );
+        }
+        for path in [
+            "/notes",
+            "/loro/notes/daily/snapshot",
+            "/sync/peer/pair-code",
+            "/mosaics/switch",
+            "/ws",
+        ] {
+            assert!(restart_pending_blocks(path), "data path escaped: {path}");
+        }
+    }
 }

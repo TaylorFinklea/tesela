@@ -2,6 +2,50 @@ import Foundation
 import Combine
 import UIKit
 
+struct SandboxNoteSnapshot: Sendable {
+    let id: String
+    let content: String
+    let modifiedAt: Date
+}
+
+/// Serializes one note-level compare-and-atomic-write transaction with
+/// profile activation. Updating the generation waits for any note already in
+/// its critical section; after activation returns, an old detached snapshot
+/// can no longer write another file, even for an A -> B -> A switch that
+/// returns to the same physical engine scope.
+final class SandboxSnapshotWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeGeneration: UInt64 = 0
+
+    func activate(generation: UInt64) {
+        lock.lock()
+        activeGeneration = generation
+        lock.unlock()
+    }
+
+    func write(
+        _ note: SandboxNoteSnapshot,
+        to notesDirectory: URL,
+        generation: UInt64
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == activeGeneration else { return }
+
+        let path = notesDirectory.appendingPathComponent("\(note.id).md")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+           let localMtime = attrs[.modificationDate] as? Date,
+           localMtime > note.modifiedAt {
+            return
+        }
+        if let existing = try? String(contentsOf: path, encoding: .utf8),
+           existing == note.content {
+            return
+        }
+        try? note.content.write(to: path, atomically: true, encoding: .utf8)
+    }
+}
+
 /// The mosaic the SwiftUI views consume. Despite the historical
 /// `Mock` prefix, this service can now load from two sources:
 ///
@@ -205,14 +249,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// device's friendly name so peers can label the caret/chip. Throttled to
     /// ≤1 frame / 100ms (leading + trailing) — see `presenceThrottleTimer`.
     func publishPresence(slug: String, bid: String, offset: Int) {
-        guard sendPresence != nil else { return }
+        guard backendMutationAdmissionIsOpen, sendPresence != nil else { return }
         presencePending = (slug, bid, offset)
         if presenceThrottleTimer != nil { return }
         flushPresence() // leading edge
+        let generation = backendGeneration
         presenceThrottleTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { _ in
             Task { @MainActor [weak self] in
-                self?.presenceThrottleTimer = nil
-                self?.flushPresence() // trailing edge — coalesced last move
+                guard let self, self.backendGeneration == generation else { return }
+                self.presenceThrottleTimer = nil
+                self.flushPresence() // trailing edge — coalesced last move
             }
         }
     }
@@ -290,6 +336,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     var onLocalNoteWrite:
         ((_ slug: String, _ title: String, _ content: String, _ createdAtMillis: Int64) async -> Void)? = nil
 
+    /// Durable complete-subtree relocation seam. The shell wires this to
+    /// `RelayTicker.relocateSubtree`; the service never composes a Swift-side
+    /// copy/delete or mutates rendered arrays before engine success.
+    var onLocalBlockMove: ((_ request: BlockMoveRequest) async throws -> [String])? = nil
+
     /// Saved-views registry seams (saved-views spec, 2026-06-10) — the
     /// `.relay` analog of the server's `/views` routes. Wired in
     /// `GrAppShell` to `RelayTicker.viewsList()` /
@@ -323,12 +374,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// on every open is safe-but-cheap. Arg: the note slug.
     var onNoteOpened: ((String) -> Void)? = nil
 
-    private let session = URLSession(configuration: .default)
+    private let session: URLSession
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
 
-    init(now: @escaping () -> Date = { Date() }) {
+    init(
+        now: @escaping () -> Date = { Date() },
+        session: URLSession = URLSession(configuration: .default)
+    ) {
         self.now = now
+        self.session = session
         self.pages = MockSeed.pages
         self.tags = MockSeed.tags
         self.recent = MockSeed.recent
@@ -342,6 +397,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     // MARK: - Mutating API
 
     func toggleTask(id: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         if let idx = todayBlocks.firstIndex(where: { $0.id == id }), todayBlocks[idx].kind == .task {
             todayBlocks[idx].done.toggle()
             let done = todayBlocks[idx].done
@@ -388,8 +444,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
         properties: [BlockProperty] = [],
         fallback: @escaping @MainActor () -> Void
     ) {
+        let generation = backendGeneration
+        let backend = currentBackend
         let status = Self.taskStatusValue(done: done)
-        switch currentBackend {
+        switch backend {
         case .mock:
             return
         case .http(let baseURL):
@@ -398,33 +456,44 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // the plain status write — the roll happens server-side.
             beginLocalWriteSuppression()
             Task {
+                guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                 let body = APISetBlockPropertyBody(
                     block_id: "\(noteId):\(bid)", key: "status", value: status
                 )
                 do {
                     try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
                 } catch {
+                    guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                     fallback()
                 }
             }
         case .relay:
             beginLocalWriteSuppression()
             Task {
+                guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                 // The relay/engine write path has NO recurrence roll (it
                 // lives in the server routes the relay bypasses), so
                 // COMPLETING a recurring task rolls it forward locally here.
                 // Non-recurring — or un-completing — falls through to the
                 // plain status op.
-                if done, await rollRecurringComplete(noteId: noteId, bid: bid, properties: properties) {
-                    await refresh(from: currentBackend)
+                if done, await rollRecurringComplete(
+                    noteId: noteId,
+                    bid: bid,
+                    properties: properties,
+                    expectedGeneration: generation
+                ) {
+                    guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
+                    await refresh(from: backend, generation: generation)
                     return
                 }
+                guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                 let applied = await onLocalPropertySet?(noteId, bid, "status", status) ?? false
+                guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                 if applied {
                     // The engine re-materialized the file before the seam
                     // returned — re-read so the UI reflects the durable
                     // state (and refreshTick nudges Agenda/Inbox).
-                    await refresh(from: currentBackend)
+                    await refresh(from: backend, generation: generation)
                 } else {
                     fallback()
                 }
@@ -448,7 +517,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Returns `true` if the block was recurring (rolled or marked spent);
     /// `false` if it isn't recurring or has no anchor date, so the caller
     /// does the plain `status::` write instead.
-    func rollRecurringComplete(noteId: String, bid: String, properties: [BlockProperty]) async -> Bool {
+    func rollRecurringComplete(
+        noteId: String,
+        bid: String,
+        properties: [BlockProperty],
+        expectedGeneration: UInt64? = nil
+    ) async -> Bool {
+        let generation = expectedGeneration ?? backendGeneration
+        guard isCurrentGeneration(generation) else { return false }
         func prop(_ key: String) -> String? { properties.first { $0.key == key }?.value }
         guard let recurringRaw = prop("recurring"),
               let rec = LocalQueryEngine.parseRecurrence(recurringRaw)
@@ -466,8 +542,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let isActive = LocalQueryEngine.advance(rec, current: anchor, doneSoFar: doneSoFar) != nil
         let newDone = doneSoFar + 1
 
-        func set(_ key: String, _ value: String) async {
+        func set(_ key: String, _ value: String) async -> Bool {
+            guard isCurrentGeneration(generation) else { return false }
             _ = await onLocalPropertySet?(noteId, bid, key, value)
+            return isCurrentGeneration(generation)
         }
         // Advance ONE date field from its own value, re-wrapping as the
         // canonical `[[YYYY-MM-DD]]` the rest of the app links on (so the
@@ -493,19 +571,23 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // roll would need a single multi-key engine op the FFI seam doesn't
         // expose yet; the residual window is a documented edge.
         if isActive {
-            await set("status", "todo")
-            if let nd = rolled(deadlineRaw) { await set("deadline", nd) }
-            if let ns = rolled(scheduledRaw) { await set("scheduled", ns) }
-            await set("recurrence_done", String(newDone))
-            await set("last_completed", "[[\(anchor)]]")
+            guard await set("status", "todo") else { return true }
+            if let nd = rolled(deadlineRaw) {
+                guard await set("deadline", nd) else { return true }
+            }
+            if let ns = rolled(scheduledRaw) {
+                guard await set("scheduled", ns) else { return true }
+            }
+            guard await set("recurrence_done", String(newDone)) else { return true }
+            guard await set("last_completed", "[[\(anchor)]]") else { return true }
         } else {
             // Series spent — the completed occurrence is the last one. The
             // relay path is the ONLY writer of status to the engine (unlike
             // the server, whose note save already persisted `done` before
             // its spent-rewrite), so we MUST persist `done` here or the
             // checkbox reverts on the next refresh. Dates stay put.
-            await set("status", "done")
-            await set("recurrence_done", String(newDone))
+            guard await set("status", "done") else { return true }
+            guard await set("recurrence_done", String(newDone)) else { return true }
         }
         return true
     }
@@ -527,6 +609,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Mirror of `editTodayBlock` for yesterday's daily.
     func editYesterdayBlock(id: String, text: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
         let (body, tags) = Self.splitInlineTags(text)
         yesterdayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
@@ -539,6 +622,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// block's id so the caller can flip it into edit mode.
     @discardableResult
     func appendYesterdayBlock(kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
+        guard backendMutationAdmissionIsOpen else { return "" }
         let id = UUID().uuidString.lowercased()
         let block = Block(id: id, kind: kind, text: "", indent: indent)
         if let after, let idx = yesterdayBlocks.firstIndex(where: { $0.id == after }) {
@@ -552,6 +636,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Delete a block from yesterday's daily.
     func deleteYesterdayBlock(id: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         yesterdayBlocks.removeAll { $0.id == id }
         scheduleYesterdayWriteback()
     }
@@ -559,6 +644,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Indent / outdent a yesterday block; clamps to the structural
     /// invariant (`[0, prev + 1]`) the today path enforces.
     func indentYesterdayBlock(id: String, by delta: Int) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
         let maxIndent = idx > 0 ? yesterdayBlocks[idx - 1].indent + 1 : 0
         yesterdayBlocks[idx].indent = max(0, min(maxIndent, yesterdayBlocks[idx].indent + delta))
@@ -584,7 +670,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard !slug.isEmpty else { return }
         beginLocalWriteSuppression()
         let snapshot = yesterdayBlocks
-        Task { await pushPage(id: slug, blocks: snapshot) }
+        schedulePagePush(id: slug, blocks: snapshot)
     }
 
     // MARK: - Past daily edits
@@ -594,14 +680,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// inline editor updates immediately, then route the same snapshot
     /// through `pushPage` so persistence stays on the normal page path.
     private func updatePastDaily(dayId: String, _ mutate: (inout [Block]) -> Void) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
         var blocks = pastDailies[dayIdx].blocks
         mutate(&blocks)
         pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
-        Task { await pushPage(id: dayId, blocks: blocks) }
+        schedulePagePush(id: dayId, blocks: blocks)
     }
 
     func togglePastDailyTask(dayId: String, blockId: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
         var blocks = pastDailies[dayIdx].blocks
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }),
@@ -616,7 +704,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         )
         pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
         persistTaskToggle(noteId: dayId, bid: blockId, done: done, properties: blocks[idx].properties) { [weak self] in
-            Task { await self?.pushPage(id: dayId, blocks: blocks) }
+            self?.schedulePagePush(id: dayId, blocks: blocks)
         }
     }
 
@@ -632,6 +720,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     @discardableResult
     func appendPastDailyBlock(dayId: String, kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
+        guard backendMutationAdmissionIsOpen else { return "" }
         let id = UUID().uuidString.lowercased()
         let block = Block(id: id, kind: kind, text: "", indent: indent, noteId: dayId)
         updatePastDaily(dayId: dayId) { blocks in
@@ -662,11 +751,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Used by the keyboard accessory toolbar so the user can convert
     /// between note and task without leaving the keyboard.
     func cycleBlockStatus(id: String, pageSlug: String? = nil) {
+        guard backendMutationAdmissionIsOpen else { return }
         if let slug = pageSlug {
             var blocks = loadedPageBlocks[slug] ?? []
             guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
             blocks[idx] = nextStatus(blocks[idx])
-            Task { await pushPage(id: slug, blocks: blocks) }
+            schedulePagePush(id: slug, blocks: blocks)
         } else if let idx = todayBlocks.firstIndex(where: { $0.id == id }) {
             todayBlocks[idx] = nextStatus(todayBlocks[idx])
             scheduleWriteback()
@@ -688,6 +778,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// The raw text may contain inline `#tag` hashtags; we split those
     /// out into `block.tags` and store only the body in `block.text`.
     func editTodayBlock(id: String, text: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
         let (body, tags) = Self.splitInlineTags(text)
         // `text` is the first line (used by previews/grep); `rawText`
@@ -718,6 +809,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `utf16Offset` / `utf16DeleteLen` are UTF-16 code units (the
     /// editor's native `NSRange`), exactly what `spliceBlockText` wants.
     func spliceTodayBlock(id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
         // A local keystroke changes the editor text; bump so an inbound
         // live-reconcile whose async read overlaps this edit can detect the
@@ -824,6 +916,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// whole-text writeback — a splice cannot CREATE a block, so an engine-miss
     /// would be a silent no-op (lost keystroke).
     func spliceYesterdayBlock(id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
         localSpliceSeq &+= 1
         let result = Self.applyFaithfulSplice(
@@ -844,6 +937,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// mirror of `spliceTodayBlock` (slug = the page id). Falls back to the
     /// whole-page writeback (`pushPage`) before the note materializes locally.
     func splicePageBlock(pageId: String, id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
         localSpliceSeq &+= 1
@@ -854,7 +948,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         loadedPageBlocks[pageId] = blocks
         guard currentBackend != .mock, !pageId.isEmpty else { return }
         if !noteMaterializedLocally(slug: pageId) {
-            Task { await pushPage(id: pageId, blocks: blocks) }
+            schedulePagePush(id: pageId, blocks: blocks)
             return
         }
         beginLocalWriteSuppression()
@@ -866,6 +960,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Falls back to the whole-note writeback (`pushPage`) before the note
     /// materializes locally.
     func splicePastDailyBlock(dayId: String, id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
         var blocks = pastDailies[dayIdx].blocks
         guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
@@ -877,7 +972,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
         guard currentBackend != .mock, !dayId.isEmpty else { return }
         if !noteMaterializedLocally(slug: dayId) {
-            Task { await pushPage(id: dayId, blocks: blocks) }
+            schedulePagePush(id: dayId, blocks: blocks)
             return
         }
         beginLocalWriteSuppression()
@@ -999,6 +1094,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// block's id so the caller can flip it into edit mode immediately.
     @discardableResult
     func appendTodayBlock(kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
+        guard backendMutationAdmissionIsOpen else { return "" }
         // Canonical (36-char dashed) UUID so isCanonicalUUID(...) returns
         // true and the rendered `- text <!-- bid:UUID -->` carries the
         // id verbatim. The earlier "ios-<12char>" form was non-canonical,
@@ -1020,6 +1116,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Delete a block from today and push.
     func deleteTodayBlock(id: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         todayBlocks.removeAll { $0.id == id }
         scheduleWriteback()
     }
@@ -1029,6 +1126,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// level deeper than the block above it (every block has an
     /// immediate parent), so the depth is clamped to `[0, prev + 1]`.
     func indentTodayBlock(id: String, by delta: Int) {
+        guard backendMutationAdmissionIsOpen else { return }
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
         let maxIndent = idx > 0 ? todayBlocks[idx - 1].indent + 1 : 0
         todayBlocks[idx].indent = max(0, min(maxIndent, todayBlocks[idx].indent + delta))
@@ -1037,11 +1135,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Same for a non-daily page — clamped to `[0, prev + 1]`.
     func indentPageBlock(pageId: String, blockId: String, by delta: Int) {
+        guard backendMutationAdmissionIsOpen else { return }
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
         let maxIndent = idx > 0 ? blocks[idx - 1].indent + 1 : 0
         blocks[idx].indent = max(0, min(maxIndent, blocks[idx].indent + delta))
-        Task { await pushPage(id: pageId, blocks: blocks) }
+        schedulePagePush(id: pageId, blocks: blocks)
     }
 
     /// Same shape as editTodayBlock, but for any opened page. Splits inline
@@ -1052,6 +1151,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// properties live in `block.properties` / the engine container and
     /// re-render as chips, so nothing is lost.
     func editPageBlock(pageId: String, blockId: String, text: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
         let (body, tags) = Self.splitInlineTags(text)
@@ -1059,12 +1159,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
         blocks[idx].text = cleanBody.components(separatedBy: "\n").first ?? cleanBody
         blocks[idx].rawText = cleanBody
         blocks[idx].tags = tags
-        Task { await pushPage(id: pageId, blocks: blocks) }
+        schedulePagePush(id: pageId, blocks: blocks)
     }
 
     /// Append a new empty block on a non-daily page.
     @discardableResult
     func appendPageBlock(pageId: String, kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
+        guard backendMutationAdmissionIsOpen else { return "" }
         let id = UUID().uuidString.lowercased()
         var blocks = loadedPageBlocks[pageId] ?? []
         let block = Block(id: id, kind: kind, text: "", indent: indent)
@@ -1073,15 +1174,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
         } else {
             blocks.append(block)
         }
-        Task { await pushPage(id: pageId, blocks: blocks) }
+        schedulePagePush(id: pageId, blocks: blocks)
         return id
     }
 
     /// Delete a block from a page.
     func deletePageBlock(pageId: String, blockId: String) {
+        guard backendMutationAdmissionIsOpen else { return }
         var blocks = loadedPageBlocks[pageId] ?? []
         blocks.removeAll { $0.id == blockId }
-        Task { await pushPage(id: pageId, blocks: blocks) }
+        schedulePagePush(id: pageId, blocks: blocks)
     }
 
     /// Pages matching `query`, ranked for the `[[` link autocomplete.
@@ -1120,6 +1222,76 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return LinkSuggest.rank(visible, query: q, limit: limit)
     }
 
+    func blockMoveDestinations(
+        query: String,
+        excluding sourceSlug: String
+    ) -> [BlockMoveDestination] {
+        let dailyDestinations = [
+            BlockMoveDestination(
+                slug: todayDailySlug,
+                title: "Today · \(todayDailySlug)",
+                kind: .daily
+            ),
+            BlockMoveDestination(
+                slug: yesterdayId,
+                title: "Yesterday · \(yesterdayId)",
+                kind: .daily
+            ),
+        ] + pastDailies.map { day in
+            BlockMoveDestination(slug: day.id, title: day.id, kind: .daily)
+        }
+        let indexedPages = searchablePages(query, limit: 50).map { page in
+            BlockMoveDestination(slug: page.slug, title: page.title, kind: .page)
+        }
+        let pageDestinations = Self.availableBlockMovePages(
+            indexedPages,
+            backend: currentBackend,
+            isMaterialized: { [self] slug in noteMaterializedLocally(slug: slug) }
+        )
+        return BlockMoveDestination.filtered(
+            dailyDestinations + pageDestinations,
+            query: query,
+            excluding: sourceSlug
+        )
+    }
+
+    /// Relay-only moves can target only locally resident pages: unlike daily
+    /// notes, arbitrary pages have no trusted seed when their Loro document is
+    /// absent. HTTP mode can hydrate an indexed page from the Mac on demand.
+    static func availableBlockMovePages(
+        _ destinations: [BlockMoveDestination],
+        backend: Backend,
+        isMaterialized: (String) -> Bool
+    ) -> [BlockMoveDestination] {
+        guard case .relay = backend else { return destinations }
+        return destinations.filter { isMaterialized($0.slug) }
+    }
+
+    func moveSubtree(
+        _ request: BlockMoveRequest,
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        guard request.sourceSlug != request.destinationSlug else {
+            throw FfiSyncError.RelocationRejected(
+                message: "Choose a different destination note"
+            )
+        }
+        guard let relocate = onLocalBlockMove else {
+            throw FfiSyncError.Other(message: "Block relocation is unavailable")
+        }
+
+        beginLocalWriteSuppression()
+        _ = try await relocate(request)
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
+        guard backend != .mock else { return }
+
+        await refresh(from: backend, generation: generation)
+        await refreshLoadedPages(generation: generation)
+    }
+
     /// Tag names matching `query` for `#` autocomplete. Uses the complete
     /// tag set from the Loro index in `.relay` (cached, includes tags on
     /// unmaterialized notes); the in-memory `tags` list otherwise. Empty
@@ -1140,9 +1312,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Loro index — the complete lists, including notes/tags not
     /// materialized locally. Called on each `.relay` refresh. No-op
     /// outside `.relay` / unwired.
-    func refreshIndexPages() async {
-        guard case .relay = currentBackend, let load = onIndexEntries else { return }
+    func refreshIndexPages(generation: UInt64? = nil) async {
+        let expectedGeneration = generation ?? backendGeneration
+        let backend = currentBackend
+        guard case .relay = backend,
+              isCurrentBackend(generation: expectedGeneration, backend: backend),
+              let load = onIndexEntries
+        else { return }
         guard let entries = await load() else { return }
+        guard isCurrentBackend(generation: expectedGeneration, backend: backend) else { return }
         let today = dailyId(daysAgo: 0)
         indexPageCache = entries.compactMap { e in
             let slug = e.slug.isEmpty ? e.noteIdHex : e.slug
@@ -1169,6 +1347,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// old `insert(at: 0)` put every capture ABOVE the day's existing
     /// notes (2026-06-10 product test).
     func capture(_ text: String, target: CaptureTarget, tag: String? = nil) {
+        guard backendMutationAdmissionIsOpen else { return }
+        captureAdmitted(text, target: target, tag: tag)
+    }
+
+    /// Perform a capture whose user action was admitted before an await. Voice
+    /// transcription owns a backend-operation lease across its upload, so a
+    /// later profile request must let that already-started capture drain even
+    /// though it has closed admission to newer actions.
+    private func captureAdmitted(_ text: String, target: CaptureTarget, tag: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
@@ -1199,7 +1386,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             var blocks = loadedPageBlocks[slug] ?? []
             blocks.append(Block(id: id, kind: typed.kind, text: typed.body,
                                 tags: typed.tags, properties: typed.props))
-            Task { await pushPage(id: slug, blocks: blocks) }
+            schedulePagePush(id: slug, blocks: blocks)
         case .childOf(let parentId, _, let pageSlug):
             insertChildBlock(
                 parentId: parentId,
@@ -1285,7 +1472,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                       tags: tags, properties: properties),
                 at: idx + 1
             )
-            Task { await pushPage(id: slug, blocks: blocks) }
+            schedulePagePush(id: slug, blocks: blocks)
         } else {
             guard let idx = todayBlocks.firstIndex(where: { $0.id == parentId }) else { return }
             let childIndent = todayBlocks[idx].indent + 1
@@ -1318,6 +1505,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// for highlighted matches; we rewrite those to `**...**` so the
     /// existing bold-span rendering picks them up.
     func runSearch(_ query: String) async {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else {
             searchHits = []
@@ -1325,7 +1515,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             searchInFlight = false
             return
         }
-        switch currentBackend {
+        switch backend {
         case .mock:
             searchHits = search(q)
             searchError = nil
@@ -1348,6 +1538,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     return nil
                 }
             }()
+            guard isCurrentBackend(generation: generation, backend: backend) else { return }
             if let httpHits {
                 searchHits = httpHits.map(mapSearchHit)
                 searchError = nil
@@ -1496,7 +1687,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             throw URLError(.badURL)
         }
         let req = {
-            var r = URLRequest(url: endpoint("/loro/notes/\(slug)/snapshot", baseURL: baseURL))
+            var r = groupBoundRequest(
+                url: endpoint("/loro/notes/\(slug)/snapshot", baseURL: baseURL)
+            )
             r.timeoutInterval = 8
             return r
         }()
@@ -1513,12 +1706,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Upload a WAV file to the server's /transcription/transcribe
     /// endpoint and return the transcribed text. The server holds
     /// the active model selection in `<mosaic>/.tesela/models/ACTIVE`.
-    func transcribe(audio fileURL: URL) async throws -> String {
-        guard case .http(let baseURL) = currentBackend else {
+    func transcribe(audio fileURL: URL, expectedGeneration: UInt64? = nil) async throws -> String {
+        let generation = expectedGeneration ?? backendGeneration
+        guard isCurrentGeneration(generation) else {
+            throw CancellationError()
+        }
+        let backend = currentBackend
+        guard case .http(let baseURL) = backend,
+              isCurrentBackend(generation: generation, backend: backend)
+        else {
             throw URLError(.badURL)
         }
+
+        beginBackendOperation()
+        defer { finishBackendOperation() }
+        let text = try await transcribe(audio: fileURL, baseURL: baseURL)
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
+        return text
+    }
+
+    private func transcribe(audio fileURL: URL, baseURL: URL) async throws -> String {
         let endpoint = endpoint("/transcription/transcribe", baseURL: baseURL)
-        var req = URLRequest(url: endpoint)
+        var req = groupBoundRequest(url: endpoint)
         req.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -1547,10 +1758,24 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// resulting text as a new block on today's daily. Returns the
     /// transcript so the caller can surface it for confirmation.
     func captureVoiceNote(audio fileURL: URL) async throws -> String {
-        let text = try await transcribe(audio: fileURL)
+        guard backendMutationAdmissionIsOpen else { throw CancellationError() }
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard case .http(let baseURL) = backend,
+              isCurrentBackend(generation: generation, backend: backend)
+        else {
+            throw URLError(.badURL)
+        }
+
+        beginBackendOperation()
+        defer { finishBackendOperation() }
+        let text = try await transcribe(audio: fileURL, baseURL: baseURL)
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            capture(trimmed)
+            captureAdmitted(trimmed, target: .today)
         }
         return trimmed
     }
@@ -1613,7 +1838,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Fetch a page's real body content and populate the cache.
     /// Idempotent — calling again while loading or ready is a no-op.
     /// Pass `force: true` to bust the cache (used on app foreground).
-    func loadPage(id: String, force: Bool = false) async {
+    func loadPage(
+        id: String,
+        force: Bool = false,
+        generation: UInt64? = nil
+    ) async {
+        let expectedGeneration = generation ?? backendGeneration
+        let backend = currentBackend
+        guard !Task.isCancelled,
+              isCurrentBackend(generation: expectedGeneration, backend: backend)
+        else { return }
         if !force {
             switch pageLoadStates[id] {
             case .loading, .ready: return
@@ -1621,7 +1855,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             }
         }
         pageLoadStates[id] = .loading
-        switch currentBackend {
+        switch backend {
         case .mock:
             // Use the in-memory mock body if available; otherwise an
             // empty placeholder so the load state still resolves.
@@ -1680,6 +1914,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 baseURL: baseURL,
                 seconds: 3
             )
+            guard !Task.isCancelled,
+                  isCurrentBackend(generation: expectedGeneration, backend: backend)
+            else { return }
             if let note = httpResult {
                 // Engine-render: prefer the engine-materialized local file
                 // (the merged Loro output) over the HTTP body for a resident
@@ -1702,6 +1939,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let httpBacklinks: [APILink]? = try? await fetchOrTimeout(
                 "/notes/\(id)/backlinks", baseURL: baseURL, seconds: 1.5
             )
+            guard !Task.isCancelled,
+                  isCurrentBackend(generation: expectedGeneration, backend: backend)
+            else { return }
             if let httpBacklinks {
                 loadedBacklinks[id] = httpBacklinks.map(mapBacklink)
             } else {
@@ -1712,6 +1952,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // in loadedPageBlocks but in a different shape). Cheap to
             // wire up later; not on the critical path.
             let outgoing: [APILink] = (try? await httpGet("/notes/\(id)/links", baseURL: baseURL)) ?? []
+            guard !Task.isCancelled,
+                  isCurrentBackend(generation: expectedGeneration, backend: backend)
+            else { return }
             loadedLinks[id] = outgoing.map(mapBacklink)
         }
     }
@@ -1728,24 +1971,38 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// focused block's live splice-offset math against the UITextView
     /// (`reconcileOpenBlockLive` already reconciles that ONE block); every
     /// OTHER loaded page has no such risk and refreshes normally.
-    func refreshLoadedPages(except excludedIds: Set<String> = []) async {
+    func refreshLoadedPages(
+        except excludedIds: Set<String> = [],
+        generation: UInt64? = nil
+    ) async {
+        let expectedGeneration = generation ?? backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: expectedGeneration, backend: backend) else { return }
         let ids = Array(loadedPageBlocks.keys).filter { !excludedIds.contains($0) }
         for id in ids {
-            await loadPage(id: id, force: true)
+            guard isCurrentBackend(generation: expectedGeneration, backend: backend) else { return }
+            await loadPage(id: id, force: true, generation: expectedGeneration)
         }
     }
 
     /// Write a page's block list back to the server. Preserves the
     /// page's existing frontmatter from `loadedPageFrontmatter` so we
     /// don't stomp tags / title / status.
-    func pushPage(id: String, blocks: [Block]) async {
+    func pushPage(
+        id: String,
+        blocks: [Block],
+        expectedGeneration: UInt64? = nil
+    ) async {
+        let generation = expectedGeneration ?? backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return }
         loadedPageBlocks[id] = blocks
         // `.http` AND `.relay` both write through the engine seam below —
         // there is no HTTP tail left here (the PUT was removed in Phase
         // 2.1), so the only mode that must NOT write is `.mock` (audit A6:
         // this gate used to be `.http`-only, silently dropping every
         // `.relay` edit).
-        guard currentBackend != .mock else { return }
+        guard backend != .mock else { return }
         beginLocalWriteSuppression()
         let body = renderBody(from: blocks)
         let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
@@ -1769,6 +2026,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // tick (~2 s) carries to Mac; APNs silent push (Phase 4)
         // will reduce that to sub-second.
         onLocalWrite?(id, id, content, Int64(Date().timeIntervalSince1970 * 1000))
+    }
+
+    /// Reserve the active profile before the unstructured task exists.
+    /// Capturing only the generation is fail-closed but lossy: activation can
+    /// otherwise clear profile A's optimistic edit before the queued task
+    /// starts, causing the generation guard to discard the only durable write.
+    func schedulePagePush(id: String, blocks: [Block]) {
+        guard backendMutationAdmissionIsOpen else { return }
+        enqueueBackendMutation { reservation in
+            let (_, generation) = try self.reservedBackend(for: reservation)
+            await self.pushPage(
+                id: id,
+                blocks: blocks,
+                expectedGeneration: generation
+            )
+        }
     }
 
     private func extractFrontmatter(from content: String) -> String {
@@ -1804,11 +2077,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// pass on top of the local source of truth, not a gate that
     /// blocks the UI.
     func refresh(from backend: Backend) async {
+        let generation = backendGeneration
+        await refresh(from: backend, generation: generation)
+    }
+
+    private func refresh(from backend: Backend, generation: UInt64) async {
+        guard isCurrentBackend(generation: generation, backend: backend) else { return }
         // Nudge query-backed views (Agenda/Inbox) on every real-backend
         // refresh — `defer` so the `.http` catch-path early returns
         // still signal (a failed freshen may still have hydrated from
         // the local sandbox).
-        defer { if backend != .mock { refreshTick &+= 1 } }
+        defer {
+            if backend != .mock,
+               isCurrentBackend(generation: generation, backend: backend) {
+                refreshTick &+= 1
+            }
+        }
         switch backend {
         case .mock:
             resetToSeed()
@@ -1829,7 +2113,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             }
             // Refresh the complete page list (Loro index) for `[[`
             // autocomplete — includes pages not materialized locally.
-            await refreshIndexPages()
+            await refreshIndexPages(generation: generation)
+            guard backendGeneration == generation else { return }
             // The daily slug is purely date-derived in relay mode (no server
             // to mint an id), so set it even when today's file doesn't exist
             // yet — the daily write gates (`scheduleWriteback`/splice) need
@@ -1847,7 +2132,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             hasOlderDailies = past.more
             // Build the property/type registry from the relay-synced Property/
             // Tag pages in the local sandbox (Phase 5.2 read layer).
-            await rebuildPropertyRegistry()
+            await rebuildPropertyRegistry(generation: generation)
+            guard backendGeneration == generation else { return }
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
             connection = .ready
@@ -1879,12 +2165,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let daily: APINote = try await fetchOrTimeout(
                     "/notes/daily", baseURL: baseURL, seconds: 3
                 )
+                guard backendGeneration == generation else { return }
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
+                guard backendGeneration == generation else { return }
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
+                guard backendGeneration == generation else { return }
                 // +2 covers today + yesterday, which the filter below drops.
                 let dailyFetchLimit = pastDailiesWindow + 2
                 let dailyNotes: [APINote] = (try? await httpGet("/notes?tag=daily&limit=\(dailyFetchLimit)", baseURL: baseURL)) ?? []
+                guard backendGeneration == generation else { return }
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
+                guard backendGeneration == generation else { return }
 
                 serverDailyId = daily.id
                 // Engine-render: the iOS engine materializes each note to
@@ -1938,14 +2229,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 // usable offline. Subsequent refreshes only refresh
                 // notes that are stale (cheaper than re-writing
                 // everything every time).
-                await snapshotNotesToSandbox(notes + [daily])
+                await snapshotNotesToSandbox(notes + [daily], generation: generation)
+                guard backendGeneration == generation else { return }
                 // Registry build runs off the just-snapshotted sandbox files —
                 // ONE local-parse path shared with `.relay` (Phase 5.2). The
                 // snapshot above wrote every Property/Tag page locally, so
                 // `rebuildPropertyRegistry` sees the full mosaic.
-                await rebuildPropertyRegistry()
+                await rebuildPropertyRegistry(generation: generation)
+                guard backendGeneration == generation else { return }
+                lastSuccessfulHTTPRefreshGeneration = generation
                 connection = .ready
             } catch {
+                guard backendGeneration == generation else { return }
                 // HTTP failed. We surface the unreachable backend HONESTLY
                 // even when local data is on screen — on EVERY refresh, not
                 // just an explicit pull-to-refresh. The old behavior forced
@@ -2041,9 +2336,148 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private var currentBackend: Backend = .mock
+    private var activeEngineScope: MosaicEngineScope = .legacy
+    private var backendActivationConfirmed = true
+    /// User-originated mutation admission is a separate lease from backend
+    /// attachment. A profile request closes it synchronously, before the
+    /// await-heavy activation sequencer can run, while already-reserved writes
+    /// keep their pinned backend/generation and drain normally. Activation
+    /// reopens it only after the new backend's first refresh and identity proof
+    /// have committed.
+    @Published private(set) var backendMutationAdmissionIsOpen = true
+    private var backendGeneration: UInt64 = 0
+    private var lastSuccessfulHTTPRefreshGeneration: UInt64?
+    private var backendOperationsInFlight = 0
+    private var backendOperationWaiters: [CheckedContinuation<Void, Never>] = []
+    private let sandboxSnapshotWriter = SandboxSnapshotWriter()
 
-    func attach(backend: Backend) {
+    final class BackendMutationReservation {
+        fileprivate weak var owner: MockMosaicService?
+        fileprivate let backend: Backend
+        fileprivate let generation: UInt64
+        fileprivate var isActive = true
+
+        fileprivate init(
+            owner: MockMosaicService,
+            backend: Backend,
+            generation: UInt64
+        ) {
+            self.owner = owner
+            self.backend = backend
+            self.generation = generation
+        }
+    }
+
+    /// Reserve the active backend synchronously, then construct the Task that
+    /// performs the user mutation. Profile activation observes the reservation
+    /// before it can run another main-actor turn and cannot switch mosaics until
+    /// the operation finishes. The reservation also pins every awaited write to
+    /// the backend + generation that were active when the user acted.
+    @discardableResult
+    func enqueueBackendMutation<Success>(
+        _ operation: @escaping @MainActor (BackendMutationReservation) async throws -> Success
+    ) -> Task<Success, Error> {
+        guard backendMutationAdmissionIsOpen else {
+            return Task { @MainActor in throw CancellationError() }
+        }
+        let reservation = BackendMutationReservation(
+            owner: self,
+            backend: currentBackend,
+            generation: backendGeneration
+        )
+        beginBackendOperation()
+        return Task { @MainActor in
+            defer { finishBackendMutation(reservation) }
+            return try await operation(reservation)
+        }
+    }
+
+    /// Drain point used by profile activation before it asks the shared
+    /// server process to switch mosaics. User-triggered async mutations reserve
+    /// this barrier synchronously, before their Task exists; lower-level HTTP
+    /// helpers also enter it defensively. An already-issued write therefore
+    /// cannot land after the server switches profiles on the same base URL.
+    func waitUntilBackendOperationsFinish() async {
+        guard backendOperationsInFlight > 0 else { return }
+        await withCheckedContinuation { continuation in
+            backendOperationWaiters.append(continuation)
+        }
+    }
+
+    /// Activation re-checks this after every drain wakeup. A new user action
+    /// can enqueue a write between two main-actor turns, so the waiter alone
+    /// is not a durable predicate.
+    var backendActivationIsSafe: Bool {
+        backendOperationsInFlight == 0
+    }
+
+    var backendGenerationLease: UInt64 {
+        backendGeneration
+    }
+
+    private func beginBackendOperation() {
+        backendOperationsInFlight += 1
+    }
+
+    private func finishBackendOperation() {
+        precondition(backendOperationsInFlight > 0)
+        backendOperationsInFlight -= 1
+        guard backendOperationsInFlight == 0 else { return }
+        let waiters = backendOperationWaiters
+        backendOperationWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func finishBackendMutation(_ reservation: BackendMutationReservation) {
+        precondition(reservation.owner === self)
+        precondition(reservation.isActive)
+        reservation.isActive = false
+        finishBackendOperation()
+    }
+
+    private func reservedBackend(
+        for reservation: BackendMutationReservation
+    ) throws -> (backend: Backend, generation: UInt64) {
+        guard reservation.owner === self,
+              reservation.isActive,
+              isCurrentBackend(
+                generation: reservation.generation,
+                backend: reservation.backend
+              )
+        else {
+            throw CancellationError()
+        }
+        return (reservation.backend, reservation.generation)
+    }
+
+    /// Close NEW user mutation admission without invalidating the attached
+    /// backend or its existing reservations. This must run in the same main-
+    /// actor turn that observes a profile/backend selection change.
+    func closeBackendMutationAdmissionForActivation() {
+        backendMutationAdmissionIsOpen = false
+    }
+
+    /// Publish a fully-refreshed activation as editable. Failed or detached
+    /// activations remain closed, so stale UI cannot write through an old hub.
+    func commitBackendMutationAdmission() {
+        guard backendActivationConfirmed else { return }
+        backendMutationAdmissionIsOpen = true
+    }
+
+    func attach(
+        backend: Backend,
+        engineScope: MosaicEngineScope = .legacy,
+        openMutationAdmission: Bool = true
+    ) {
+        backendGeneration += 1
+        lastSuccessfulHTTPRefreshGeneration = nil
+        sandboxSnapshotWriter.activate(generation: backendGeneration)
+        cancelRefreshTasksForActivation()
+        cancelReconnectLoop()
         currentBackend = backend
+        activeEngineScope = engineScope
+        backendActivationConfirmed = true
+        backendMutationAdmissionIsOpen = openMutationAdmission
         if backend != .mock {
             // HTTP and relay modes must never render the built-in
             // `MockSeed`. Clearing here means a slow or failing connect
@@ -2056,6 +2490,84 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // fake notes as a healthy real backend.)
             clearToEmpty()
         }
+    }
+
+    func detachForActivation() {
+        backendGeneration += 1
+        lastSuccessfulHTTPRefreshGeneration = nil
+        sandboxSnapshotWriter.activate(generation: backendGeneration)
+        cancelRefreshTasksForActivation()
+        cancelReconnectLoop()
+        backendActivationConfirmed = false
+        backendMutationAdmissionIsOpen = false
+        currentBackend = .mock
+        clearToEmpty()
+        connection = .idle
+    }
+
+    /// Surface a failed profile activation without reattaching the prior
+    /// backend. Keeping `backendActivationConfirmed == false` prevents the
+    /// reconnect loop or a stale refresh from reading whichever mosaic the
+    /// shared server happens to serve after the failed switch.
+    func reportActivationFailure(_ message: String) {
+        if backendActivationConfirmed {
+            detachForActivation()
+        } else {
+            cancelRefreshTasksForActivation()
+            cancelReconnectLoop()
+            backendMutationAdmissionIsOpen = false
+            currentBackend = .mock
+            clearToEmpty()
+        }
+        connection = .failed(message)
+    }
+
+    @discardableResult
+    func refreshAttachedBackend() async -> Bool {
+        guard backendActivationConfirmed else { return false }
+        let backend = currentBackend
+        let generation = backendGeneration
+        await refresh(from: backend, generation: generation)
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            return false
+        }
+        if case .http = backend {
+            return lastSuccessfulHTTPRefreshGeneration == generation
+        }
+        return true
+    }
+
+    private func isCurrentBackend(generation: UInt64, backend: Backend) -> Bool {
+        backendActivationConfirmed
+            && backendGeneration == generation
+            && currentBackend == backend
+    }
+
+    private func isCurrentGeneration(_ generation: UInt64) -> Bool {
+        backendActivationConfirmed && backendGeneration == generation
+    }
+
+    private func cancelRefreshTasksForActivation() {
+        presenceThrottleTimer?.invalidate()
+        presenceThrottleTimer = nil
+        presencePending = nil
+        remoteRefreshDebounce?.cancel()
+        remoteRefreshDebounce = nil
+        editingRefreshDebounce?.cancel()
+        editingRefreshDebounce = nil
+        suppressionFlush?.cancel()
+        suppressionFlush = nil
+        reconcileRetry?.cancel()
+        reconcileRetry = nil
+        pendingRemoteRefresh = false
+        suppressRemoteUntil = nil
+        isEditingBlock = false
+        editingBlockId = nil
+        editingScope = .unknown
+        openBlockInserter = nil
+        editingRefreshExclusions = []
+        editingRefreshSkipDaily = false
+        remoteCursors.clear()
     }
 
     /// Drop every in-memory mosaic snapshot. Used when switching to an
@@ -2075,6 +2587,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         hasOlderDailies = true
         searchResults = []
         searchHits = []
+        searchInFlight = false
         searchError = nil
         loadedBacklinks = [:]
         loadedLinks = [:]
@@ -2082,6 +2595,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         loadedPageFrontmatter = [:]
         pageLoadStates = [:]
         serverDailyId = ""
+        loadedDailyFrontmatter = nil
+        inMemoryLoadedAt = [:]
+        todayLoadedAt = nil
+        indexPageCache = []
+        indexTagCache = []
+        propertyRegistry = PropertyRegistry()
+        materializedDailySlugCache = nil
+        materializedNoteSlugs = []
     }
 
     // MARK: - Live sync (incoming)
@@ -2094,7 +2615,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
         didSet {
             guard oldValue && !isEditingBlock, pendingRemoteRefresh else { return }
             pendingRemoteRefresh = false
-            Task { await applyRemoteChange() }
+            let generation = backendGeneration
+            Task { await applyRemoteChange(generation: generation) }
         }
     }
     private var pendingRemoteRefresh = false
@@ -2251,12 +2773,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// post-local-write window is deferred (`pendingRemoteRefresh`) and
     /// flushed when the guard clears, never refreshing over a live edit.
     func applyRemoteChange() async {
+        let generation = backendGeneration
+        await applyRemoteChange(generation: generation)
+    }
+
+    private func applyRemoteChange(generation: UInt64) async {
         // `.relay` MUST pass: the relay tick's `onAppliedChanges` is the
         // ONLY automatic refresh seam in that mode (no WS, no reconnect
         // loop), and `refresh(from: .relay)` is a pure local read — the
         // edit/suppression guards below apply unchanged (audit A6: the
         // `.http`-only gate left `.relay` permanently stale in-session).
-        guard currentBackend != .mock else { return }
+        let backend = currentBackend
+        guard backend != .mock,
+              isCurrentBackend(generation: generation, backend: backend)
+        else { return }
         if isEditingBlock {
             pendingRemoteRefresh = true
             // C1-inbound: live-apply a remote splice into the OPEN editor so a
@@ -2329,6 +2859,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
         else { return }
         let isDaily = (editingScope == .daily)
         let seqAtStart = localSpliceSeq
+        let generation = backendGeneration
+        let backend = currentBackend
         Task { @MainActor [weak self] in
             guard let self, let merged = await read(slug, bid) else { return }
             // Stale-read guard: if the user typed a local splice, or
@@ -2340,9 +2872,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
             guard self.editingBlockId == bid,
                   self.editingScopeSlug == slug,
                   self.openBlockInserter === inserter,
-                  self.localSpliceSeq == seqAtStart
+                  self.localSpliceSeq == seqAtStart,
+                  self.isCurrentBackend(generation: generation, backend: backend)
             else {
-                self.scheduleReconcileRetry()
+                if self.isCurrentBackend(generation: generation, backend: backend) {
+                    self.scheduleReconcileRetry()
+                }
                 return
             }
             // Atomic on the main actor (no await between) so the in-memory
@@ -2381,9 +2916,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// deferred full refresh then reconciles everything).
     private func scheduleReconcileRetry() {
         reconcileRetry?.cancel()
+        let generation = backendGeneration
+        let backend = currentBackend
         reconcileRetry = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
-            guard let self, !Task.isCancelled else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentBackend(generation: generation, backend: backend)
+            else { return }
             self.reconcileRetry = nil
             if self.isEditingBlock { self.reconcileOpenBlockLive() }
         }
@@ -2400,9 +2940,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the mutations stay race-free.
     private func scheduleRemoteRefresh() {
         remoteRefreshDebounce?.cancel()
+        let generation = backendGeneration
+        let backend = currentBackend
         remoteRefreshDebounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.remoteRefreshDebounceNanos)
-            guard let self, !Task.isCancelled else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentBackend(generation: generation, backend: backend)
+            else { return }
             self.remoteRefreshDebounce = nil
             // Re-check the guards: an edit may have started, or a local
             // write may have opened a new suppression window, while we
@@ -2419,8 +2964,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // Single coalesced pass for the whole settled burst: the
             // daily (+ page list) plus every open page, folded into one
             // refresh rather than one per inbound event.
-            await self.refresh(from: self.currentBackend)
-            await self.refreshLoadedPages()
+            await self.refresh(from: backend, generation: generation)
+            await self.refreshLoadedPages(generation: generation)
         }
     }
 
@@ -2450,9 +2995,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
             break
         }
         editingRefreshDebounce?.cancel()
+        let generation = backendGeneration
+        let backend = currentBackend
         editingRefreshDebounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.remoteRefreshDebounceNanos)
-            guard let self, !Task.isCancelled else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentBackend(generation: generation, backend: backend)
+            else { return }
             self.editingRefreshDebounce = nil
             // Snapshot-and-clear so a NEW burst starting the instant this
             // pass begins (e.g. during the awaits below) accumulates its
@@ -2469,9 +3019,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
             if !skipDaily {
                 // No daily edit anywhere in this window — today/yesterday/
                 // pages/tags are unrelated to a page edit, safe in full.
-                await self.refresh(from: self.currentBackend)
+                await self.refresh(from: backend, generation: generation)
             }
-            await self.refreshLoadedPages(except: excludedPages)
+            await self.refreshLoadedPages(
+                except: excludedPages,
+                generation: generation
+            )
         }
     }
 
@@ -2487,15 +3040,19 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// lost.
     private func scheduleSuppressionFlush(at deadline: Date) {
         guard suppressionFlush == nil else { return }
+        let generation = backendGeneration
+        let backend = currentBackend
         suppressionFlush = Task { [weak self] in
             let wait = deadline.timeIntervalSinceNow
             if wait > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
-            guard let self else { return }
+            guard let self,
+                  self.isCurrentBackend(generation: generation, backend: backend)
+            else { return }
             self.suppressionFlush = nil
             if self.pendingRemoteRefresh {
-                await self.applyRemoteChange()
+                await self.applyRemoteChange(generation: generation)
             }
         }
     }
@@ -2505,40 +3062,70 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Make the server actually serve the mosaic at `path`. A no-op when
     /// it already is. Otherwise: persist the switch, restart the server,
     /// and hold `.switching` while it reboots (~2-3s) so the swap reads
-    /// as intentional rather than a connection failure. The caller's
-    /// `refresh()` then loads the new mosaic.
-    func ensureServerMosaic(path: String, serverURL: String) async {
-        let serving: String
-        do {
-            serving = try await MosaicServerClient.currentPath(serverURL: serverURL)
-        } catch {
-            // Can't read the current mosaic — leave the switch alone and
-            // let the normal refresh surface any real connectivity issue.
-            return
-        }
-        guard serving != path else { return }
+    /// as intentional rather than a connection failure. Returns only the
+    /// exact canonical path observed after restart; every failure propagates
+    /// so the caller cannot refresh or bind a socket to the wrong mosaic.
+    func ensureServerMosaic(path: String, serverURL: String) async throws -> String {
+        let serving = try await MosaicServerClient.currentPath(serverURL: serverURL)
+        guard serving != path else { return serving }
 
         connection = .switching
+        let targetPath: String
         do {
-            try await MosaicServerClient.switchMosaic(serverURL: serverURL, path: path)
+            targetPath = try await MosaicServerClient.switchMosaic(
+                serverURL: serverURL,
+                path: path
+            )
         } catch {
             setConnectionFailedIfReal(error, host: URL(string: serverURL)?.host)
-            return
+            throw error
         }
-        // Best-effort: the server schedules its own SIGTERM, so a dropped
-        // connection on this call still means it is restarting.
-        try? await MosaicServerClient.restart(serverURL: serverURL)
+        guard Self.serverMosaicNeedsRestart(
+            servingPath: serving,
+            canonicalTargetPath: targetPath
+        ) else { return serving }
+        do {
+            try await MosaicServerClient.restart(serverURL: serverURL)
+        } catch {
+            setConnectionFailedIfReal(error, host: URL(string: serverURL)?.host)
+            throw error
+        }
 
         // Poll until the server is back on the new mosaic, holding
         // `.switching` throughout so the caller's refresh lands cleanly.
+        var lastObservedPath: String?
         for delay in [2.0, 2.0, 3.0, 4.0] {
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            if (try? await MosaicServerClient.currentPath(serverURL: serverURL)) != nil {
-                return
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let observedPath = try? await MosaicServerClient.currentPath(serverURL: serverURL)
+            lastObservedPath = observedPath
+            if let confirmed = Self.confirmedServerMosaicPath(
+                observedPath: observedPath,
+                targetPath: targetPath
+            ) {
+                return confirmed
             }
         }
-        // Gave up waiting — the caller's refresh will fail and the
-        // standard auto-reconnect loop takes over from there.
+        let error = MosaicServerClient.ClientError.mosaicSwitchNotConfirmed(
+            expected: targetPath,
+            observed: lastObservedPath
+        )
+        setConnectionFailedIfReal(error, host: URL(string: serverURL)?.host)
+        throw error
+    }
+
+    static func confirmedServerMosaicPath(
+        observedPath: String?,
+        targetPath: String
+    ) -> String? {
+        guard observedPath == targetPath else { return nil }
+        return observedPath
+    }
+
+    static func serverMosaicNeedsRestart(
+        servingPath: String,
+        canonicalTargetPath: String
+    ) -> Bool {
+        servingPath != canonicalTargetPath
     }
 
     // MARK: - Auto-reconnect
@@ -2549,18 +3136,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// for a non-mock backend (`.http` and `.relay`) — mock mode
     /// never retries.
     private func startReconnectLoop() {
-        guard currentBackend != .mock else { return }
+        guard backendActivationConfirmed, currentBackend != .mock else { return }
         reconnectTask?.cancel()
+        let generation = backendGeneration
+        let backend = currentBackend
         reconnectTask = Task { [weak self] in
             var delaySecs: UInt64 = 2
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: delaySecs * 1_000_000_000)
                 if Task.isCancelled { return }
-                guard let self else { return }
+                guard let self,
+                      self.isCurrentBackend(generation: generation, backend: backend)
+                else { return }
                 // Don't fight a manual refresh that's already in-flight
                 // or recovered.
-                if case .failed = await self.connection {
-                    await self.refresh(from: self.currentBackend)
+                if case .failed = self.connection {
+                    await self.refresh(from: backend, generation: generation)
                 } else {
                     return
                 }
@@ -2581,15 +3172,51 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // old `baseURL` capture was vestigial). Only `.mock` drops the
         // write (audit A6: the `.http`-only gate silently discarded every
         // `.relay` daily edit — capture, toggle, delete, indent…).
-        guard currentBackend != .mock, !serverDailyId.isEmpty else {
+        guard backendMutationAdmissionIsOpen,
+              currentBackend != .mock,
+              !serverDailyId.isEmpty
+        else {
             return
         }
         beginLocalWriteSuppression()
         let snapshot = todayBlocks
-        Task { await pushTodayBlocks(snapshot) }
+        let dailyId = serverDailyId
+        enqueueBackendMutation { reservation in
+            let (_, generation) = try self.reservedBackend(for: reservation)
+            await self.pushTodayBlocks(
+                snapshot,
+                dailyId: dailyId,
+                expectedGeneration: generation
+            )
+        }
     }
 
     // MARK: - HTTP plumbing
+
+    static let expectedGroupHeaderField = "X-Tesela-Expected-Group"
+
+    /// Bind an attached HTTP operation to the same physical mosaic group as
+    /// the active local engine. The server holds that group stable through the
+    /// complete handler and rejects this request if the group was replaced
+    /// after activation's WebSocket proof.
+    static func groupBoundRequest(
+        url: URL,
+        engineScope: MosaicEngineScope
+    ) -> URLRequest {
+        var request = URLRequest(url: url)
+        if case .mosaic(let groupIdHex) = engineScope,
+           !groupIdHex.isEmpty {
+            request.setValue(
+                groupIdHex,
+                forHTTPHeaderField: expectedGroupHeaderField
+            )
+        }
+        return request
+    }
+
+    private func groupBoundRequest(url: URL) -> URLRequest {
+        Self.groupBoundRequest(url: url, engineScope: activeEngineScope)
+    }
 
     private struct APINote: Decodable {
         let id: String
@@ -2691,7 +3318,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private func httpGet<T: Decodable>(_ path: String, baseURL: URL) async throws -> T {
-        var req = URLRequest(url: endpoint(path, baseURL: baseURL))
+        var req = groupBoundRequest(url: endpoint(path, baseURL: baseURL))
         req.timeoutInterval = 8
         let (data, response) = try await session.data(for: req)
         try ensureOk(response, data: data)
@@ -2699,8 +3326,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private func httpPut(_ path: String, baseURL: URL, body: [String: Any]) async throws {
+        beginBackendOperation()
+        defer { finishBackendOperation() }
         let url = endpoint(path, baseURL: baseURL)
-        var req = URLRequest(url: url)
+        var req = groupBoundRequest(url: url)
         req.httpMethod = "PUT"
         req.timeoutInterval = 8
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2713,7 +3342,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// (`DELETE /views/{id}`); non-2xx surfaces through `ensureOk` with
     /// the server's message snippet (e.g. the builtin-delete 400).
     private func httpDelete(_ path: String, baseURL: URL) async throws {
-        var req = URLRequest(url: endpoint(path, baseURL: baseURL))
+        beginBackendOperation()
+        defer { finishBackendOperation() }
+        var req = groupBoundRequest(url: endpoint(path, baseURL: baseURL))
         req.httpMethod = "DELETE"
         req.timeoutInterval = 8
         let (data, response) = try await session.data(for: req)
@@ -2728,8 +3359,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         baseURL: URL,
         body: Body,
     ) async throws -> T {
+        // Some POST endpoints are queries (`/agenda`, `/search/query`) and
+        // some mutate (`/notes`, `/views`). Count all of them conservatively:
+        // activation is rare, and draining a read is safer than allowing a
+        // newly-added mutating POST to bypass the profile-switch barrier.
+        beginBackendOperation()
+        defer { finishBackendOperation() }
         let url = endpoint(path, baseURL: baseURL)
-        var req = URLRequest(url: url)
+        var req = groupBoundRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 8
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2746,8 +3383,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
         baseURL: URL,
         body: Body,
     ) async throws {
+        beginBackendOperation()
+        defer { finishBackendOperation() }
         let url = endpoint(path, baseURL: baseURL)
-        var req = URLRequest(url: url)
+        var req = groupBoundRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 8
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2823,11 +3462,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// without ever reaching the Mac over HTTP — critical for
     /// cellular use, where the Mac isn't internet-routable.
     private func localMosaicRoot() -> URL {
-        let docs = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        )[0]
-        return docs.appendingPathComponent("sync-ios-mosaic")
+        activeEngineScope.rootURL()
     }
 
     /// Write each server-side note to `<sandbox>/notes/<id>.md` so the
@@ -2844,38 +3479,32 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// this whole rewrite is fixing. The mtime guard protects the
     /// engine-materialized file (the merged Loro output) from being
     /// overwritten by a staler server snapshot.
-    private func snapshotNotesToSandbox(_ notes: [APINote]) async {
+    private func snapshotNotesToSandbox(
+        _ notes: [APINote],
+        generation: UInt64
+    ) async {
+        guard isCurrentGeneration(generation) else { return }
         // Move the file I/O off the @MainActor — writing hundreds of
         // notes synchronously on the main actor froze the UI for 9 s+
         // on fresh-install cold launch (the "Tesela 9000+ ms fence
         // hang" Daisy saw in the Xcode HUD). Captured locals only, no
         // self access inside the detached task.
         let notesDir = localMosaicRoot().appendingPathComponent("notes")
-        let snapshot = notes
+        let serverFmt = ISO8601DateFormatter()
+        let snapshot = notes.map {
+            SandboxNoteSnapshot(
+                id: $0.id,
+                content: $0.content,
+                modifiedAt: serverFmt.date(from: $0.modified_at) ?? .distantPast
+            )
+        }
+        let writer = sandboxSnapshotWriter
         await Task.detached(priority: .utility) {
             try? FileManager.default.createDirectory(
                 at: notesDir, withIntermediateDirectories: true
             )
-            let serverFmt = ISO8601DateFormatter()
             for note in snapshot {
-                let path = notesDir.appendingPathComponent("\(note.id).md")
-                let serverMtime = serverFmt.date(from: note.modified_at) ?? .distantPast
-                // Skip if local is newer (iOS edit pending push to server).
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-                   let localMtime = attrs[.modificationDate] as? Date,
-                   localMtime > serverMtime {
-                    continue
-                }
-                // Skip if local file already has identical content
-                // (avoids touching mtime + retriggering file-watchers
-                // for unchanged notes).
-                if let existing = try? String(contentsOf: path, encoding: .utf8),
-                   existing == note.content {
-                    continue
-                }
-                // Write — best-effort; we don't want a single bad note to
-                // stop the whole snapshot.
-                try? note.content.write(to: path, atomically: true, encoding: .utf8)
+                writer.write(note, to: notesDir, generation: generation)
             }
         }.value
     }
@@ -2987,7 +3616,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// daily list with the larger limit (one cheap GET), falling back to
     /// the local snapshot mirror when the server is unreachable.
     func loadOlderDailies() async {
-        switch currentBackend {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return }
+        switch backend {
         case .mock:
             hasOlderDailies = false
         case .relay:
@@ -3001,11 +3633,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
             guard let dailyNotes: [APINote] = try? await httpGet(
                 "/notes?tag=daily&limit=\(limit)", baseURL: baseURL
             ) else {
+                guard isCurrentBackend(generation: generation, backend: backend) else { return }
                 let past = localPastDailies(limit: pastDailiesWindow)
                 pastDailies = past.entries
                 hasOlderDailies = past.more
                 return
             }
+            guard isCurrentBackend(generation: generation, backend: backend) else { return }
             let todayId = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
             let yesterdayId = dailyId(daysAgo: 1)
             let entries = dailyNotes
@@ -3042,7 +3676,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// parsed `custom`. Each note's nested frontmatter is parsed once in
     /// `readLocalNote`; here we just project to `RegistryNote` and build.
     /// Read-only cache — never writes, so it can't affect convergence.
-    private func rebuildPropertyRegistry() async {
+    private func rebuildPropertyRegistry(generation: UInt64) async {
+        guard isCurrentGeneration(generation) else { return }
         // Move the whole-sandbox directory walk + file read off the
         // @MainActor — this fired on every relay-settle and read+scraped
         // EVERY note in the sandbox synchronously on the main actor.
@@ -3076,6 +3711,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 }
                 return out
             }.value
+        guard isCurrentGeneration(generation) else { return }
         let regNotes = typePages.map {
             RegistryNote(title: $0.title, noteType: $0.noteType, content: $0.content)
         }
@@ -3243,6 +3879,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// edits or backgrounds would otherwise miss the daily bootstrap;
     /// delivery-layer redesign 2026-05-31, T2).
     var todayDailySlug: String { dailyId(daysAgo: 0) }
+    var yesterdayDailySlug: String { dailyId(daysAgo: 1) }
 
     /// `YYYY-MM-DD` id of the daily note `daysAgo` days before today.
     private func dailyId(daysAgo: Int) -> String {
@@ -3759,12 +4396,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return false
     }
 
-    private func pushTodayBlocks(_ blocks: [Block]) async {
-        guard !serverDailyId.isEmpty else { return }
+    private func pushTodayBlocks(
+        _ blocks: [Block],
+        dailyId: String,
+        expectedGeneration: UInt64
+    ) async {
+        let backend = currentBackend
+        guard isCurrentBackend(generation: expectedGeneration, backend: backend),
+              serverDailyId == dailyId,
+              !dailyId.isEmpty
+        else { return }
         // Placeholder gate — see `shouldSuppressPlaceholderAuthoring`.
         if Self.shouldSuppressPlaceholderAuthoring(
             blocks: blocks,
-            dailyFileExists: dailyMaterializedLocally(slug: serverDailyId)
+            dailyFileExists: dailyMaterializedLocally(slug: dailyId)
         ) {
             return
         }
@@ -3782,19 +4427,19 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // falls through to a minimal `title: <id>` block, which
         // Mac will accept; subsequent edits pick up Mac's enriched
         // frontmatter on the next refresh tick.
-        let existingFrontmatter = loadedDailyFrontmatter ?? "---\ntitle: \(serverDailyId)\n---"
+        let existingFrontmatter = loadedDailyFrontmatter ?? "---\ntitle: \(dailyId)\n---"
         let newBody = renderBody(from: blocks)
         let content = combine(frontmatter: existingFrontmatter, body: newBody)
         // Engine path — durable, cellular-tolerant, no network
         // dependency. Fires synchronously (no await) so the SQLite
         // + materialized file write happens before anything else.
-        let titleGuess = serverDailyId  // YYYY-MM-DD for dailies
+        let titleGuess = dailyId  // YYYY-MM-DD for dailies
         // Single write path through engine + relay. See `pushPage`
         // for the full reasoning — duplicate writes via HTTP PUT
         // raced the relay path and produced duplicate blocks +
         // overwrote peer edits on Mac. Relay tick carries within
         // ~2 s; APNs (Phase 4) will drop that further.
-        onLocalWrite?(serverDailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
+        onLocalWrite?(dailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
     }
 
     /// Drop blocks that carry nothing — empty text, no tags, no task
@@ -3998,6 +4643,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Pin or unpin a page. Idempotent per page id.
     func togglePin(page: Page) {
+        guard backendMutationAdmissionIsOpen else { return }
         if let idx = pinned.firstIndex(where: { $0.id == page.id }) {
             pinned.remove(at: idx)
         } else {
@@ -4026,6 +4672,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Mirrors `editTodayBlock` / `editPageBlock` for block location and
     /// the same write-back path.
     func setBlockProperties(id: String, properties: [BlockProperty]) {
+        guard backendMutationAdmissionIsOpen else { return }
         if let idx = todayBlocks.firstIndex(where: { $0.id == id }) {
             todayBlocks[idx].properties = properties
             scheduleWriteback()
@@ -4035,7 +4682,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             var blocks = loadedPageBlocks[pageId] ?? []
             if let bidx = blocks.firstIndex(where: { $0.id == id }) {
                 blocks[bidx].properties = properties
-                Task { await pushPage(id: pageId, blocks: blocks) }
+                schedulePagePush(id: pageId, blocks: blocks)
                 return
             }
         }
@@ -4059,8 +4706,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `noteId` and `lineNumber` from `parseBlocks` so we can build the
     /// composite id here. If the block can't be located we bail early
     /// rather than sending a malformed request.
-    func recurBump(blockId: String, mode: RecurBumpMode) async throws {
-        guard case .http(let baseURL) = currentBackend else {
+    func recurBump(
+        blockId: String,
+        mode: RecurBumpMode,
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        guard case .http(let baseURL) = backend,
+              isCurrentBackend(generation: generation, backend: backend)
+        else {
             // Mock mode — no server to call; silently succeed.
             return
         }
@@ -4084,15 +4738,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
         let body: [String: Any] = ["block_id": compositeId, "mode": mode.rawValue]
         let url = endpoint("/blocks/recur-bump", baseURL: baseURL)
-        var req = URLRequest(url: url)
+        var req = groupBoundRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 8
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: req)
-        try ensureOk(response, data: data)
+        beginBackendOperation()
+        do {
+            defer { finishBackendOperation() }
+            let (data, response) = try await session.data(for: req)
+            try ensureOk(response, data: data)
+        }
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
         // Refresh so the bumped block's new scheduled/deadline dates appear.
-        await refresh(from: currentBackend)
+        await refresh(from: backend, generation: generation)
     }
 
     // MARK: - Agenda + Inbox queries
@@ -4107,7 +4768,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `agenda_blocks`) — the Agenda was empty in relay mode because
     /// this method was `.http`-gated (2026-06-10 product test).
     func fetchAgenda(from: String, to: String, includeDone: Bool) async -> [AgendaRow] {
-        switch currentBackend {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
+        switch backend {
         case .mock:
             return []
         case .relay:
@@ -4115,7 +4779,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .http(let baseURL):
             let body = APIAgendaRequest(from: from, to: to, include_done: includeDone)
             do {
-                return try await httpPostJSON("/agenda", baseURL: baseURL, body: body)
+                let rows: [AgendaRow] = try await httpPostJSON(
+                    "/agenda", baseURL: baseURL, body: body
+                )
+                guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
+                return rows
             } catch {
                 return []
             }
@@ -4159,8 +4827,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `.relay` reads the saved-filter note from the local sandbox
     /// instead of HTTP — same body scan either way.
     func fetchInboxDsl(slug: String) async -> String? {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return nil }
         let note: APINote
-        switch currentBackend {
+        switch backend {
         case .mock:
             return nil
         case .relay:
@@ -4173,6 +4844,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 return nil
             }
         }
+        guard isCurrentBackend(generation: generation, backend: backend) else { return nil }
         // Match `^query::\s*(.+)$` line-by-line; mirrors the web's
         // `readQueryFromNote` (`Inbox.svelte`).
         for line in note.body.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -4214,8 +4886,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// focused. Mirrors `availableFilters` in the web's
     /// `Inbox.svelte`.
     func listInboxFilters() async -> [InboxFilterRef] {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
         let notes: [APINote]
-        switch currentBackend {
+        switch backend {
         case .mock:
             return []
         case .relay:
@@ -4229,6 +4904,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 return []
             }
         }
+        guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
         return notes
             .filter { $0.metadata.note_type == "Query" }
             .filter { $0.id == "inbox" || $0.id.hasPrefix("inbox-") }
@@ -4267,7 +4943,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// frontmatter, icon, color); if it doesn't exist yet, create a
     /// fresh `note_type: Query` note with canonical frontmatter and
     /// the new DSL baked in.
-    func saveInboxDsl(slug: String, dsl: String) async throws {
+    func saveInboxDsl(
+        slug: String,
+        dsl: String,
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
         // `.relay` persists the saved-filter Query note through the engine
         // — the relay analog of the HTTP read-splice-PUT below, with
         // `readLocalNote` playing the GET (preserve existing frontmatter).
@@ -4276,7 +4957,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // (the views call `load()` immediately after saving). Previously
         // this was `.http`-gated: a relay-mode chip toggle / save-filter
         // silently did nothing. `.mock` still drops the write.
-        if case .relay = currentBackend {
+        if case .relay = backend {
             let title = Self.titleForInboxFilterSlug(slug)
             let newContent: String
             if let existing = readLocalNote(id: slug) {
@@ -4287,18 +4968,27 @@ final class MockMosaicService: ObservableObject, MosaicService {
             await onLocalNoteWrite?(
                 slug, title, newContent, Int64(Date().timeIntervalSince1970 * 1000)
             )
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
             return
         }
-        guard case .http(let baseURL) = currentBackend else { return }
+        guard case .http(let baseURL) = backend else { return }
         // First try to read the existing note so we can preserve its
         // frontmatter (icon, color, section, etc.). 404 → first-write
         // path, fall through to create.
         let existing: APINote? = try? await httpGet("/notes/\(slug)", baseURL: baseURL)
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
         let title = Self.titleForInboxFilterSlug(slug)
         let newContent: String
         if let existing {
             newContent = Self.spliceInboxDsl(into: existing.content, dsl: dsl, title: title)
             try await httpPut("/notes/\(slug)", baseURL: baseURL, body: ["content": newContent])
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
             return
         }
         // First-write: build canonical fresh content + POST /notes.
@@ -4313,8 +5003,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // the dup-id throw is recoverable — fall back to PUT.
         do {
             let _: APINote = try await httpPostJSON("/notes", baseURL: baseURL, body: req)
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         } catch {
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
             try await httpPut("/notes/\(slug)", baseURL: baseURL, body: ["content": newContent])
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         }
     }
 
@@ -4406,9 +5105,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// or when there's no `/sync/relay/status` endpoint on the other
     /// end (i.e. older server version).
     func fetchRelayStatus() async -> RelayStatusInfo? {
-        guard case .http(let baseURL) = currentBackend else { return nil }
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard case .http(let baseURL) = backend,
+              isCurrentBackend(generation: generation, backend: backend)
+        else { return nil }
         do {
-            return try await httpGet("/sync/relay/status", baseURL: baseURL)
+            let status: RelayStatusInfo = try await httpGet(
+                "/sync/relay/status", baseURL: baseURL
+            )
+            guard isCurrentBackend(generation: generation, backend: backend) else { return nil }
+            return status
         } catch {
             return nil
         }
@@ -4425,7 +5132,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// method was `.http`-gated (2026-06-10 product test). JQL-grammar
     /// clauses beyond that subset are skipped locally (match-all).
     func executeQuery(_ dsl: String) async -> QueryResult {
-        switch currentBackend {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            return QueryResult(groups: [])
+        }
+        switch backend {
         case .mock:
             return QueryResult(groups: [])
         case .relay:
@@ -4433,7 +5145,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .http(let baseURL):
             let body = APIExecuteQueryBody(dsl: dsl, group: nil, sort: nil)
             do {
-                return try await httpPostJSON("/search/query", baseURL: baseURL, body: body)
+                let result: QueryResult = try await httpPostJSON(
+                    "/search/query", baseURL: baseURL, body: body
+                )
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    return QueryResult(groups: [])
+                }
+                return result
             } catch {
                 return QueryResult(groups: [])
             }
@@ -4490,17 +5208,28 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// failure path) serves the canonical builtin Inbox so the triage
     /// surface always has a working default. Never returns empty.
     func fetchViews() async -> [SavedView] {
-        switch currentBackend {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            return [SavedView.fallbackInbox]
+        }
+        switch backend {
         case .mock:
             return [SavedView.fallbackInbox]
         case .relay:
             guard let views = await onViewsList?(), !views.isEmpty else {
                 return [SavedView.fallbackInbox]
             }
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                return [SavedView.fallbackInbox]
+            }
             return SavedViewLogic.sorted(views.map { $0.displayCompatible() })
         case .http(let baseURL):
             do {
                 let views: [SavedView] = try await httpGet("/views", baseURL: baseURL)
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    return [SavedView.fallbackInbox]
+                }
                 return views.isEmpty ? [SavedView.fallbackInbox] : SavedViewLogic.sorted(views.map { $0.displayCompatible() })
             } catch {
                 return [SavedView.fallbackInbox]
@@ -4513,8 +5242,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `.http` POSTs/PUTs the server's `/views` routes (which validate
     /// the DSL again and fan out `views_changed`). Throws on rejection —
     /// the editor sheet surfaces the message. `.mock` stays inert.
-    func saveView(_ view: SavedView, isNew: Bool) async throws {
-        switch currentBackend {
+    func saveView(
+        _ view: SavedView,
+        isNew: Bool,
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        switch backend {
         case .mock:
             return
         case .relay:
@@ -4528,6 +5262,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 )
             }
             try await upsert(view)
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         case .http(let baseURL):
             if isNew {
                 struct CreateViewReq: Encodable {
@@ -4549,6 +5286,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     display_show_done: view.displayShowDone
                 )
                 let _: SavedView = try await httpPostJSON("/views", baseURL: baseURL, body: req)
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    throw CancellationError()
+                }
             } else {
                 var body: [String: Any] = [
                     "name": view.name,
@@ -4563,6 +5303,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     body["display_show_done"] = showDone
                 }
                 try await httpPut("/views/\(view.id)", baseURL: baseURL, body: body)
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    throw CancellationError()
+                }
             }
         }
     }
@@ -4571,7 +5314,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the UI hides the affordance, the engine and the server both
     /// enforce the guard, and this client-side pre-check turns a bypass
     /// into a clear local error instead of a backend round-trip.
-    func deleteView(id: String) async throws {
+    func deleteView(
+        id: String,
+        reservation: BackendMutationReservation
+    ) async throws {
         guard id != SavedView.builtinInboxId else {
             throw URLError(
                 .cannotWriteToFile,
@@ -4581,7 +5327,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 ]
             )
         }
-        switch currentBackend {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        switch backend {
         case .mock:
             return
         case .relay:
@@ -4595,8 +5342,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 )
             }
             try await delete(id)
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         case .http(let baseURL):
             try await httpDelete("/views/\(id)", baseURL: baseURL)
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         }
     }
 
@@ -4604,8 +5357,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `(index + 1) * 10` (the server's reorder rule). `.http` posts the
     /// bare id array to `/views/reorder`; `.relay` upserts only the views
     /// whose order actually changed through the engine seam.
-    func reorderViews(_ orderedViews: [SavedView]) async throws {
-        switch currentBackend {
+    func reorderViews(
+        _ orderedViews: [SavedView],
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        switch backend {
         case .mock:
             return
         case .relay:
@@ -4619,11 +5376,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 )
             }
             for (idx, view) in orderedViews.enumerated() {
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    throw CancellationError()
+                }
                 let newOrder = Int64(idx + 1) * 10
                 guard view.order != newOrder else { continue }
                 var updated = view
                 updated.order = newOrder
                 try await upsert(updated)
+                guard isCurrentBackend(generation: generation, backend: backend) else {
+                    throw CancellationError()
+                }
             }
         case .http(let baseURL):
             try await httpPostNoResponse(
@@ -4631,6 +5394,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 baseURL: baseURL,
                 body: orderedViews.map(\.id)
             )
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         }
     }
 
@@ -4649,13 +5415,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Daily and the query-backed Agenda/Inbox freshen. Previously this
     /// was `.http`-gated: a relay-mode triage swipe / mark-done silently
     /// did NOTHING while the row optimistically vanished.
-    func setBlockProperty(blockId: String, key: String, value: String) async throws {
-        switch currentBackend {
+    func setBlockProperty(
+        blockId: String,
+        key: String,
+        value: String,
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        switch backend {
         case .mock:
             return
         case .http(let baseURL):
             let body = APISetBlockPropertyBody(block_id: blockId, key: key, value: value)
             try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
         case .relay:
             guard let (noteId, bid) = resolveLocalBlockBid(blockId) else {
                 throw URLError(
@@ -4667,6 +5442,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 )
             }
             let applied = await onLocalPropertySet?(noteId, bid, key, value) ?? false
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
             guard applied else {
                 throw URLError(
                     .cannotWriteToFile,
@@ -4676,7 +5454,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     ]
                 )
             }
-            await refresh(from: currentBackend)
+            await refresh(from: backend, generation: generation)
         }
     }
 
@@ -4790,6 +5568,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// (tesela-ect fix-round FINDING 1).
     func testableEditingRefreshFireCount() -> Int {
         editingRefreshFireCount
+    }
+
+    /// Lease value captured by regression tests before attach/detach. Passing
+    /// it back to `pushPage(...expectedGeneration:)` proves an old queued
+    /// callback cannot write through the newly attached backend.
+    func testableBackendGeneration() -> UInt64 {
+        backendGeneration
+    }
+
+    func testableBackendOperationsInFlight() -> Int {
+        backendOperationsInFlight
     }
 }
 

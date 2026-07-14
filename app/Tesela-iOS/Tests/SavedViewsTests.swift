@@ -296,7 +296,13 @@ final class SavedViewsTests: XCTestCase {
             id: "v-doing", name: "Doing", dsl: "status:doing", order: 10,
             builtin: false, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
-        try await service.saveView(record, isNew: true)
+        try await service.enqueueBackendMutation { reservation in
+            try await service.saveView(
+                record,
+                isNew: true,
+                reservation: reservation
+            )
+        }.value
         XCTAssertEqual(captured, record)
     }
 
@@ -307,7 +313,13 @@ final class SavedViewsTests: XCTestCase {
         service.attach(backend: .relay)
         let record = SavedView.fallbackInbox
         do {
-            try await service.saveView(record, isNew: false)
+            try await service.enqueueBackendMutation { reservation in
+                try await service.saveView(
+                    record,
+                    isNew: false,
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected a throw when no views seam is wired")
         } catch {
             // expected
@@ -319,7 +331,9 @@ final class SavedViewsTests: XCTestCase {
         service.attach(backend: .relay)
         var captured: String?
         service.onViewsDelete = { captured = $0 }
-        try await service.deleteView(id: "v-doing")
+        try await service.enqueueBackendMutation { reservation in
+            try await service.deleteView(id: "v-doing", reservation: reservation)
+        }.value
         XCTAssertEqual(captured, "v-doing")
     }
 
@@ -333,7 +347,12 @@ final class SavedViewsTests: XCTestCase {
             XCTFail("builtin delete must not reach the engine seam")
         }
         do {
-            try await service.deleteView(id: SavedView.builtinInboxId)
+            try await service.enqueueBackendMutation { reservation in
+                try await service.deleteView(
+                    id: SavedView.builtinInboxId,
+                    reservation: reservation
+                )
+            }.value
             XCTFail("expected the builtin-delete throw")
         } catch {
             // expected
@@ -356,7 +375,12 @@ final class SavedViewsTests: XCTestCase {
             builtin: false, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
         // New order: week first (→10), inbox second (→20). Both change.
-        try await service.reorderViews([week, inbox])
+        try await service.enqueueBackendMutation { reservation in
+            try await service.reorderViews(
+                [week, inbox],
+                reservation: reservation
+            )
+        }.value
         XCTAssertEqual(upserts.map(\.id), ["v-week", SavedView.builtinInboxId])
         XCTAssertEqual(upserts.map(\.order), [10, 20])
         // Re-running the same order is a no-op (no redundant registry ops).
@@ -369,7 +393,12 @@ final class SavedViewsTests: XCTestCase {
             id: SavedView.builtinInboxId, name: "Views", dsl: "status:todo", order: 20,
             builtin: true, displayMode: "list", displayGroupBy: nil, displayShowDone: nil
         )
-        try await service.reorderViews([reweek, reinbox])
+        try await service.enqueueBackendMutation { reservation in
+            try await service.reorderViews(
+                [reweek, reinbox],
+                reservation: reservation
+            )
+        }.value
         XCTAssertTrue(upserts.isEmpty)
     }
 
@@ -377,8 +406,17 @@ final class SavedViewsTests: XCTestCase {
         let service = MockMosaicService()
         service.onViewsUpsert = { _ in XCTFail("seam must not fire in mock mode") }
         service.onViewsDelete = { _ in XCTFail("seam must not fire in mock mode") }
-        try await service.saveView(SavedView.fallbackInbox, isNew: false)
-        try await service.deleteView(id: "v-anything")
+        try await service.enqueueBackendMutation { reservation in
+            try await service.saveView(
+                SavedView.fallbackInbox,
+                isNew: false,
+                reservation: reservation
+            )
+            try await service.deleteView(
+                id: "v-anything",
+                reservation: reservation
+            )
+        }.value
     }
 
     // MARK: - FFI bridge round-trip

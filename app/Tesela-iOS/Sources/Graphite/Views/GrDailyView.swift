@@ -27,6 +27,7 @@ struct GrDailyView: View {
     @State private var pickedDate: Date = Date()
     @State private var loadingOlderDays: Bool = false
     @State private var collapsedBlockIds: Set<String> = []
+    @State private var moveIntent: BlockMoveIntent?
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -52,9 +53,7 @@ struct GrDailyView: View {
                     .padding(.horizontal, 10)
                 }
                 .refreshable {
-                    if let backend {
-                        await mosaic.refresh(from: backend.backend)
-                    }
+                    _ = await mosaic.refreshAttachedBackend()
                 }
             }
             .background(theme.bg)
@@ -115,6 +114,9 @@ struct GrDailyView: View {
             }
             .sheet(isPresented: $showDatePicker) {
                 datePickerSheet
+            }
+            .sheet(item: $moveIntent) { intent in
+                BlockMoveSheet(mosaic: mosaic, intent: intent)
             }
         }
     }
@@ -198,10 +200,23 @@ struct GrDailyView: View {
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 },
                 onSkipRecurrence: {
-                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.recurBump(
+                            blockId: block.id,
+                            mode: .skip,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
         }
@@ -214,7 +229,8 @@ struct GrDailyView: View {
         case .yankLink:    UIPasteboard.general.string = "tesela://block/\(block.id)"
         case .indent:      mosaic.indentTodayBlock(id: block.id, by: 1)
         case .archive:     mosaic.deleteTodayBlock(id: block.id)
-        case .promote, .convertToTag, .moveTo: break
+        case .moveTo:      presentMove(block, sourceSlug: mosaic.todayDailySlug)
+        case .promote, .convertToTag: break
         }
     }
 
@@ -279,7 +295,14 @@ struct GrDailyView: View {
                 tagSearch: { mosaic.searchableTags($0) },
                 onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.setBlockProperty(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            value: value,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
         }
@@ -292,7 +315,8 @@ struct GrDailyView: View {
         case .yankLink:    UIPasteboard.general.string = "tesela://block/\(block.id)"
         case .indent:      mosaic.indentYesterdayBlock(id: block.id, by: 1)
         case .archive:     mosaic.deleteYesterdayBlock(id: block.id)
-        case .promote, .convertToTag, .moveTo: break
+        case .moveTo:      presentMove(block, sourceSlug: mosaic.yesterdayDailySlug)
+        case .promote, .convertToTag: break
         }
     }
 
@@ -370,7 +394,14 @@ struct GrDailyView: View {
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
                     },
                     onSetProperty: { key, value in
-                        Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
+                        mosaic.enqueueBackendMutation { reservation in
+                            try? await mosaic.setBlockProperty(
+                                blockId: block.noteId + ":" + block.id,
+                                key: key,
+                                value: value,
+                                reservation: reservation
+                            )
+                        }
                     }
                 )
             }
@@ -384,8 +415,18 @@ struct GrDailyView: View {
         case .yankLink:    UIPasteboard.general.string = "tesela://block/\(block.id)"
         case .indent:      mosaic.indentPastDailyBlock(dayId: dayId, blockId: block.id, by: 1)
         case .archive:     mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
-        case .promote, .convertToTag, .moveTo: break
+        case .moveTo:      presentMove(block, sourceSlug: dayId)
+        case .promote, .convertToTag: break
         }
+    }
+
+    private func presentMove(_ block: Block, sourceSlug: String) {
+        editingBlockId = nil
+        moveIntent = BlockMoveIntent(
+            sourceSlug: sourceSlug,
+            rootBid: block.id,
+            preview: block.displayText
+        )
     }
 
     /// Infinite-scroll sentinel at the feed's bottom: appearing inside

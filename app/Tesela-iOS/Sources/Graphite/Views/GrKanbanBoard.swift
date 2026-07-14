@@ -14,7 +14,7 @@ struct GrKanbanBoard: View {
     var onOpen: (QueryItem) -> Void
     /// Persist a move: `(item, columnValueToWrite)`. `""` means "clear to
     /// Unset" (`KanbanLogic.writeValue`).
-    var onMove: (QueryItem, String) async -> Void
+    var onMove: (QueryItem, String) -> Void
 
     @Environment(\.theme) private var theme
     @State private var scrolledColumn: String?
@@ -201,7 +201,7 @@ struct GrKanbanBoard: View {
             labelFor: columnLabel,
             onSelect: { target in
                 moveTarget = nil
-                Task { await onMove(item, KanbanLogic.writeValue(forColumn: target)) }
+                onMove(item, KanbanLogic.writeValue(forColumn: target))
             }
         )
         .environment(\.theme, theme)

@@ -83,21 +83,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// when a new batch lands for the group). iOS wakes the suspended
     /// app in the background; we run the catch-up on the main actor
     /// (`RelayTicker` is `@MainActor` — see `RelayTicker.swift`'s
-    /// class-level annotation) and report `.newData` so iOS
-    /// prioritises the next delivery window for our bundle id. The
-    /// catch-up itself is a `RelayTicker().runBackgroundCatchup()` on
-    /// a FRESH ticker (matching the same pattern the BGProcessingTask
-    /// path uses in `TeselaApp.handleCatchup`): the live foreground
-    /// `RelayTicker` belongs to `GrAppShell` and is not in scope here.
+    /// class-level annotation) and report the catch-up's real result.
+    /// The process-wide shared ticker owns the only Loro handle for the
+    /// active group, so a warm wake never opens a second engine on the
+    /// foreground shell's physical root.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            let ticker = RelayTicker()
-            await ticker.runBackgroundCatchup()
-            completionHandler(.newData)
+            let outcome = await RelayTicker.shared.runBackgroundCatchup()
+            completionHandler(Self.fetchResult(for: outcome))
+        }
+    }
+
+    static func fetchResult(
+        for outcome: BackgroundCatchupOutcome
+    ) -> UIBackgroundFetchResult {
+        switch outcome {
+        case .completed(newData: true):
+            return .newData
+        case .completed(newData: false), .unavailable:
+            return .noData
+        case .failed:
+            return .failed
         }
     }
 }
