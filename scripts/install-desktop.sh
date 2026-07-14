@@ -37,7 +37,7 @@ SIGNING_TEAM="${TESELA_DESKTOP_SIGNING_TEAM:-K7CBQW6MPG}"
 restore_previous_install() {
   local status="${1:-1}"
   trap - ERR
-  echo "ERROR: desktop signing failed; restoring $BACKUP" >&2
+  echo "ERROR: desktop install/signing failed; restoring $BACKUP" >&2
   rm -rf "$DST"
   if [ -d "$BACKUP" ]; then
     cp -R "$BACKUP" "$DST"
@@ -80,7 +80,7 @@ trap 'restore_previous_install $?' ERR
 echo "→ installing new build → $DST"
 rm -rf "$DST"
 cp -R "$SRC" "$DST"
-echo "→ signing local bundle with Apple Development identity $SIGNING_IDENTITY…"
+echo "→ signing local bundle with Apple Development identity ${SIGNING_IDENTITY}…"
 codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$DST"
 codesign --verify --deep --strict "$DST"
 SIGNATURE_INFO="$(codesign -d --verbose=4 "$DST" 2>&1)"
