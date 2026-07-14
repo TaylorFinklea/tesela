@@ -160,17 +160,17 @@ outside relocation delivery, did not reproduce in isolation, and is tracked as
 | Artifact / gate | Status |
 |---|---|
 | Remediation commit and merge to `main` | complete at `85d914ed` |
-| Corrected desktop production bundle | worktree bundle built and Apple Development signature verified; merge/install pending |
-| `/Applications` installation updated | pending merge |
-| Installed desktop health check | pending corrected install |
+| Embedded-WebKit desktop hotfix | merged to `main` at `267c0312`; installer boundary fix at `9139e45d` |
+| Corrected desktop production bundle | release bundle rebuilt from merged `main`; Apple Development signed with hardened runtime |
+| `/Applications` installation updated | complete; installed Mach-O UUID matches the rebuilt artifact |
+| Installed desktop health check | pass; one installed process and embedded `/health` returned `{"status":"ok"}` |
 | Real installed-shell parent-plus-children drag between days | pending manual QA |
 | iOS archive and TestFlight upload | complete; Tesela 1.1 build 79, `Upload succeeded` / `EXPORT SUCCEEDED` |
 | iOS physical product test | passed; Taylor confirmed Move to works |
-| Harness-deck product-test report | refreshed in place for desktop + iOS device verification |
+| Harness-deck product-test report | refreshed in place for the remaining desktop device verification |
 
-Manual release QA must first click **Always Allow** on the installed desktop's
-existing Keychain prompt, then verify the visible handle moves one parent with
-all children to another day. On TestFlight build 79, verify that iOS `Move
-to...` can search/select daily and page destinations, cancel without mutation,
-retry a recoverable failure with the same intent, and move the full subtree
-after profile activation completes.
+Manual release QA now has one remaining gate: in the installed desktop app,
+verify that the visible handle moves one parent with all children to another
+day and that the result persists after relaunch. TestFlight build 79 already
+passed the physical iOS Move-to check; the desktop-only hotfix does not require
+another iOS release.
