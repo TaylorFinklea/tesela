@@ -1248,6 +1248,89 @@ fn assert_stale_relocation(error: SyncError) {
     ));
 }
 
+/// tesela-73b: boot recovery must FAIL SOFT.
+///
+/// `recover_persisted_relocations` runs INSIDE engine open (`with_dirs`), and it
+/// used to `?`-propagate every failure — including a record it merely could not
+/// read or decode. So ONE corrupt `_relocations/*.bin` meant the engine never
+/// opened again, on any launch, forever. A crash or power loss part-way through
+/// persisting a relocation intent is enough to produce that file. On iOS the
+/// records live in the app sandbox, so the only cure was deleting the app and
+/// losing every unsynced local edit.
+///
+/// This is the one fail-closed path in an engine that fails soft everywhere else
+/// (`probe_import_poison` SKIPS a panicking frame; `peer_import_plan` failure
+/// degrades to a raw import). An abandoned move can leave a subtree duplicated
+/// or un-deleted — visible, fixable, and vastly better than an app that will not
+/// start.
+#[tokio::test]
+async fn boot_recovery_quarantines_a_corrupt_record_instead_of_bricking_engine_open() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = root_dir.path().join("snapshots");
+    let materialize_dir = root_dir.path().join("notes");
+    let device = DeviceId::from_bytes([0x7b; 16]);
+    let source = [0xd1; 16];
+    let destination = [0xd2; 16];
+    let root = [0xd3; 16];
+    let child = [0xd4; 16];
+    let target = [0xd5; 16];
+
+    // A healthy mosaic with one completed move, so there is real state to lose.
+    let engine = open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+    seed_recovery_pair(&engine, source, destination, root, child, target).await;
+    engine
+        .relocate_subtree(relocation_request(
+            source,
+            root,
+            destination,
+            Some(target),
+            MovePlacement::Inside,
+        ))
+        .await
+        .expect("the healthy move must apply");
+    drop(engine);
+
+    // Now simulate a crash mid-write: a truncated / garbage record file.
+    let relocations_dir = snapshot_dir.join("_relocations");
+    tokio::fs::create_dir_all(&relocations_dir).await.unwrap();
+    let corrupt_move_id = [0xc0; 16];
+    let corrupt_path = relocations_dir.join(format!("{}.bin", hex_id(&corrupt_move_id)));
+    tokio::fs::write(&corrupt_path, b"\xff\xff not a postcard record \x00")
+        .await
+        .unwrap();
+
+    // THE ASSERTION: engine open SUCCEEDS.
+    // Before tesela-73b this returned Err and no launch could ever recover.
+    let recovered = LoroEngine::with_dirs(
+        device,
+        Arc::new(Hlc::new(device)),
+        snapshot_dir.clone(),
+        Some(materialize_dir.clone()),
+    )
+    .await
+    .expect("a corrupt relocation record must NOT prevent the engine from opening");
+
+    // The corrupt record is quarantined for inspection, not silently dropped...
+    assert!(
+        !corrupt_path.exists(),
+        "the corrupt record must be moved out of the live directory"
+    );
+    assert!(
+        relocations_dir
+            .join("failed")
+            .join(format!("{}.bin", hex_id(&corrupt_move_id)))
+            .exists(),
+        "the corrupt record must be quarantined under _relocations/failed/"
+    );
+    // ...and the healthy move's state survived the bad neighbour.
+    assert!(nested_block_is_live(&recovered, destination, root).await);
+    assert!(!nested_block_is_live(&recovered, source, root).await);
+
+    // The quarantine is durable: a second open is clean, not a re-quarantine.
+    drop(recovered);
+    open_persistent_relocation_engine(device, &snapshot_dir, &materialize_dir).await;
+}
+
 #[tokio::test]
 async fn boot_recovery_completes_every_persisted_relocation_phase_in_snapshot_order() {
     let cases = [

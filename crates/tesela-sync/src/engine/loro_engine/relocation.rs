@@ -1,7 +1,7 @@
 use super::*;
 use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 const RELOCATION_DIR: &str = "_relocations";
 const RELOCATION_TOMBSTONES_FILE: &str = "_relocation_tombstones.bin";
@@ -885,27 +885,44 @@ impl LoroEngine {
                 .and_then(|value| value.to_str())
                 .and_then(decode_fixed_hex::<16>)
                 .unwrap_or([0; 16]);
-            let bytes = tokio::fs::read(&path).await.map_err(|error| {
-                recovery_required(
-                    move_id,
-                    format!("read relocation record {}: {error}", path.display()),
-                )
-            })?;
-            let record: RelocationRecord = postcard::from_bytes(&bytes).map_err(|error| {
-                recovery_required(
-                    move_id,
-                    format!("decode relocation record {}: {error}", path.display()),
-                )
-            })?;
+            // An unreadable / undecodable / mismatched record is QUARANTINED,
+            // never fatal (tesela-73b). These three sites used to `?` out of a
+            // function called inside engine open, so a single truncated `.bin`
+            // — a crash or power loss mid-write is enough — meant the engine
+            // could never open again.
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.quarantine_relocation_path(
+                        &path,
+                        format!("read relocation record: {error}"),
+                    )
+                    .await;
+                    continue;
+                }
+            };
+            let record: RelocationRecord = match postcard::from_bytes(&bytes) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.quarantine_relocation_path(
+                        &path,
+                        format!("decode relocation record: {error}"),
+                    )
+                    .await;
+                    continue;
+                }
+            };
             let recorded_move_id = match &record {
                 RelocationRecord::Intent(intent) => intent.request.move_id,
                 RelocationRecord::Receipt(receipt) => receipt.move_id,
             };
             if recorded_move_id != move_id {
-                return Err(recovery_required(
-                    move_id,
-                    "relocation filename does not match record move id",
-                ));
+                self.quarantine_relocation_path(
+                    &path,
+                    "relocation filename does not match record move id".to_string(),
+                )
+                .await;
+                continue;
             }
             records.push(record);
         }
@@ -2366,10 +2383,30 @@ impl LoroEngine {
         }
     }
 
+    /// Boot recovery is FAIL-SOFT (tesela-73b). A relocation intent that cannot
+    /// be recovered is QUARANTINED — moved aside, logged loudly — and the engine
+    /// opens anyway.
+    ///
+    /// It used to `?`-propagate, and `with_dirs` calls this inside engine open,
+    /// so ONE unrecoverable intent meant the engine never opened again — on any
+    /// device, on every subsequent launch. That is trivially reachable: a move
+    /// that fails mid-flight leaves a durable intent, and if those blocks are
+    /// later deleted (by the user, or by a peer's delta),
+    /// `relocated_bids_have_only_allowed_owners` sees a bid owned by NOBODY and
+    /// returns false → `recovery_required` → boot dies. On iOS the record lives
+    /// in the app sandbox, so the only cure was deleting the app and losing all
+    /// unsynced local data.
+    ///
+    /// This was the ONE fail-closed path in an engine that fails soft everywhere
+    /// else: `probe_import_poison` SKIPS a panicking frame, `peer_import_plan`
+    /// failure degrades to a raw import. An abandoned move can leave a subtree
+    /// duplicated or un-deleted — recoverable, visible, and vastly preferable to
+    /// an app that will not start.
     pub(super) async fn recover_persisted_relocations(&self) -> SyncResult<()> {
         let records = self.scan_relocation_records().await?;
         let mut tombstones = self.load_relocation_tombstones().await?;
         let mut tombstones_changed = false;
+        let mut quarantined: HashSet<[u8; 16]> = HashSet::new();
         for record in &records {
             let (move_id, hash, completed) = match record {
                 RelocationRecord::Intent(intent) => {
@@ -2379,10 +2416,12 @@ impl LoroEngine {
             };
             match tombstones.get(&move_id) {
                 Some(existing) if *existing != hash => {
-                    return Err(recovery_required(
+                    self.quarantine_relocation_record(
                         move_id,
                         "relocation tombstone hash differs from durable record",
-                    ));
+                    )
+                    .await;
+                    quarantined.insert(move_id);
                 }
                 Some(_) => {}
                 None if completed => {
@@ -2392,6 +2431,16 @@ impl LoroEngine {
                 None => {}
             }
         }
+        let records: Vec<RelocationRecord> = records
+            .into_iter()
+            .filter(|record| {
+                let move_id = match record {
+                    RelocationRecord::Intent(intent) => intent.request.move_id,
+                    RelocationRecord::Receipt(receipt) => receipt.move_id,
+                };
+                !quarantined.contains(&move_id)
+            })
+            .collect();
         if tombstones_changed {
             self.publish_relocation_tombstones(&tombstones).await?;
         }
@@ -2425,11 +2474,95 @@ impl LoroEngine {
         intents.sort_by_key(|intent| intent.request.move_id);
         for intent in intents {
             let move_id = intent.request.move_id;
-            self.recover_intent_with_locks(intent)
+            if let Err(error) = self
+                .recover_intent_with_locks(intent)
                 .await
-                .map_err(|error| preserve_recovery_error(move_id, error))?;
+                .map_err(|error| preserve_recovery_error(move_id, error))
+            {
+                // Quarantine and keep going: one stuck move must never take the
+                // whole app down (tesela-73b). Drop it from the in-memory active
+                // set too, so it can't keep blocking overlapping moves.
+                self.quarantine_relocation_record(move_id, error).await;
+                self.inner
+                    .active_relocations
+                    .lock()
+                    .await
+                    .remove(&move_id);
+            }
         }
         self.prune_relocation_receipts().await
+    }
+
+    /// Move an unrecoverable relocation record out of the live `_relocations/`
+    /// directory into `_relocations/failed/` so boot recovery never sees it
+    /// again, and log it loudly. Best-effort by construction: if we cannot even
+    /// move the file we still return normally, because the caller
+    /// ([`Self::recover_persisted_relocations`]) runs inside engine open and
+    /// must not fail (tesela-73b).
+    async fn quarantine_relocation_record(
+        &self,
+        move_id: [u8; 16],
+        reason: impl std::fmt::Display + Send,
+    ) {
+        let Some(path) = self.relocation_record_path(move_id) else {
+            tracing::error!(
+                "tesela-sync/relocation: DISCARDING unrecoverable in-memory relocation {} — {reason}",
+                hex_id(&move_id)
+            );
+            self.inner
+                .volatile_relocation_records
+                .lock()
+                .await
+                .remove(&move_id);
+            return;
+        };
+        self.quarantine_relocation_path(&path, reason).await;
+    }
+
+    /// Move one relocation record file into `_relocations/failed/`. Never fails:
+    /// if it cannot be moved it is deleted, because the caller runs inside
+    /// engine open and boot must proceed regardless (tesela-73b).
+    ///
+    /// `reason` must be `Send`: this future is awaited (transitively) from
+    /// `LoroEngine::with_dirs`, which axum handlers construct across an await —
+    /// a non-`Send` reason (e.g. `format_args!`'s `fmt::Arguments`) makes the
+    /// whole engine-open future non-`Send` and breaks every server route.
+    async fn quarantine_relocation_path(
+        &self,
+        path: &std::path::Path,
+        reason: impl std::fmt::Display + Send,
+    ) {
+        tracing::error!(
+            "tesela-sync/relocation: QUARANTINING unrecoverable relocation record {} — {reason}. \
+             The engine will open anyway and the move is abandoned; its blocks may be left \
+             duplicated, or un-deleted at the source — inspect the affected notes.",
+            path.display()
+        );
+        let Some(dir) = path.parent().map(|parent| parent.join("failed")) else {
+            return;
+        };
+        if let Err(error) = tokio::fs::create_dir_all(&dir).await {
+            tracing::error!(
+                "tesela-sync/relocation: could not create quarantine dir {}: {error} — \
+                 removing the record instead so boot can proceed",
+                dir.display()
+            );
+            let _ = tokio::fs::remove_file(path).await;
+            return;
+        }
+        let target = path
+            .file_name()
+            .map(|name| dir.join(name))
+            .unwrap_or_else(|| dir.join("unnamed.bin"));
+        if let Err(error) = tokio::fs::rename(path, &target).await {
+            tracing::error!(
+                "tesela-sync/relocation: could not quarantine {} to {}: {error} — \
+                 removing it instead so boot can proceed",
+                path.display(),
+                target.display()
+            );
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 
     pub(super) async fn relocate_subtree_in_memory(
