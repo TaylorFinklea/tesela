@@ -33,6 +33,72 @@ export type TextDeltaOp = { retain?: number; insert?: string; delete?: number };
 /** A CM6 change spec in original-doc coordinates. */
 export type TextChangeSpec = { from: number; to: number; insert: string };
 
+export type TextReconciliationPlan =
+  | { kind: "unchanged"; text: string }
+  | { kind: "incremental"; events: TextChangeSpec[][]; text: string }
+  | { kind: "canonical"; text: string };
+
+export type TextBindingIdentity<View, Container> = Readonly<{
+  view: View;
+  container: Container;
+  noteSlug: string;
+  bid: string;
+}>;
+
+export type TextBindingGenerationLease<View, Container> = Readonly<{
+  owns(identity: TextBindingIdentity<View, Container>): boolean;
+  revoke(): void;
+}>;
+
+/** Publish a canonical value only while its parent mirror is stale. */
+export function publishCanonicalTextIfChanged(
+  mirrorText: string,
+  canonicalText: string,
+  publish: (text: string) => void,
+): boolean {
+  if (mirrorText === canonicalText) return false;
+  publish(canonicalText);
+  return true;
+}
+
+/**
+ * Single-owner lease for a component's reactive text-binding generations.
+ * Captured callbacks must present the exact view/container/note/block identity
+ * they were created for. Cleanup revokes synchronously, and a newer claim
+ * supersedes an older one even if the old unsubscribe later throws or leaks.
+ */
+export function createTextBindingGenerationOwner<View, Container>(): {
+  claim(
+    identity: TextBindingIdentity<View, Container>,
+  ): TextBindingGenerationLease<View, Container>;
+} {
+  let currentToken: object | null = null;
+
+  return {
+    claim(identity) {
+      const token = {};
+      const ownedIdentity = { ...identity };
+      let revoked = false;
+      currentToken = token;
+
+      return {
+        owns(candidate) {
+          return !revoked
+            && currentToken === token
+            && candidate.view === ownedIdentity.view
+            && candidate.container === ownedIdentity.container
+            && candidate.noteSlug === ownedIdentity.noteSlug
+            && candidate.bid === ownedIdentity.bid;
+        },
+        revoke() {
+          revoked = true;
+          if (currentToken === token) currentToken = null;
+        },
+      };
+    },
+  };
+}
+
 export function deltaToChanges(delta: readonly TextDeltaOp[]): TextChangeSpec[] {
   const changes: TextChangeSpec[] = [];
   let pos = 0;
@@ -49,4 +115,86 @@ export function deltaToChanges(delta: readonly TextDeltaOp[]): TextChangeSpec[] 
     }
   }
   return changes;
+}
+
+function validLength(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validatedDeltaToChanges(
+  delta: readonly TextDeltaOp[],
+  docLength: number,
+): TextChangeSpec[] | null {
+  const changes: TextChangeSpec[] = [];
+  let pos = 0;
+
+  for (const op of delta) {
+    const hasRetain = typeof op.retain === "number";
+    const hasInsert = typeof op.insert === "string";
+    const hasDelete = typeof op.delete === "number";
+    if (Number(hasRetain) + Number(hasInsert) + Number(hasDelete) !== 1) return null;
+
+    if (hasRetain) {
+      if (!validLength(op.retain!) || pos + op.retain! > docLength) return null;
+      pos += op.retain!;
+    } else if (hasInsert) {
+      if (op.insert!.length > 0) changes.push({ from: pos, to: pos, insert: op.insert! });
+    } else {
+      if (!validLength(op.delete!) || pos + op.delete! > docLength) return null;
+      if (op.delete! > 0) changes.push({ from: pos, to: pos + op.delete!, insert: "" });
+      pos += op.delete!;
+    }
+  }
+
+  return changes;
+}
+
+function applyChanges(doc: string, changes: readonly TextChangeSpec[]): string | null {
+  let cursor = 0;
+  let result = "";
+  for (const change of changes) {
+    if (
+      !validLength(change.from)
+      || !validLength(change.to)
+      || change.from < cursor
+      || change.to < change.from
+      || change.to > doc.length
+    ) {
+      return null;
+    }
+    result += doc.slice(cursor, change.from) + change.insert;
+    cursor = change.to;
+  }
+  return result + doc.slice(cursor);
+}
+
+/**
+ * Choose the safe way to project Loro text events into a CodeMirror document.
+ * Event deltas are only an optimization: they are accepted when every event is
+ * valid against the view state produced by the previous event AND that full
+ * projection exactly equals the subscribed LoroText's canonical value.
+ * Otherwise callers must replace the view with `text` wholesale.
+ */
+export function planTextReconciliation(
+  currentText: string,
+  eventDeltas: readonly (readonly TextDeltaOp[])[],
+  canonicalText: string,
+): TextReconciliationPlan {
+  let projected = currentText;
+  const events: TextChangeSpec[][] = [];
+  let hasChanges = false;
+
+  for (const delta of eventDeltas) {
+    const changes = validatedDeltaToChanges(delta, projected.length);
+    if (!changes) return { kind: "canonical", text: canonicalText };
+    const next = applyChanges(projected, changes);
+    if (next === null) return { kind: "canonical", text: canonicalText };
+    projected = next;
+    events.push(changes);
+    if (changes.length > 0) hasChanges = true;
+  }
+
+  if (projected !== canonicalText) return { kind: "canonical", text: canonicalText };
+  if (!hasChanges) return { kind: "unchanged", text: canonicalText };
+  return { kind: "incremental", events, text: canonicalText };
 }

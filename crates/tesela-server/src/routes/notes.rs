@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use tesela_core::{
     block::parse_blocks,
@@ -19,11 +19,15 @@ use tesela_core::{
     note::NoteId,
     note_tree::{parse_note, serialize_note},
     property::{parse_scalar, ValueType},
+    stable_uuid_from_slug,
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
-    stable_uuid_from_slug, Note,
+    Note,
 };
-use tesela_sync::{OpPayload, PropOp, PropScalar};
+use tesela_sync::{
+    BlockRelocationRequest, BlockRelocationStatus, MovePlacement, OpPayload, PropOp, PropScalar,
+    RelocationNoteSeed, SyncError,
+};
 
 use crate::{
     error::{AppError, AppResult},
@@ -143,6 +147,22 @@ pub enum BlockOp {
 #[derive(Deserialize)]
 pub struct UpsertBlocksReq {
     pub ops: Vec<BlockOp>,
+}
+
+#[derive(Deserialize)]
+pub struct MoveBlockSubtreeReq {
+    pub move_id: uuid::Uuid,
+    pub source_note_id: String,
+    pub root_bid: uuid::Uuid,
+    pub destination_note_id: String,
+    pub target_bid: Option<uuid::Uuid>,
+    pub placement: MovePlacement,
+}
+
+#[derive(Serialize)]
+pub struct MoveBlockSubtreeResp {
+    pub move_id: uuid::Uuid,
+    pub notes: Vec<Note>,
 }
 
 /// Defensive upper bound on `?limit=` — prevents an accidental/malicious
@@ -728,6 +748,238 @@ fn parse_opt_bid(bid: Option<&str>) -> AppResult<Option<[u8; 16]>> {
     match bid {
         Some(b) => Ok(Some(parse_bid(b)?)),
         None => Ok(None),
+    }
+}
+
+/// `POST /blocks/move-subtree` — durably relocate one complete stable-bid
+/// subtree, then repair every ordinary server projection for each affected
+/// note. The engine owns atomicity, recovery, and idempotency; this handler
+/// only prepares trusted note identities/seeds and performs the retryable
+/// post-write tail.
+pub async fn move_block_subtree(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<MoveBlockSubtreeReq>,
+) -> AppResult<Json<MoveBlockSubtreeResp>> {
+    match req.placement {
+        MovePlacement::Append if req.target_bid.is_some() => {
+            return Err(AppError::Validation(
+                "target_bid must be null for append placement".into(),
+            ));
+        }
+        MovePlacement::Before | MovePlacement::Inside | MovePlacement::After
+            if req.target_bid.is_none() =>
+        {
+            return Err(AppError::Validation(
+                "target_bid is required for before, inside, and after placements".into(),
+            ));
+        }
+        _ => {}
+    }
+
+    let source_id = NoteId::new(&req.source_note_id);
+    let destination_id = NoteId::new(&req.destination_note_id);
+    let same_note = source_id == destination_id;
+    bootstrap_note_if_needed(&s, &req.source_note_id).await;
+    if !same_note {
+        bootstrap_note_if_needed(&s, &req.destination_note_id).await;
+    }
+
+    let source_before = s
+        .store
+        .get(&source_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", req.source_note_id)))?;
+    let destination_before = if same_note {
+        Some(source_before.clone())
+    } else {
+        s.store.get(&destination_id).await?
+    };
+
+    let destination_date = chrono::NaiveDate::parse_from_str(&req.destination_note_id, "%Y-%m-%d")
+        .ok()
+        .filter(|date| date.format("%Y-%m-%d").to_string() == req.destination_note_id);
+    if destination_before.is_none()
+        && (destination_date.is_none()
+            || req.placement != MovePlacement::Append
+            || req.target_bid.is_some())
+    {
+        return if destination_date.is_some() {
+            Err(AppError::Validation(
+                "a missing daily destination requires append placement with null target".into(),
+            ))
+        } else {
+            Err(AppError::NotFound(format!(
+                "Note not found: {}",
+                req.destination_note_id
+            )))
+        };
+    }
+
+    // Derive the fallback solely from immutable request fields. An existing
+    // cross-note daily ignores it during preparation, but retaining the same
+    // serialized seed keeps intent and receipt hashes stable on HTTP retries.
+    let destination_seed = if !same_note && req.placement == MovePlacement::Append {
+        destination_date.map(|date| {
+            let config = DailyNoteConfig::default();
+            RelocationNoteSeed {
+                display_alias: Some(req.destination_note_id.clone()),
+                title: tesela_core::daily::daily_note_title(date, &config),
+                content: tesela_core::daily::daily_note_content(date, &config),
+                created_at_millis: date
+                    .and_hms_opt(0, 0, 0)
+                    .expect("midnight is a valid time")
+                    .and_utc()
+                    .timestamp_millis(),
+            }
+        })
+    } else {
+        None
+    };
+
+    let request = BlockRelocationRequest {
+        move_id: *req.move_id.as_bytes(),
+        source_note_id: stable_uuid_from_slug(&req.source_note_id),
+        source_slug: req.source_note_id.clone(),
+        root_bid: *req.root_bid.as_bytes(),
+        destination_note_id: stable_uuid_from_slug(&req.destination_note_id),
+        destination_slug: req.destination_note_id.clone(),
+        target_bid: req.target_bid.map(|bid| *bid.as_bytes()),
+        placement: req.placement,
+        destination_seed,
+    };
+    let outcome = s
+        .sync_engine
+        .relocate_subtree(request)
+        .await
+        .map_err(map_relocation_error)?;
+    let move_id = uuid::Uuid::from_bytes(outcome.move_id);
+
+    let mut prior_notes = vec![source_before];
+    if !same_note {
+        if let Some(note) = destination_before {
+            prior_notes.push(note);
+        }
+    }
+
+    // Gate every affected note's canonical re-read + reindex before history or
+    // events. If either note fails here, the durable move remains committed and
+    // a replay can safely repair the entire tail without duplicating history.
+    let mut refreshed = Vec::with_capacity(outcome.notes.len());
+    for affected in &outcome.notes {
+        if refreshed
+            .iter()
+            .any(|(_, note): &(_, Note)| note.id.as_str() == affected.slug)
+        {
+            continue;
+        }
+        let note_id = NoteId::new(&affected.slug);
+        let note = s
+            .store
+            .get(&note_id)
+            .await
+            .map_err(|error| {
+                relocation_tail_error(
+                    move_id,
+                    format!("failed to re-read note {}: {error}", affected.slug),
+                )
+            })?
+            .ok_or_else(|| {
+                relocation_tail_error(
+                    move_id,
+                    format!("note {} was not materialized", affected.slug),
+                )
+            })?;
+        s.index.reindex(&note).await.map_err(|error| {
+            relocation_tail_error(
+                move_id,
+                format!("failed to reindex note {}: {error}", affected.slug),
+            )
+        })?;
+        refreshed.push((affected, note));
+    }
+
+    for (affected, note) in &refreshed {
+        let note_id = NoteId::new(&affected.slug);
+        {
+            use tesela_core::link::extract_wiki_links;
+            use tesela_core::traits::link_graph::LinkGraph;
+            let links = extract_wiki_links(&note.content);
+            if let Err(error) = s.index.update_links(&note_id, &links).await {
+                tracing::warn!(
+                    "Failed to update links after subtree relocation for {:?}: {}",
+                    note_id,
+                    error
+                );
+            }
+        }
+        if outcome.status == BlockRelocationStatus::Applied && affected.changed && !affected.created
+        {
+            if let Some(previous) = prior_notes
+                .iter()
+                .find(|previous| previous.id.as_str() == affected.slug)
+            {
+                if previous.content != note.content {
+                    if let Err(error) = s
+                        .index
+                        .record_version(&note_id, Some(&previous.content), &note.content, 200)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to record note version after subtree relocation: {}",
+                            error
+                        );
+                    }
+                }
+            }
+        }
+        ensure_tag_pages(&s, note).await;
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: note.clone() });
+        if let Some(delta) = s
+            .sync_engine
+            .export_doc_update(affected.note_id, Some(&affected.pre_version))
+            .await
+        {
+            match tesela_sync::encode_loro_relay_payload(&[tesela_sync::LoroDocUpdate {
+                doc: affected.note_id,
+                update_bytes: delta,
+            }]) {
+                Ok(frame) => {
+                    let _ = s.ws_delta_tx.send(crate::state::WsDelta {
+                        origin: None,
+                        frame,
+                    });
+                }
+                Err(error) => tracing::warn!(
+                    "ws: encode subtree relocation delta for {} failed: {}",
+                    affected.slug,
+                    error
+                ),
+            }
+        }
+    }
+
+    Ok(Json(MoveBlockSubtreeResp {
+        move_id,
+        notes: refreshed.into_iter().map(|(_, note)| note).collect(),
+    }))
+}
+
+fn map_relocation_error(error: SyncError) -> AppError {
+    match error {
+        SyncError::RelocationRejected(message) => AppError::Validation(message),
+        SyncError::RelocationConflict(message) => AppError::Conflict(message),
+        SyncError::RelocationRecoveryRequired { move_id, message } => AppError::RetrySafe {
+            message: format!("relocation requires recovery: {message}"),
+            move_id: uuid::Uuid::from_bytes(move_id),
+        },
+        error => AppError::Internal(anyhow::anyhow!("Failed to relocate block subtree: {error}")),
+    }
+}
+
+fn relocation_tail_error(move_id: uuid::Uuid, detail: String) -> AppError {
+    AppError::RetrySafe {
+        message: format!("relocation committed; retry to repair post-write state: {detail}"),
+        move_id,
     }
 }
 
@@ -2757,6 +3009,156 @@ mod tests {
                 engine.doc_version(note_id).await.is_some(),
                 "the note must be resident after the bootstrap import"
             );
+        }
+
+        #[tokio::test]
+        async fn move_subtree_bootstraps_relay_only_daily_destination_before_authoring() {
+            let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+            let (group, key) = fresh_group();
+
+            let source_slug = "2026-07-12";
+            let destination_slug = "2026-07-11";
+            let source_note_id = stable_uuid_from_slug(source_slug);
+            let destination_note_id = stable_uuid_from_slug(destination_slug);
+            let alpha_bid = "01010101-0101-0101-0101-010101010101";
+            let moved_bid = "03030303-0303-0303-0303-030303030303";
+
+            let peer_tmp = tempfile::tempdir().unwrap();
+            let peer_dev = DeviceId::from_bytes([0xaa; 16]);
+            let peer = loro_engine_in(peer_tmp.path(), peer_dev).await;
+            peer.record_local(OpPayload::NoteUpsert {
+                note_id: destination_note_id,
+                display_alias: Some(destination_slug.into()),
+                title: destination_slug.into(),
+                content: format!("- alpha from relay <!-- bid:{alpha_bid} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .expect("peer seed destination");
+            let destination_snapshot = peer
+                .export_doc_update(destination_note_id, None)
+                .await
+                .expect("peer snapshot export");
+            let peer_client = RelayClient::new(base_url.clone(), group, peer_dev, key.clone());
+            peer_client
+                .register_or_recover()
+                .await
+                .expect("peer register");
+            peer_client
+                .put_snapshots(
+                    0,
+                    vec![(destination_note_id.to_vec(), destination_snapshot)],
+                )
+                .await
+                .expect("peer deposit snapshot");
+
+            let mosaic = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(mosaic.path().join("notes")).unwrap();
+            std::fs::create_dir_all(mosaic.path().join(".tesela")).unwrap();
+            let srv_dev = DeviceId::from_bytes([0xbb; 16]);
+            let engine: Arc<dyn SyncEngine> =
+                Arc::new(loro_engine_in(mosaic.path(), srv_dev).await);
+            engine
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: source_note_id,
+                    display_alias: Some(source_slug.into()),
+                    title: source_slug.into(),
+                    content: format!("- moved from server <!-- bid:{moved_bid} -->\n"),
+                    created_at_millis: 2,
+                })
+                .await
+                .expect("server seed source");
+            assert!(
+                engine.doc_version(destination_note_id).await.is_none(),
+                "destination must be relay-only before the move"
+            );
+            assert!(
+                !mosaic
+                    .path()
+                    .join(format!("notes/{destination_slug}.md"))
+                    .exists(),
+                "destination must not exist locally before bootstrap"
+            );
+
+            let store = Arc::new(FsNoteStore::new(
+                mosaic.path().to_path_buf(),
+                StorageConfig::default(),
+            ));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&mosaic.path().join(".tesela/test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = broadcast::channel(16);
+            let (ws_delta_tx, _) = broadcast::channel(16);
+            let group_identity = Arc::new(RwLock::new(GroupIdentity {
+                group_id: group,
+                group_key: key.clone(),
+            }));
+            let relay_client = Arc::new(RelayClient::new(base_url.clone(), group, srv_dev, key));
+            relay_client
+                .register_or_recover()
+                .await
+                .expect("server register");
+            let relay_handle = RelayHandle {
+                url: base_url.to_string(),
+                client: relay_client,
+                state: Arc::new(RwLock::new(RelayState::default())),
+                mosaic_root: mosaic.path().to_path_buf(),
+            };
+            let state = Arc::new(AppState {
+                mosaic_root: mosaic.path().to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(mosaic.path()),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine: Arc::clone(&engine),
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: Some(base_url.to_string()),
+                relay: Some(relay_handle),
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
+            });
+
+            let result = move_block_subtree(
+                State(state),
+                Json(MoveBlockSubtreeReq {
+                    move_id: uuid::Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+                    source_note_id: source_slug.into(),
+                    root_bid: uuid::Uuid::parse_str(moved_bid).unwrap(),
+                    destination_note_id: destination_slug.into(),
+                    target_bid: None,
+                    placement: MovePlacement::Append,
+                }),
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "move should succeed (got {:?})",
+                result.err().map(|error| error.into_response().status())
+            );
+
+            let merged = engine
+                .render_note(destination_note_id)
+                .await
+                .expect("server renders destination after move");
+            assert!(
+                merged.contains("alpha from relay"),
+                "relay destination content must survive the move; render:\n{merged}"
+            );
+            assert!(
+                merged.contains("moved from server"),
+                "moved subtree must land on the bootstrapped lineage; render:\n{merged}"
+            );
+            assert_eq!(merged.matches(&format!("bid:{alpha_bid}")).count(), 1);
+            assert_eq!(merged.matches(&format!("bid:{moved_bid}")).count(), 1);
         }
 
         /// Residual bootstrap-before-author gap (tesela-1fe, 2026-07-02):

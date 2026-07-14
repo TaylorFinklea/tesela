@@ -57,3 +57,12 @@ test("ambient views command is labeled Views, not Inbox", () => {
   assert.ok(entry.keywords.includes("views"), "Views command should be searchable as views");
   assert.equal(entry.keywords.includes("inbox"), false, "Inbox should not be visible command search copy");
 });
+
+test("manifest exposes Move block subtree on the free a m chord", () => {
+  const entry = manifest.find((item) => item.id === "move-block-subtree");
+  assert.ok(entry);
+  assert.equal(entry.label, "Move block subtree");
+  assert.deepEqual(entry.chord, ["a", "m"]);
+  assert.deepEqual(entry.surfaces, ["leader", "palette"]);
+  assert.equal(manifest.filter((item) => item.chord?.join(" ") === "a m").length, 1);
+});

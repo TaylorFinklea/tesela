@@ -15,7 +15,7 @@ use tesela_core::{
     storage::filesystem::FsNoteStore,
     traits::{note_store::NoteStore, search_index::SearchIndex},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::state::{AppState, ConnId, WsDelta, WsEvent};
 
@@ -44,6 +44,7 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
     let (mut sink, mut stream) = socket.split();
     let mut ws_rx = s.ws_tx.subscribe();
     let mut delta_rx = s.ws_delta_tx.subscribe();
+    let (direct_tx, mut direct_rx) = mpsc::channel::<String>(8);
 
     // Send task: fans both broadcast channels onto this socket. Text for
     // WsEvents, binary for Loro deltas (skipping this socket's own deltas).
@@ -78,6 +79,14 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
+                direct = direct_rx.recv() => match direct {
+                    Some(msg) => {
+                        if sink.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
             }
         }
     });
@@ -86,10 +95,11 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
     // re-broadcast. Text/ping/pong/close are handled inline.
     let recv_state = Arc::clone(&s);
     let mut recv_task = tokio::spawn(async move {
+        let mut barrier_window = LoroBarrierWindow::default();
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
                 Message::Binary(bytes) => {
-                    route_inbound_binary(
+                    let outcome = route_inbound_binary(
                         &*recv_state.sync_engine,
                         &recv_state.store,
                         &recv_state.index,
@@ -100,11 +110,22 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                         recv_state.relay.as_ref(),
                     )
                     .await;
+                    barrier_window.observe(outcome);
+                }
+                Message::Text(text) => {
+                    let Some(barrier_id) = parse_loro_barrier(&text) else {
+                        continue;
+                    };
+                    let ok = barrier_window.take();
+                    let Ok(ack) = serialize_loro_barrier_ack(barrier_id, ok) else {
+                        continue;
+                    };
+                    if direct_tx.send(ack).await.is_err() {
+                        break;
+                    }
                 }
                 Message::Close(_) => break,
-                // Text frames inbound are not part of the protocol (clients
-                // send deltas as binary); ignore. Ping/Pong are handled by
-                // axum's keep-alive.
+                // Ping/Pong are handled by axum's keep-alive.
                 _ => {}
             }
         }
@@ -117,6 +138,76 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
         _ = &mut send_task => recv_task.abort(),
         _ = &mut recv_task => send_task.abort(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundFrameOutcome {
+    Presence,
+    AppliedAll,
+    Rejected,
+}
+
+#[derive(Debug)]
+struct LoroBarrierWindow {
+    clean: bool,
+}
+
+impl Default for LoroBarrierWindow {
+    fn default() -> Self {
+        Self { clean: true }
+    }
+}
+
+impl LoroBarrierWindow {
+    fn observe(&mut self, outcome: InboundFrameOutcome) {
+        if outcome == InboundFrameOutcome::Rejected {
+            self.clean = false;
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        std::mem::replace(&mut self.clean, true)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoroBarrierRequest {
+    event: LoroBarrierRequestEvent,
+    barrier_id: uuid::Uuid,
+}
+
+#[derive(serde::Deserialize)]
+enum LoroBarrierRequestEvent {
+    #[serde(rename = "loro_barrier")]
+    LoroBarrier,
+}
+
+#[derive(serde::Serialize)]
+struct LoroBarrierAck {
+    event: &'static str,
+    barrier_id: uuid::Uuid,
+    ok: bool,
+}
+
+fn parse_loro_barrier(text: &str) -> Option<uuid::Uuid> {
+    serde_json::from_str::<LoroBarrierRequest>(text)
+        .ok()
+        .map(|request| {
+            let LoroBarrierRequest {
+                event: LoroBarrierRequestEvent::LoroBarrier,
+                barrier_id,
+            } = request;
+            barrier_id
+        })
+}
+
+fn serialize_loro_barrier_ack(barrier_id: uuid::Uuid, ok: bool) -> serde_json::Result<String> {
+    serde_json::to_string(&LoroBarrierAck {
+        event: "loro_barrier_ack",
+        barrier_id,
+        ok,
+    })
 }
 
 /// Magic prefix marking an EPHEMERAL presence frame (cursor/selection) on the
@@ -145,16 +236,26 @@ pub async fn route_inbound_binary(
     bytes: &[u8],
     origin: Option<ConnId>,
     relay: Option<&crate::sync_relay::RelayHandle>,
-) {
+) -> InboundFrameOutcome {
     if is_presence_frame(bytes) {
         // Ephemeral: fan out to the other sockets, never apply/persist.
         let _ = ws_delta_tx.send(WsDelta {
             origin,
             frame: bytes.to_vec(),
         });
-        return;
+        return InboundFrameOutcome::Presence;
     }
-    apply_inbound_delta(engine, store, index, ws_tx, ws_delta_tx, bytes, origin, relay).await;
+    apply_inbound_delta(
+        engine,
+        store,
+        index,
+        ws_tx,
+        ws_delta_tx,
+        bytes,
+        origin,
+        relay,
+    )
+    .await
 }
 
 /// Decode a `TLR2`-framed delta, apply it to the engine, and fan out the
@@ -182,16 +283,16 @@ pub async fn apply_inbound_delta(
     bytes: &[u8],
     origin: Option<ConnId>,
     relay: Option<&crate::sync_relay::RelayHandle>,
-) {
+) -> InboundFrameOutcome {
     let updates = match tesela_sync::decode_loro_relay_payload(bytes) {
         Ok(Some(u)) => u,
         Ok(None) => {
             tracing::debug!("ws: skip non-v2 binary frame ({} bytes)", bytes.len());
-            return;
+            return InboundFrameOutcome::Rejected;
         }
         Err(e) => {
             tracing::warn!("ws: loro delta decode failed: {} (skipping)", e);
-            return;
+            return InboundFrameOutcome::Rejected;
         }
     };
     let pairs: Vec<([u8; 16], Vec<u8>)> = updates
@@ -199,6 +300,7 @@ pub async fn apply_inbound_delta(
         .map(|u| (u.doc, u.update_bytes))
         .collect();
     let report = engine.apply_relay_updates(&pairs).await;
+    let outcome = outcome_for_apply_report(pairs.len(), &report);
 
     // FAILED or PENDING imports need a snapshot catch-up: a WS frame has no
     // cursor to hold, and the sender's broadcast cursor already advanced, so
@@ -239,7 +341,7 @@ pub async fn apply_inbound_delta(
     }
 
     if report.applied_count() == 0 && healed.is_empty() {
-        return;
+        return outcome;
     }
     // Notify web (finding #4) for each distinct note that visibly changed
     // (cleanly applied, or healed by the snapshot catch-up).
@@ -258,6 +360,19 @@ pub async fn apply_inbound_delta(
         origin,
         frame: bytes.to_vec(),
     });
+    outcome
+}
+
+fn outcome_for_apply_report(
+    update_count: usize,
+    report: &tesela_sync::RelayApplyReport,
+) -> InboundFrameOutcome {
+    if report.pending.is_empty() && report.failed.is_empty() && report.applied.len() == update_count
+    {
+        InboundFrameOutcome::AppliedAll
+    } else {
+        InboundFrameOutcome::Rejected
+    }
 }
 
 /// Resolve a 16-byte note id to its slug, re-read the note via the store,
@@ -581,7 +696,14 @@ mod tests {
         frame.extend_from_slice(br#"{"peer":"a","bid":"x","offset":3}"#);
 
         route_inbound_binary(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, Some(5), None,
+            &h.server,
+            &h.store,
+            &h.index,
+            &ws_tx,
+            &delta_tx,
+            &frame,
+            Some(5),
+            None,
         )
         .await;
 
@@ -619,5 +741,86 @@ mod tests {
 
         assert!(ws_rx.try_recv().is_err(), "no WsEvent for a junk frame");
         assert!(delta_rx.try_recv().is_err(), "no fan-out for a junk frame");
+    }
+
+    #[test]
+    fn barrier_control_requires_exact_shape_and_uuid() {
+        let id = parse_loro_barrier(
+            r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111"}"#,
+        )
+        .expect("strict valid barrier");
+        assert_eq!(id.to_string(), "11111111-1111-4111-8111-111111111111");
+
+        for invalid in [
+            r#"{"event":"loro_barrier","barrier_id":"not-a-uuid"}"#,
+            r#"{"event":"wrong","barrier_id":"11111111-1111-4111-8111-111111111111"}"#,
+            r#"{"event":"loro_barrier","barrier_id":"11111111-1111-4111-8111-111111111111","extra":true}"#,
+            r#"{"event":"loro_barrier"}"#,
+            r#"[]"#,
+        ] {
+            assert!(
+                parse_loro_barrier(invalid).is_none(),
+                "must reject {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn barrier_ack_serializes_the_exact_connection_local_contract() {
+        let id = uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let ack = serialize_loro_barrier_ack(id, false).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ack).unwrap(),
+            serde_json::json!({
+                "event": "loro_barrier_ack",
+                "barrier_id": "11111111-1111-4111-8111-111111111111",
+                "ok": false,
+            })
+        );
+    }
+
+    #[test]
+    fn barrier_cleanliness_is_neutral_for_presence_and_sticky_for_failures_until_reset() {
+        let mut window = LoroBarrierWindow::default();
+        window.observe(InboundFrameOutcome::Presence);
+        assert!(window.take(), "presence does not dirty a clean window");
+
+        window.observe(InboundFrameOutcome::AppliedAll);
+        window.observe(InboundFrameOutcome::Rejected);
+        window.observe(InboundFrameOutcome::AppliedAll);
+        assert!(
+            !window.take(),
+            "one rejected frame makes the whole window fail"
+        );
+        assert!(
+            window.take(),
+            "reading the barrier resets the next window to clean"
+        );
+
+        let applied = tesela_sync::RelayApplyReport {
+            applied: vec![[1; 16]],
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_for_apply_report(1, &applied),
+            InboundFrameOutcome::AppliedAll
+        );
+        let pending = tesela_sync::RelayApplyReport {
+            pending: vec![[2; 16]],
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_for_apply_report(1, &pending),
+            InboundFrameOutcome::Rejected,
+            "pending is negative even when a snapshot catch-up may heal later"
+        );
+        let failed = tesela_sync::RelayApplyReport {
+            failed: vec![([3; 16], "bad update".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_for_apply_report(1, &failed),
+            InboundFrameOutcome::Rejected
+        );
     }
 }

@@ -48,6 +48,11 @@
     type ContentHitRow,
   } from '$lib/content-search';
   import { requestContentJump } from '$lib/stores/content-jump.svelte';
+  import {
+    CLOSED_PALETTE_COMMAND_CONTEXT,
+    transitionPaletteCommandContext,
+    type PaletteCommandContextState,
+  } from './palette-command-context';
 
   interface Props {
     ctx: CommandContext;
@@ -59,6 +64,16 @@
   let query = $state('');
   let inputEl = $state<HTMLInputElement | undefined>();
   let selectedIdx = $state(0);
+  let paletteCommandContext = $state<PaletteCommandContextState>(
+    CLOSED_PALETTE_COMMAND_CONTEXT,
+  );
+
+  $effect(() => {
+    const next = transitionPaletteCommandContext(paletteCommandContext, open, ctx);
+    if (next !== paletteCommandContext) paletteCommandContext = next;
+  });
+
+  const activeCommandContext = $derived(paletteCommandContext.context ?? ctx);
 
   type CmdRow = { kind: 'cmd'; key: string; cmd: Command; score: number };
   type NoteRow = { kind: 'note'; key: string; note: Note; score: number };
@@ -76,7 +91,7 @@
   const MAX_NOTES_IN_PALETTE = 12;
 
   const allCommands = $derived(
-    commandRegistry.availableOn('palette', ctx, keybindings.snapshot()),
+    commandRegistry.availableOn('palette', activeCommandContext, keybindings.snapshot()),
   );
 
   // Raised 500→PALETTE_NOTES_LIMIT (tesela-sclr.1): a 500 cap silently made
@@ -238,6 +253,7 @@
   }
 
   async function runCommand(cmd: Command) {
+    const executionContext = activeCommandContext;
     // Most verbs operate on the focused pane — restore that focus first.
     restoreFocus();
     let arg: string | undefined;
@@ -247,7 +263,7 @@
     }
     closeStation();
     try {
-      await cmd.run(arg, ctx);
+      await cmd.run(arg, executionContext);
     } catch (e) {
       console.error('graphite: command failed', cmd.id, e);
     }

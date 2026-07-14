@@ -15,7 +15,19 @@ import { browser } from "$app/environment";
 import { NoteDoc } from "./note-doc";
 import { NoteDocRegistry, type RegistryUpdate } from "./doc-registry";
 import { encodeTlr2, type LoroDocUpdate } from "./tlr2";
-import { sendBinary } from "$lib/ws-client.svelte";
+import { ServerBarrierRetryQueue } from "./server-barrier";
+import { awaitLoroServerBarrier, sendBinary } from "$lib/ws-client.svelte";
+import { propertyMutationBarrier } from "$lib/block-ops-saver";
+
+const barrierRetries = browser
+  ? new ServerBarrierRetryQueue<string>({
+      initialDelayMs: 250,
+      maxDelayMs: 8_000,
+      schedule: (cb, delayMs) => setTimeout(cb, delayMs),
+      cancelSchedule: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      run: (slugs) => settleNoteDocsAtServer(slugs),
+    })
+  : null;
 
 const registry = browser
   ? new NoteDocRegistry<NoteDoc>({
@@ -23,6 +35,8 @@ const registry = browser
       scheduleFlush: (cb) => requestAnimationFrame(cb),
       cancelFlush: (handle) => cancelAnimationFrame(handle as number),
       send: (u) => sendBinary(encodeTlr2([{ doc: u.doc, updateBytes: u.updateBytes }])),
+      requestBarrierRetry: (slugs) => barrierRetries?.enqueue(slugs),
+      completeBarrierRetry: (slugs) => barrierRetries?.resolve(slugs),
     })
   : null;
 
@@ -59,6 +73,7 @@ export function spliceNoteBlock(
   utf16DeleteLen: number,
   insert: string,
 ): boolean {
+  if (slug && propertyMutationBarrier.isReserved(slug)) return false;
   return registry?.splice(slug, bid, utf16Offset, utf16DeleteLen, insert) ?? false;
 }
 
@@ -73,6 +88,35 @@ export function applyInboundToOpenDocs(updates: LoroDocUpdate[]): RegistryUpdate
  *  the shell tears down). */
 export function flushAllOutbound(): void {
   registry?.flushAll();
+}
+
+let serverBarrierQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Settle all affected mounted note docs on the server. Calls are serialized
+ * connection-wide so two panes cannot acknowledge checkpoints out of order.
+ * Every server-backed addressed note participates. A synthetic append
+ * destination is omitted only after its caller drains every mounted/unmounted
+ * save queue and authoritatively confirms that the note is still absent; this
+ * keeps another pane's newly-created doc inside the proof. An absent included
+ * registry doc fails closed.
+ */
+export function settleNoteDocsAtServer(slugs: Iterable<string>): Promise<void> {
+  if (!registry) return Promise.resolve();
+  const affected = [...new Set(slugs)];
+  const run = async () => {
+    await registry.waitUntilOpen(affected);
+    await awaitLoroServerBarrier((sendCaptured) => {
+      const prepared = registry.prepareServerBarrier(affected, (update) =>
+        sendCaptured(encodeTlr2([{ doc: update.doc, updateBytes: update.updateBytes }])),
+      );
+      if (!prepared) throw new Error("Unable to hand affected Loro docs to the captured socket");
+      return prepared;
+    });
+  };
+  const completion = serverBarrierQueue.then(run, run);
+  serverBarrierQueue = completion.catch(() => {});
+  return completion;
 }
 
 // ── focused-doc tracking: vim undo/redo route to the note being edited ──────

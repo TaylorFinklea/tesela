@@ -27,6 +27,7 @@
     paneId,
     onContentChange,
     onCancelAndFlush,
+    onPrepareRelocation,
     onfocusedblockchange,
     onLeader,
   }: {
@@ -34,6 +35,7 @@
     paneId?: string;
     onContentChange?: (text: string) => void;
     onCancelAndFlush?: (fullContent: string) => void;
+    onPrepareRelocation?: () => Promise<void>;
     onfocusedblockchange?: (block: import("$lib/types/ParsedBlock").ParsedBlock | null) => void;
     onLeader?: () => void;
   } = $props();
@@ -142,6 +144,7 @@
       {paneId}
       {onContentChange}
       {onCancelAndFlush}
+      {onPrepareRelocation}
       {onfocusedblockchange}
       onleader={onLeader}
     />

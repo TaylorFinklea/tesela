@@ -1,4 +1,6 @@
 <script module lang="ts">
+  import type { MovePlacement } from "$lib/block-tree-move";
+
   // Phase 12.X — singleton "last-active outliner" so the journal view can
   // dispatch a single `tesela:restore-focus` and have only the outliner
   // the user was actually editing in respond. Without this, every
@@ -10,6 +12,10 @@
   }
   export function isLastActiveOutliner(el: HTMLElement | null): boolean {
     return !!el && el === lastActiveOutliner;
+  }
+
+  export function lastActiveOutlinerIsWithin(container: HTMLElement | null): boolean {
+    return !!container && !!lastActiveOutliner && container.contains(lastActiveOutliner);
   }
 
   // Phase 12.X — one-shot flag so cross-day j/k navigation in the journal
@@ -25,10 +31,23 @@
     nextFocusIsCrossNav = false;
     return true;
   }
+
+  export type RelocationBindings = {
+    sourceBid: string | null;
+    targetBid: string | null;
+    placement: MovePlacement | null;
+    pending: boolean;
+    onDragStart: (event: DragEvent, sourceBid: string) => void;
+    onDragOver: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
+    onDrop: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
+    onCancel: () => void;
+  };
+
+  export const BLOCK_MOVE_PREPARE_EVENT = "tesela:prepare-block-relocation";
 </script>
 
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks, renderBlockBody } from "$lib/block-parser";
   import { findContentBlockId } from "$lib/content-search";
@@ -47,13 +66,20 @@
     isClientMintedId,
     type BlockOp,
   } from "$lib/block-ops";
-  import { BlockOpsSaver } from "$lib/block-ops-saver";
+  import { BlockOpsSaver, propertyMutationBarrier } from "$lib/block-ops-saver";
   import { spliceNoteBlock, acquireNoteDoc, releaseNoteDoc } from "$lib/loro/note-doc-registry.svelte";
   import {
+    BLOCK_MOVE_MIME,
+    classifyDropPlacement,
+    decodeBlockMoveDragPayload,
+    extractSubtree,
     moveSubtreeDown,
     moveSubtreeUnder,
     moveSubtreeUp,
     outdentSubtreeToRoot,
+    sameNoteMoveRequestForAction,
+    stableBlockKey,
+    type BlockMoveRequest,
   } from "$lib/block-tree-move";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
@@ -81,6 +107,7 @@
     unregisterPaneOutliner,
   } from "$lib/stores/pane-tree.svelte";
   import { clearContentJump, type ContentJump } from "$lib/stores/content-jump.svelte";
+  import { outlinerOwnsDocumentFocus } from "$lib/editor/outliner-focus-owner";
 
   let {
     noteId,
@@ -88,6 +115,7 @@
     frontmatter,
     onContentChange,
     onCancelAndFlush,
+    onPrepareRelocation,
     onleader: onLeader,
     onfocusedblockchange,
     drillBlockId = "",
@@ -95,6 +123,8 @@
     isPinnedTab = false,
     paneId,
     contentJump = null,
+    relocation,
+    onsamenotemove,
   }: {
     noteId: string;
     body: string;
@@ -113,6 +143,10 @@
      *  path if the parent didn't wire it. `baseContent` is the edit BASE (see
      *  `onContentChange`). */
     onCancelAndFlush?: (fullContent: string, baseContent?: string) => void;
+    /** Drain any whole-note save already admitted by the parent before the
+     *  shared relocation reservation made this outliner inert. The local
+     *  block-op queue settles first so its failure fallback is included. */
+    onPrepareRelocation?: () => Promise<void>;
     onleader?: () => void;
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     drillBlockId?: string;
@@ -124,6 +158,8 @@
      *  pane X". Unset for the legacy chrome (column-view, journal, etc). */
     paneId?: string;
     contentJump?: ContentJump | null;
+    relocation?: RelocationBindings;
+    onsamenotemove?: (request: BlockMoveRequest) => void;
   } = $props();
 
   // Fetch notes list for autocomplete + tag-property visibility resolution.
@@ -481,6 +517,7 @@
   }
 
   let blocks = $state<ParsedBlock[]>(parseBlocksSeeded(noteId, body));
+  let noteMutationReserved = $state(false);
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
@@ -503,7 +540,7 @@
   let deferredReparseTimer: ReturnType<typeof setTimeout> | null = null;
   // Track which note `lastExternalBody`/`lastSentBody` belong to so the
   // body-sync effect can distinguish a real noteId change (always replace)
-  // from a same-note body update (preserve focus by block id).
+  // from a same-note body update (preserve focus by stable block key).
   let lastBodyNoteId = $state(noteId);
 
   // tesela-baa: hold this note's Loro doc open (ref-counted) while any
@@ -517,6 +554,14 @@
     void acquireNoteDoc(slug);
     return () => releaseNoteDoc(slug);
   });
+
+  $effect(() => propertyMutationBarrier.subscribe(noteId, (reserved) => {
+    noteMutationReserved = reserved;
+  }));
+
+  function noteMutationIsReserved(): boolean {
+    return noteMutationReserved || propertyMutationBarrier.isReserved(noteId);
+  }
 
   // True when focusedIndex was set by the page-mount auto-focus effect, not
   // by a user action. Suppresses the empty-block→Insert auto-entry below so
@@ -543,6 +588,7 @@
   }
 
   function applySnapshot(s: OutlinerSnapshot): void {
+    if (noteMutationIsReserved()) return;
     // Capture the pre-restore tree BEFORE reassigning `blocks` so the
     // undo/redo save can diff prev→restored into block ops (and avoid the
     // whole-body PUT that would re-assert every surviving block).
@@ -563,6 +609,7 @@
   }
 
   function undoOutliner(): boolean {
+    if (noteMutationIsReserved()) return false;
     const snap = history.popUndo({ blocks, focusedIndex, collapsedBlocks });
     if (!snap) return false;
     applySnapshot(snap);
@@ -570,6 +617,7 @@
   }
 
   function redoOutliner(): boolean {
+    if (noteMutationIsReserved()) return false;
     const snap = history.popRedo({ blocks, focusedIndex, collapsedBlocks });
     if (!snap) return false;
     applySnapshot(snap);
@@ -673,6 +721,25 @@
     return out;
   });
 
+  const relocationSourceBids = $derived.by(() => {
+    const sourceBid = relocation?.sourceBid;
+    if (!sourceBid) return new Set<string>();
+    return new Set(
+      extractSubtree(blocks, sourceBid)
+        .map((block) => block.bid)
+        .filter((bid): bid is string => typeof bid === "string" && bid.length > 0),
+    );
+  });
+
+  const invalidRelocationTargetBids = $derived.by(() => {
+    if (!relocation?.sourceBid) return new Set<string>();
+    return new Set(
+      extractSubtree(blocks, relocation.sourceBid)
+        .map((block) => block.bid)
+        .filter((bid): bid is string => typeof bid === "string" && bid.length > 0),
+    );
+  });
+
   /** Whether the visible block at index `vi` has any children — used to
    *  conditionally render the fold-toggle chevron. A block has children when
    *  the next *non-collapsed* block in `blocks` (not visibleBlocks) sits at a
@@ -720,7 +787,7 @@
    *  fast-path that bypasses this guard entirely, so the held state resolves
    *  the moment our save round-trips. */
   function hasUnsavedLocalEdits(): boolean {
-    return blocks.some((b) => isClientMintedId(b.id));
+    return blocks.some((b) => isClientMintedId(b.id) && !isUntouchedEmptySeed(b));
   }
 
   /** Apply an external body reparse. Extracted from the $effect below
@@ -780,22 +847,35 @@
     // below would adopt the stale pre-merge body AND clear undo history.
     // Skip this reparse entirely; the next body change after the save
     // round-trips will be a no-op because by then `body === lastSentBody`.
-    const focusedId = blocks[focusedIndex]?.id ?? "";
-    if (isClientMintedId(focusedId) && targetBody !== lastSentBody) {
+    const focusedBlock = blocks[focusedIndex];
+    const focusedId = focusedBlock?.id ?? "";
+    const focusedKey = focusedBlock ? stableBlockKey(focusedBlock) : "";
+    if (
+      focusedBlock
+      && isClientMintedId(focusedId)
+      && !isUntouchedEmptySeed(focusedBlock)
+      && targetBody !== lastSentBody
+    ) {
       // Mark the body we couldn't apply so the deferred timer doesn't
       // fire on it either. (It'll keep being re-checked as new WS
       // events arrive and update `body`.)
       return;
     }
-    const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
+    const newIdx = focusedKey
+      ? reparsed.findIndex((b) => stableBlockKey(b) === focusedKey)
+      : -1;
     if (newIdx === -1) {
       // Focused block disappeared. If it was a local-only id we
       // already returned above; reaching here means the server-canonical
       // block is genuinely gone (remote delete, or local delete whose
-      // server round-trip just landed). Keep the cursor visible by
-      // clamping the old index into the new list.
+      // server round-trip just landed). Clamp to an adjacent row only while
+      // this outliner still owns real DOM focus. A cross-day relocation has
+      // already focused the destination outliner by the time the source
+      // reparse lands, so retaining this source index would steal focus back.
+      const ownsDomFocus = typeof document !== "undefined"
+        && rootEl?.contains(document.activeElement) === true;
       blocks = reparsed;
-      if (reparsed.length === 0) focusedIndex = null;
+      if (!ownsDomFocus || reparsed.length === 0) focusedIndex = null;
       else focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
       history.clear();
       return;
@@ -826,8 +906,8 @@
       lastExternalBody = body;
       // Phase 9.9 follow-up — when noteId changes (page nav within same
       // BlockOutliner instance, e.g. drilling via gd or Esc-back), every
-      // old block id has the previous note's prefix and won't exist in the
-      // new body. The "preserve focus by id" branch below would always hit
+      // old stable block key belongs to the previous note and won't exist in
+      // the new body. The preserve-focus branch below would always hit
       // its newIdx === -1 early-return and leave `blocks` stale, so the
       // user sees the wrong note's content. Reset everything for the new
       // note instead.
@@ -905,6 +985,7 @@
   // so the sidebar doesn't lose its context when the user clicks into it.
   $effect(() => {
     if (focusedIndex === null) return;
+    if (!outlinerOwnsDocumentFocus(rootEl)) return;
     onfocusedblockchange?.(visibleBlocks[focusedIndex] ?? null);
   });
 
@@ -1083,6 +1164,41 @@
       saveBlocks(blocks);
     },
   );
+  async function prepareOutlinerForRelocation(
+    addressedBids: readonly string[],
+    expandInsideBid?: string | null,
+  ): Promise<boolean> {
+    for (const bid of addressedBids) {
+      const addressed = blocks.find((block) => block.bid === bid);
+      if (!addressed || isClientMintedId(addressed.id)) return false;
+    }
+    if (expandInsideBid) {
+      const target = blocks.find((block) => block.bid === expandInsideBid);
+      if (!target || isClientMintedId(target.id)) return false;
+      if (collapsedBlocks.has(target.id)) {
+        const expanded = new Set(collapsedBlocks);
+        expanded.delete(target.id);
+        collapsedBlocks = expanded;
+        persistFold();
+        await tick();
+      }
+    }
+    try {
+      await blockOpsSaver.settle(noteId);
+      await onPrepareRelocation?.();
+    } catch {
+      return false;
+    }
+    // The relocation response is the next authoritative body for every
+    // addressed outliner. Retire any pre-move typing defer now that those
+    // edits have settled; otherwise its stale body can delay (or later
+    // overwrite) the canonical source/destination reparse.
+    if (deferredReparseTimer) clearTimeout(deferredReparseTimer);
+    deferredReparseTimer = null;
+    deferredReparseBody = null;
+    lastLocalEditAt = 0;
+    return true;
+  }
 
   // Flush any pending coalesced block-ops immediately when the user leaves
   // this outliner (focus moves out) — a save MUST land when the user leaves
@@ -1092,9 +1208,13 @@
     blockOpsSaver.flush(noteId);
   }
 
-  // Flush on teardown so a destroyed outliner (page nav away, pane close)
-  // never loses the last edit to a debounce timer that never fired.
-  onDestroy(() => blockOpsSaver.flushAll());
+  // Drain on teardown and retain the global save admission until every queued
+  // successor lands. Relocation can still discover this queue after its DOM
+  // surface disappears.
+  onDestroy(() => {
+    const completion = blockOpsSaver.dispose();
+    void completion.catch((error) => console.error("Outliner teardown save failed:", error));
+  });
 
   /** Persist an outliner undo/redo restore (`applySnapshot`). Prefer a block-
    *  ops diff of `prev → restored` so ONLY the blocks the restore actually
@@ -1142,6 +1262,7 @@
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
+    if (noteMutationIsReserved()) return;
     // Mark "actively editing" so the body-sync effect knows to defer
     // any incoming server reparse until typing settles. See
     // lastLocalEditAt's docstring for the why.
@@ -1249,6 +1370,7 @@
   }
 
   function removeBlockTag(block: ParsedBlock, tagName: string) {
+    if (noteMutationIsReserved()) return;
     pushUndo();
     handleBlockChange(block.id, toggleBlockTag(block.raw_text, tagName));
   }
@@ -1262,6 +1384,10 @@
   async function setBlockPropertyStructured(blockId: string, key: string, value: string) {
     const block = blocks.find((b) => b.id === blockId);
     if (!block) return;
+    if (noteMutationIsReserved()) {
+      console.warn("setBlockProperty (structured) skipped during block relocation", noteId, key);
+      return;
+    }
     const k = key.toLowerCase();
     const addr = block.bid ? `${block.note_id}:${block.bid}` : block.id;
     if (value.trim() === "") {
@@ -1294,6 +1420,7 @@
   }
 
   function handleStatusCycle(vi: number) {
+    if (noteMutationIsReserved()) return;
     const block = visibleBlocks[vi];
     if (!block) return;
     pushUndo();
@@ -1425,6 +1552,7 @@
    * indent levels).
    */
   async function insertTemplateAfter(parentBlockId: string, templateNoteId: string) {
+    if (noteMutationIsReserved()) return;
     let templateNote: Note;
     try {
       templateNote = await api.getNote(templateNoteId);
@@ -1432,6 +1560,7 @@
       console.error("Failed to fetch template note:", e);
       return;
     }
+    if (noteMutationIsReserved()) return;
     const tplBlocks = parseBlocks(templateNoteId, templateNote.body);
     if (tplBlocks.length === 0) return;
     const parentIdx = blocks.findIndex((b) => b.id === parentBlockId);
@@ -1470,6 +1599,7 @@
   }
 
   function handleEnter(vi: number, textAfterCursor: string = "") {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     const current = visibleBlocks[vi];
     if (!current) return;
@@ -1549,6 +1679,7 @@
   }
 
   function handleIndent(vi: number, direction: "indent" | "outdent") {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block) return;
@@ -1574,13 +1705,34 @@
   }
 
   function handleMoveBlock(vi: number, direction: "up" | "down") {
-    lastLocalEditAt = Date.now();
+    if (noteMutationIsReserved()) return;
     const block = visibleBlocks[vi];
     if (!block) return;
+    if (relocation) {
+      if (
+        relocation.pending
+        || relocation.sourceBid
+        || !onsamenotemove
+        || !block.bid
+        || isClientMintedId(block.id)
+      ) return;
+      const request = sameNoteMoveRequestForAction(
+        blocks,
+        block.bid,
+        noteId,
+        direction,
+        crypto.randomUUID(),
+      );
+      if (request && sameNoteRelocationHasStableEndpoints(block, request)) {
+        onsamenotemove(request);
+      }
+      return;
+    }
     const result = direction === "up"
       ? moveSubtreeUp(blocks, block.id)
       : moveSubtreeDown(blocks, block.id);
     if (!result.changed) return;
+    lastLocalEditAt = Date.now();
     pushUndo();
     blocks = result.blocks;
     // Sibling reorders are order changes. The current block-granular `move`
@@ -1591,12 +1743,36 @@
   }
 
   function handleMoveUnderPrevious(vi: number) {
-    lastLocalEditAt = Date.now();
+    if (noteMutationIsReserved()) return;
     const block = visibleBlocks[vi];
     const prev = visibleBlocks[vi - 1];
     if (!block || !prev) return;
+    if (relocation) {
+      if (
+        relocation.pending
+        || relocation.sourceBid
+        || !onsamenotemove
+        || !block.bid
+        || !prev.bid
+        || isClientMintedId(block.id)
+        || isClientMintedId(prev.id)
+      ) return;
+      const request = sameNoteMoveRequestForAction(
+        blocks,
+        block.bid,
+        noteId,
+        "indent",
+        crypto.randomUUID(),
+        prev.bid ?? undefined,
+      );
+      if (request && sameNoteRelocationHasStableEndpoints(block, request)) {
+        onsamenotemove(request);
+      }
+      return;
+    }
     const result = moveSubtreeUnder(blocks, block.id, prev.id);
     if (!result.changed) return;
+    lastLocalEditAt = Date.now();
     pushUndo();
     blocks = result.blocks;
     // This operation both reparents and reorders under the target parent; use
@@ -1606,6 +1782,7 @@
   }
 
   function handleOutdentToRoot(vi: number) {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block) return;
@@ -1618,7 +1795,120 @@
     refocusBlock(block.id);
   }
 
+  function carriesInternalBlockMove(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes(BLOCK_MOVE_MIME);
+  }
+
+  function invalidRelocationTarget(block: ParsedBlock): boolean {
+    return (
+      typeof block.bid !== "string"
+      || block.bid.length === 0
+      || isClientMintedId(block.id)
+      || invalidRelocationTargetBids.has(block.bid)
+    );
+  }
+
+  function sameNoteRelocationHasStableEndpoints(
+    source: ParsedBlock,
+    request: BlockMoveRequest,
+  ): boolean {
+    if (isClientMintedId(source.id) || !request.target_bid) return false;
+    const target = blocks.find((block) => block.bid === request.target_bid);
+    return !!target && !isClientMintedId(target.id);
+  }
+
+  function isUntouchedEmptySeed(block: ParsedBlock): boolean {
+    return blocks.length === 1
+      && block.id === `${noteId}:new-seed`
+      && block.text === ""
+      && block.raw_text === "";
+  }
+
+  function handleRelocationDragStart(event: DragEvent, block: ParsedBlock) {
+    if (noteMutationIsReserved()) return;
+    const bid = block.bid;
+    if (
+      !relocation
+      || relocation.pending
+      || typeof bid !== "string"
+      || bid.length === 0
+      || isClientMintedId(block.id)
+      || !event.dataTransfer
+    ) {
+      event.preventDefault();
+      return;
+    }
+    relocation.onDragStart(event, bid);
+    if (!carriesInternalBlockMove(event)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+
+    const moved = extractSubtree(blocks, bid);
+    const preview = document.createElement("div");
+    const rootText = block.text.trim() || "(empty block)";
+    preview.textContent = `${rootText} · ${moved.length} block${moved.length === 1 ? "" : "s"}`;
+    preview.style.cssText = "position:fixed;left:-10000px;top:-10000px;padding:6px 10px;border-radius:6px;background:#20242b;color:#fff;font:12px system-ui;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    document.body.appendChild(preview);
+    try {
+      event.dataTransfer.setDragImage(preview, 12, 12);
+    } catch {
+      // Some embedded WebViews do not support custom drag images.
+    }
+    requestAnimationFrame(() => preview.remove());
+  }
+
+  function handleRelocationDragOver(event: DragEvent, block: ParsedBlock) {
+    if (!relocation || relocation.pending || !carriesInternalBlockMove(event)) return;
+    if (invalidRelocationTarget(block)) {
+      if (isUntouchedEmptySeed(block)) return;
+      // Do not let a self/descendant custom drop bubble to the day-level
+      // append target. Ordinary text/image drops still bypass this handler.
+      event.stopPropagation();
+      return;
+    }
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement) || !block.bid) return;
+    const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    relocation.onDragOver(event, block.bid, placement);
+  }
+
+  function handleRelocationDrop(event: DragEvent, block: ParsedBlock) {
+    if (!relocation || !carriesInternalBlockMove(event)) return;
+    if (invalidRelocationTarget(block)) {
+      if (isUntouchedEmptySeed(block)) return;
+      event.stopPropagation();
+      return;
+    }
+    const transfer = event.dataTransfer;
+    const target = event.currentTarget;
+    if (!transfer || !(target instanceof HTMLElement) || !block.bid) return;
+    const payload = decodeBlockMoveDragPayload(
+      Array.from(transfer.types),
+      transfer.getData(BLOCK_MOVE_MIME),
+    );
+    if (!payload) {
+      event.stopPropagation();
+      return;
+    }
+    const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
+    event.preventDefault();
+    event.stopPropagation();
+    if (placement === "inside" && collapsedBlocks.has(block.id)) {
+      const expanded = new Set(collapsedBlocks);
+      expanded.delete(block.id);
+      collapsedBlocks = expanded;
+      persistFold();
+    }
+    relocation.onDrop(event, block.bid, placement);
+  }
+
   function handleBackspace(vi: number) {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block || block.raw_text !== "" || blocks.length <= 1) return;
@@ -1634,6 +1924,7 @@
   }
 
   function handleBackspaceMerge(vi: number, currentText: string) {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     if (vi === 0) return;
     const prev = visibleBlocks[vi - 1];
@@ -1722,6 +2013,7 @@
   let blockClipboard = $state<ParsedBlock[]>([]);
 
   function handleDeleteBlock(vi: number) {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     if (visibleBlocks.length <= 1) return;
     const block = visibleBlocks[vi];
@@ -1756,6 +2048,7 @@
   }
 
   function handlePasteBlock(vi: number) {
+    if (noteMutationIsReserved()) return;
     if (blockClipboard.length === 0) return;
     const anchor = visibleBlocks[vi];
     if (!anchor) return;
@@ -1782,6 +2075,7 @@
   }
 
   function handleNewBlockAbove(vi: number) {
+    if (noteMutationIsReserved()) return;
     lastLocalEditAt = Date.now();
     const current = visibleBlocks[vi];
     if (!current) return;
@@ -1832,6 +2126,7 @@
   }
 
   function deleteVisualBlocks() {
+    if (noteMutationIsReserved()) return;
     const sorted = [...visualRange].sort((a, b) => a - b);
     if (sorted.length === 0) return;
     const ids = new Set(sorted.map(vi => visibleBlocks[vi]?.id).filter(Boolean));
@@ -1875,6 +2170,7 @@
    * predictable, not "each block independently advances").
    */
   function bulkCycleStatus() {
+    if (noteMutationIsReserved()) return;
     const sorted = [...visualRange].sort((a, b) => a - b);
     if (sorted.length === 0) return;
     const first = visibleBlocks[sorted[0]!];
@@ -1899,6 +2195,7 @@
    * shifts once. Outdent clamps at 0.
    */
   function bulkIndent(direction: "indent" | "outdent") {
+    if (noteMutationIsReserved()) return;
     if (visualRange.size === 0) return;
     const ids = new Set<string>();
     for (const vi of visualRange) {
@@ -1929,6 +2226,7 @@
    * otherwise it ADDS the tag (with auto-fill props) to all that don't have it.
    */
   function bulkToggleTag(tagName: string) {
+    if (noteMutationIsReserved()) return;
     const sorted = [...visualRange].sort((a, b) => a - b);
     if (sorted.length === 0) return;
     pushUndo();
@@ -2023,6 +2321,25 @@
   });
 
   let rootEl = $state<HTMLDivElement | undefined>();
+
+  function relocationPrepare(node: HTMLElement) {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        noteId?: string;
+        addressedBids?: string[];
+        expandInsideBid?: string | null;
+        respond?: (promise: Promise<boolean>) => void;
+      }>).detail;
+      if (detail?.noteId !== noteId || typeof detail.respond !== "function") return;
+      detail.respond(prepareOutlinerForRelocation(
+        detail.addressedBids ?? [],
+        detail.expandInsideBid,
+      ));
+    };
+    node.addEventListener(BLOCK_MOVE_PREPARE_EVENT, handler);
+    return { destroy: () => node.removeEventListener(BLOCK_MOVE_PREPARE_EVENT, handler) };
+  }
+
   let appliedContentJumpId = 0;
   $effect(() => {
     const jump = contentJump;
@@ -2168,7 +2485,14 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="text-sm text-muted-foreground cursor-text py-2 hover:bg-accent/20 rounded px-2"
+    bind:this={rootEl}
+    use:relocationPrepare
+    data-block-outliner
+    data-note-id={noteId}
+    inert={noteMutationIsReserved() || relocation?.pending ? true : undefined}
+    aria-busy={noteMutationIsReserved() || relocation?.pending ? "true" : undefined}
     onclick={() => {
+      if (noteMutationIsReserved()) return;
       pushUndo();
       const newBlock: ParsedBlock = {
         id: `${noteId}:new-${Date.now()}`,
@@ -2195,14 +2519,35 @@
     <span class="ml-1.5 text-muted-foreground/40">to insert</span>
   </div>
 {:else}
-  <div class="space-y-0" bind:this={rootEl}>
-    {#each visibleBlocks as block, vi (block.id)}
+  <div
+    class="space-y-0"
+    bind:this={rootEl}
+    use:relocationPrepare
+    data-block-outliner
+    data-note-id={noteId}
+    inert={noteMutationIsReserved() || relocation?.pending ? true : undefined}
+    aria-busy={noteMutationIsReserved() || relocation?.pending ? "true" : undefined}
+  >
+    {#each visibleBlocks as block, vi (stableBlockKey(block))}
       {@const displayIndent = block.indent_level - drillRootIndent}
       <div
         data-block-vi={vi}
+        data-note-id={noteId}
+        data-block-bid={block.bid ?? undefined}
+        data-move-key-target
+        data-move-invalid={invalidRelocationTarget(block) ? "true" : undefined}
+        data-drop-placement={relocation && relocation.targetBid === block.bid ? relocation.placement ?? undefined : undefined}
+        data-move-source={block.bid && relocationSourceBids.has(block.bid) ? "true" : undefined}
+        ondragover={(event) => handleRelocationDragOver(event, block)}
+        ondrop={(event) => handleRelocationDrop(event, block)}
         class="group flex items-start transition-all relative
           {outlinerHasFocus && focusedIndex === vi ? 'bg-accent/40' : ''}
-          {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}"
+          {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}
+          {block.bid && relocationSourceBids.has(block.bid) ? (relocation?.pending ? 'opacity-60 bg-primary/10' : 'bg-primary/10 ring-1 ring-primary/20 rounded-md') : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'inside' ? 'bg-primary/15 ring-1 ring-primary/50 rounded-md' : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement !== 'inside' ? `after:content-[''] after:absolute after:left-0 after:right-0 after:h-0.5 after:bg-primary after:z-10` : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'before' ? 'after:top-0' : ''}
+          {relocation && relocation.targetBid === block.bid && relocation.placement === 'after' ? 'after:bottom-0' : ''}"
         style="padding-left: {displayIndent * 24}px;"
       >
         <!-- Threading lines -->
@@ -2232,6 +2577,20 @@
           </button>
         {:else}
           <span class="shrink-0 pl-1 w-[15px]"></span>
+        {/if}
+
+        {#if relocation}
+          <button
+            type="button"
+            data-move-handle
+            draggable={!noteMutationIsReserved() && !relocation.pending && !!block.bid && !isClientMintedId(block.id)}
+            class="shrink-0 w-4 pt-[10px] cursor-grab active:cursor-grabbing text-muted-foreground/25 hover:text-muted-foreground/70 transition-colors"
+            aria-label="Move block subtree"
+            title={isClientMintedId(block.id) ? "Wait for this block to save before moving" : "Move block subtree"}
+            onclick={(event) => event.stopPropagation()}
+            ondragstart={(event) => handleRelocationDragStart(event, block)}
+            ondragend={() => relocation.onCancel()}
+          >⠿</button>
         {/if}
 
         <!-- Bullet — click to drill in. Two styles via prefs.bulletStyle:
@@ -2299,6 +2658,7 @@
             onblur={() => {}}
             onfocus={() => {
               focusedIndex = vi;
+              onfocusedblockchange?.(block);
               autoFocused = false;
               // Cross-day j/k navigation arms a one-shot flag so we land
               // in NORMAL mode on the target block; otherwise it's a
@@ -2308,6 +2668,7 @@
               if (!isPinnedTab) setLastActiveOutliner(rootEl ?? null);
             }}
             onchange={(text) => handleBlockChange(block.id, text)}
+            editorKey={stableBlockKey(block)}
             blockId={block.id}
             blockProperties={block.properties}
             bid={block.bid ?? undefined}

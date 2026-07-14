@@ -16,6 +16,7 @@ import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
 import { NoteDocRegistry } from "../../src/lib/loro/doc-registry.ts";
+import { runServerBarrierTransaction } from "../../src/lib/loro/server-barrier.ts";
 
 const BOOTSTRAP_OPS = 5;
 
@@ -76,7 +77,7 @@ function makeFakeDoc(log) {
 
 /** Registry + manual flush scheduler + droppable send (wsUp=false models a
  *  closed socket: the frame is discarded and send returns false). */
-function makeHarness() {
+function makeHarness({ requestBarrierRetry, completeBarrierRetry } = {}) {
   const log = [];
   const sent = [];
   const scheduled = [];
@@ -96,6 +97,8 @@ function makeHarness() {
       sent.push(u);
       return true;
     },
+    requestBarrierRetry,
+    completeBarrierRetry,
   });
   const runFlushes = () => {
     while (scheduled.length) {
@@ -282,4 +285,380 @@ test("releasing the focused note clears focus routing", async () => {
   registry.setFocused("e", "one");
   registry.release("one");
   assert.equal(registry.focusedSlug(), null);
+});
+
+test("forced flush cancels its scheduled callback and reports the real handoff result", async () => {
+  const { registry, sent, runFlushes, state } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  state.wsUp = false;
+  assert.equal(registry.flush("n"), false, "a dirty delta rejected by the socket is unsettled");
+  assert.equal(sent.length, 0);
+
+  state.wsUp = true;
+  assert.equal(registry.flush("n"), true, "a real socket handoff settles the dirty delta");
+  assert.equal(sent.length, 1);
+
+  runFlushes();
+  assert.equal(sent.length, 1, "the cancelled scheduled callback cannot send a second frame");
+});
+
+test("barrier retry re-exports cumulatively from the server-acked checkpoint", async () => {
+  const { registry, sent, runFlushes } = makeHarness();
+  await registry.acquire("n");
+
+  registry.splice("n", "b", 0, 0, "a");
+  runFlushes();
+  assert.equal(sent.length, 1, "ordinary handoff advances only the optimistic cursor");
+
+  const barrierFrames = [];
+  const handoff = (update) => {
+    barrierFrames.push(update);
+    return true;
+  };
+  const first = registry.prepareServerBarrier(["n", "n"], handoff);
+  assert.ok(first, "duplicate affected notes prepare one successful barrier handoff");
+  assert.equal(barrierFrames.length, 1);
+  assert.equal(barrierFrames[0].updateBytes.length, 1);
+  first.reject();
+
+  // A rejected acknowledgement leaves the same op cumulative. Add another edit
+  // after the failed barrier and prove the retry carries both operations.
+  registry.splice("n", "b", 1, 0, "b");
+  const retry = registry.prepareServerBarrier(["n"], handoff);
+  assert.ok(retry);
+  assert.equal(barrierFrames.length, 2);
+  assert.equal(barrierFrames[1].updateBytes.length, 2, "retry includes every op since last ack");
+  retry.acknowledge();
+
+  registry.splice("n", "b", 2, 0, "c");
+  const afterAck = registry.prepareServerBarrier(["n"], handoff);
+  assert.ok(afterAck);
+  assert.equal(barrierFrames[2].updateBytes.length, 1, "positive ack advances only its captured VV");
+  assert.equal(afterAck.acknowledge(), true);
+  registry.release("n");
+  assert.equal(registry.size(), 0, "every preparation settled, so release can close the doc");
+});
+
+test("rejected barrier makes ordinary flush re-send every unacknowledged op", async () => {
+  const { registry, sent, runFlushes } = makeHarness();
+  await registry.acquire("n");
+
+  registry.splice("n", "b", 0, 0, "a");
+  runFlushes();
+  assert.equal(sent.length, 1, "the optimistic ordinary handoff happened before the barrier");
+
+  const barrierFrames = [];
+  const prepared = registry.prepareServerBarrier(["n"], (update) => {
+    barrierFrames.push(update);
+    return true;
+  });
+  assert.ok(prepared);
+  assert.equal(barrierFrames[0].updateBytes.length, 1);
+
+  prepared.reject();
+  registry.flush("n");
+  assert.equal(sent.length, 2, "rollback rewinds to the durable checkpoint, not the optimistic cursor");
+  assert.equal(sent[1].updateBytes.length, 1);
+});
+
+test("unavailable barrier after an ordinary handoff survives release and reconnect", async () => {
+  const { registry, sent, log, runFlushes, state } = makeHarness();
+  await registry.acquire("n");
+
+  registry.splice("n", "b", 0, 0, "x");
+  runFlushes();
+  assert.equal(sent.length, 1, "the ordinary optimistic handoff clears the dirty cursor");
+
+  state.wsUp = false;
+  await assert.rejects(
+    runServerBarrierTransaction({
+      prepare: () => {
+        const prepared = registry.prepareServerBarrier(["n"], () => false);
+        if (!prepared) throw new Error("Unable to hand affected Loro docs to the captured socket");
+        return prepared;
+      },
+      isConnectionCurrent: () => false,
+      request: () => Promise.reject(new Error("Loro barrier socket is not open")),
+    }),
+    /unable to hand affected Loro docs/i,
+  );
+
+  registry.release("n");
+  assert.equal(registry.size(), 1, "rollback parks the only remaining copy while offline");
+  assert.ok(!log.includes("close:n"));
+
+  state.wsUp = true;
+  registry.flushAll();
+  assert.equal(sent.length, 2, "reconnect replays the pre-barrier handoff from the durable cursor");
+  assert.equal(sent[1].updateBytes.length, 1);
+  assert.equal(registry.size(), 1, "optimistic replay still awaits durable barrier proof");
+
+  const retry = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(retry);
+  assert.equal(retry.acknowledge(), true);
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("rejected clean barrier re-sends an edit flushed while acknowledgement was pending", async () => {
+  const { registry, sent, runFlushes } = makeHarness();
+  await registry.acquire("n");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared, "a clean note still participates in the server barrier");
+
+  registry.splice("n", "b", 0, 0, "x");
+  runFlushes();
+  assert.equal(sent.length, 1, "the post-capture edit took the ordinary optimistic path");
+
+  prepared.reject();
+  registry.flush("n");
+  assert.equal(sent.length, 2, "rollback rewinds even when captured barrier bytes were empty");
+  assert.equal(sent[1].updateBytes.length, 1);
+});
+
+test("released post-capture edit flushes when its positive barrier settles", async () => {
+  const retries = [];
+  const completed = [];
+  const { registry, sent, log } = makeHarness({
+    requestBarrierRetry: (slugs) => retries.push([...slugs]),
+    completeBarrierRetry: (slugs) => completed.push([...slugs]),
+  });
+  await registry.acquire("n");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared);
+  registry.splice("n", "b", 0, 0, "x");
+  registry.release("n");
+  assert.equal(sent.length, 0, "release cancels the pending rAF while the barrier holds the doc");
+
+  assert.equal(prepared.acknowledge(), false);
+  assert.equal(sent.length, 1, "settlement immediately hands off the otherwise stranded edit");
+  assert.equal(sent[0].updateBytes.length, 1);
+  assert.deepEqual(retries, [["n"]], "the parked doc requests durable proof automatically");
+  assert.equal(registry.size(), 1, "the doc remains retained only until that proof succeeds");
+  assert.ok(!log.includes("close:n"));
+
+  const retry = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(retry);
+  assert.equal(retry.acknowledge(), true);
+  assert.deepEqual(completed, [["n"]], "positive proof cancels any queued retry");
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("rejected mounted barrier reschedules its cumulative replay", async () => {
+  const retries = [];
+  const { registry, sent, runFlushes } = makeHarness({
+    requestBarrierRetry: (slugs) => retries.push([...slugs]),
+  });
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared);
+  prepared.reject();
+  assert.equal(sent.length, 0);
+
+  runFlushes();
+  assert.equal(sent.length, 1, "rollback restores the normal coalesced flush path");
+  assert.equal(sent[0].updateBytes.length, 1);
+  assert.deepEqual(retries, [["n"]]);
+});
+
+test("positive acknowledgement rejects post-capture edits and parks a released doc for retry", async () => {
+  const { registry, sent, log, runFlushes } = makeHarness();
+  await registry.acquire("n");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared);
+  registry.splice("n", "b", 0, 0, "x");
+  runFlushes();
+  assert.equal(sent.length, 1);
+  registry.release("n");
+  assert.equal(registry.size(), 1, "the unsettled barrier retains the zero-ref doc");
+
+  assert.equal(
+    prepared.acknowledge(),
+    false,
+    "the acknowledgement covers only the captured version",
+  );
+  assert.equal(registry.size(), 1, "unacknowledged post-capture history cannot close");
+  assert.ok(!log.includes("close:n"));
+
+  const retryFrames = [];
+  const retry = registry.prepareServerBarrier(["n"], (update) => {
+    retryFrames.push(update);
+    return true;
+  });
+  assert.ok(retry);
+  assert.equal(retryFrames[0].updateBytes.length, 1);
+  assert.equal(retry.acknowledge(), true);
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("rejected barrier survives release and re-sends after reconnect", async () => {
+  const { registry, sent, log, state } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared);
+  prepared.reject();
+
+  state.wsUp = false;
+  registry.release("n");
+  assert.equal(registry.size(), 1, "rollback leaves the released doc parked while offline");
+  assert.ok(!log.includes("close:n"));
+
+  state.wsUp = true;
+  registry.flushAll();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].updateBytes.length, 1);
+  assert.equal(registry.size(), 1, "an optimistic reconnect send cannot clear the durability hold");
+  const retryFrames = [];
+  const retry = registry.prepareServerBarrier(["n"], (update) => {
+    retryFrames.push(update);
+    return true;
+  });
+  assert.ok(retry);
+  assert.equal(retryFrames[0].updateBytes.length, 1);
+  assert.equal(retry.acknowledge(), true);
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("release before barrier timeout retains the doc until rollback can retry", async () => {
+  const { registry, sent, log, state } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  let failBarrier;
+  const completion = runServerBarrierTransaction({
+    prepare: () => {
+      const prepared = registry.prepareServerBarrier(["n"], () => true);
+      assert.ok(prepared);
+      return prepared;
+    },
+    isConnectionCurrent: () => true,
+    request: () => new Promise((_resolve, reject) => {
+      failBarrier = reject;
+    }),
+  });
+  registry.release("n");
+  assert.equal(registry.size(), 1, "the unsettled barrier pins a zero-ref doc");
+  assert.ok(!log.includes("close:n"));
+
+  state.wsUp = false;
+  failBarrier(new Error("Loro server barrier timed out"));
+  await assert.rejects(completion, /timed out/i);
+  assert.equal(registry.size(), 1, "failed cleanup parks the rolled-back delta offline");
+  assert.ok(!log.includes("close:n"));
+
+  state.wsUp = true;
+  registry.flushAll();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].updateBytes.length, 1);
+  assert.equal(registry.size(), 1, "timeout recovery remains parked until server-applied proof");
+  const retry = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(retry);
+  assert.equal(retry.acknowledge(), true);
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("release before barrier acknowledgement closes only after the hold commits", async () => {
+  const { registry, log } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  const prepared = registry.prepareServerBarrier(["n"], () => true);
+  assert.ok(prepared);
+  registry.release("n");
+  assert.equal(registry.size(), 1);
+  assert.ok(!log.includes("close:n"));
+
+  prepared.acknowledge();
+  assert.equal(registry.size(), 0);
+  assert.ok(log.includes("close:n"));
+});
+
+test("partial multi-note barrier handoff rolls earlier notes back atomically", async () => {
+  const { registry, sent } = makeHarness();
+  await registry.acquire("alpha");
+  await registry.acquire("beta");
+  registry.splice("alpha", "a", 0, 0, "x");
+  registry.splice("beta", "b", 0, 0, "y");
+
+  let attempt = 0;
+  const prepared = registry.prepareServerBarrier(["alpha", "beta"], () => {
+    attempt += 1;
+    return attempt === 1;
+  });
+  assert.equal(prepared, null, "the second note's dropped send aborts the batch");
+
+  registry.flushAll();
+  assert.equal(sent.length, 2, "ordinary flush retries both the handed-off and dropped notes");
+  assert.deepEqual(sent.map((update) => update.updateBytes.length), [1, 1]);
+});
+
+test("failed barrier handoff does not advance the server checkpoint", async () => {
+  const { registry } = makeHarness();
+  await registry.acquire("n");
+  registry.splice("n", "b", 0, 0, "x");
+
+  const dropped = [];
+  const failed = registry.prepareServerBarrier(["n"], (update) => {
+    dropped.push(update);
+    return false;
+  });
+  assert.equal(failed, null);
+  assert.equal(dropped[0].updateBytes.length, 1);
+
+  const retried = [];
+  const retry = registry.prepareServerBarrier(["n"], (update) => {
+    retried.push(update);
+    return true;
+  });
+  assert.ok(retry);
+  assert.equal(retried[0].updateBytes.length, 1, "dropped bytes remain unacknowledged");
+});
+
+test("barrier callers can await every affected doc's completed bootstrap", async () => {
+  let finishOpen;
+  const doc = makeFakeDoc([]);
+  doc.open = (slug) => {
+    doc.slug = slug;
+    doc.noteId16 = new Uint8Array(16).fill(slug.charCodeAt(0));
+    doc.history = BOOTSTRAP_OPS;
+    return new Promise((resolve) => {
+      finishOpen = resolve;
+    });
+  };
+  const registry = new NoteDocRegistry({
+    createDoc: () => doc,
+    scheduleFlush: () => null,
+    cancelFlush: () => {},
+    send: () => true,
+  });
+  const acquired = registry.acquire("n");
+  let ready = false;
+  const waiting = registry.waitUntilOpen(["n", "n"]).then(() => {
+    ready = true;
+  });
+  await Promise.resolve();
+  assert.equal(ready, false);
+  finishOpen();
+  await acquired;
+  await waiting;
+  assert.equal(ready, true);
+});
+
+test("barrier preparation fails closed for an affected real note that is not open", async () => {
+  const { registry } = makeHarness();
+  await assert.rejects(registry.waitUntilOpen(["missing"]), /not open/i);
+  assert.equal(registry.prepareServerBarrier(["missing"], () => true), null);
 });

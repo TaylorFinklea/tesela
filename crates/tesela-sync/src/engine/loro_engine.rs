@@ -31,7 +31,8 @@
 
 use crate::device::DeviceId;
 use crate::engine::{
-    cursor::PeerCursor, LocalCursor, PendingImport, RelayApplyReport, SyncEngine,
+    cursor::PeerCursor, BlockRelocationOutcome, BlockRelocationRequest, BlockRelocationStatus,
+    LocalCursor, MovePlacement, PendingImport, RelayApplyReport, RelocatedNoteVersion, SyncEngine,
     CATCHUP_BACKOFF_SHIFT_CAP, MAX_CATCHUP_ATTEMPTS,
 };
 use crate::error::{SyncError, SyncResult};
@@ -249,13 +250,39 @@ struct Inner {
     /// prevent torn files, but without this lock an older export can rename
     /// after a newer one and leave a current-schema yet incomplete index.
     index_persist_lock: tokio::sync::Mutex<()>,
-    /// Resident block_id → note_id map. Lets block-only ops
-    /// (BlockMove/BlockDelete) resolve the owning note in O(1) instead
+    /// Resident block_id → owning note ids map. Lets block-only ops
+    /// (BlockMove/BlockDelete) resolve a unique owning note in O(1) instead
     /// of scanning every doc's tree, and is the prerequisite for
     /// lazy-load/evict (an evicted doc can't be scanned, but this map
     /// still points at the note so it can be loaded on demand). Derived
     /// state, rebuilt from the per-note docs at boot.
-    block_index: RwLock<HashMap<[u8; 16], [u8; 16]>>,
+    block_index: RwLock<BlockIndex>,
+    /// Serializes every runtime block-ownership transition and every bid-only
+    /// mutation. Lock ordering is per-note `apply_locks` guard FIRST, then
+    /// this mutex, then `docs` / `block_index`; bid-only operations revalidate
+    /// unique ownership after both outer locks are held and keep this guard
+    /// through their mutation plus owner-index update.
+    ownership_transition: tokio::sync::Mutex<()>,
+    /// Completion receipts ordered by durable HLC timestamp. The files under
+    /// `_relocations/` remain authoritative; this resident projection makes
+    /// the 4,096-receipt pruning boundary O(log n) per completed move.
+    relocation_receipts: tokio::sync::Mutex<relocation::ReceiptIndex>,
+    /// Intent/receipt records for engines without a snapshot directory.
+    /// Mirrors `_relocations/*.bin` for lifetime-local retry semantics.
+    volatile_relocation_records: tokio::sync::Mutex<relocation::VolatileRelocationRecords>,
+    /// Permanent exact move-id → request-hash tombstones. Rich receipts are
+    /// pruned, but these compact entries preserve replay/conflict semantics
+    /// for every completed relocation across process restarts.
+    relocation_tombstones: tokio::sync::Mutex<relocation::RelocationTombstones>,
+    /// Runtime reservations rebuilt from durable intents at boot. A failed
+    /// relocation keeps its source/destination notes reserved until recovery,
+    /// preventing a second move from invalidating the captured snapshot.
+    active_relocations: tokio::sync::Mutex<relocation::ActiveRelocations>,
+    #[cfg(test)]
+    relocation_failpoint: tokio::sync::Mutex<Option<relocation::RelocationFailpoint>>,
+    #[cfg(test)]
+    ownership_mutation_pause:
+        RwLock<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     /// Per-note "last broadcast version vector" (encoded) for the relay
     /// broadcast model (Phase 5): each tick exports the updates a note
     /// has accrued since this marker and advances it. Idempotent imports
@@ -308,19 +335,20 @@ struct Inner {
     ///
     /// **Lock ordering rule**: `apply_locks` is always acquired (via
     /// `apply_lock_for_note`) and its per-note `Mutex` guard established
-    /// BEFORE any subsequent read/write of `docs` (or `block_index`) within
-    /// the same call — never the reverse, and never hold `docs`'s lock across
-    /// an `.await` that then tries to acquire an `apply_locks` guard. Every
-    /// caller that resolves a note-scoped payload's target note_id first
-    /// (`note_id_for_payload`, a `block_index` read released before the
-    /// guard is taken) upholds this. `apply_locks` itself is never held
+    /// BEFORE `ownership_transition`, which is established BEFORE any
+    /// subsequent read/write of `docs` or `block_index` within the same call.
+    /// Never reverse that order, and never hold `docs` across an `.await` that
+    /// then tries to acquire either outer lock. Bid-only local mutations use
+    /// an initial `block_index` read only to choose the candidate apply lock;
+    /// that read is released, both outer locks are acquired in order, and
+    /// unique ownership is revalidated before mutation. `apply_locks` itself
+    /// is never held
     /// across an inner acquisition of `apply_locks` for a DIFFERENT note_id —
     /// only one per-note guard is ever live per call stack, so the per-note
     /// `Mutex` is never reentered: internal helpers invoked from inside an
-    /// already-guarded body (`reassert_prop_heals`) call the lock-free
-    /// `record_local_locked` rather than the public `record_local`, which
-    /// would deadlock trying to re-acquire the SAME note's non-reentrant
-    /// guard.
+    /// already-guarded bodies use the matching lock-free helpers rather than
+    /// the public entry points, which would deadlock trying to reacquire the
+    /// same non-reentrant apply or ownership-transition guard.
     apply_locks: RwLock<HashMap<[u8; 16], Arc<tokio::sync::Mutex<()>>>>,
     /// Durable causal-gap ledger (tesela-c7s item 2): note_id → the
     /// [`PendingImport`] record for a note whose inbound relay update Loro
@@ -375,6 +403,15 @@ impl LoroEngine {
                 index: LoroDoc::new(),
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
+                ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
@@ -401,6 +438,15 @@ impl LoroEngine {
                 index: LoroDoc::new(),
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
+                ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: true,
@@ -498,6 +544,15 @@ impl LoroEngine {
                 index,
                 index_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(block_index),
+                ownership_transition: tokio::sync::Mutex::new(()),
+                relocation_receipts: tokio::sync::Mutex::new(Default::default()),
+                volatile_relocation_records: tokio::sync::Mutex::new(Default::default()),
+                relocation_tombstones: tokio::sync::Mutex::new(Default::default()),
+                active_relocations: tokio::sync::Mutex::new(Default::default()),
+                #[cfg(test)]
+                relocation_failpoint: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                ownership_mutation_pause: RwLock::new(None),
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
@@ -528,6 +583,7 @@ impl LoroEngine {
             }
         }
         engine.set_doc_peer(&engine.inner.index);
+        engine.recover_persisted_relocations().await?;
         Ok(engine)
     }
 
@@ -629,6 +685,8 @@ impl LoroEngine {
         utf16_delete_len: u32,
         insert: &str,
     ) -> SyncResult<u32> {
+        let apply_lock = self.apply_lock_for_note(note_id).await;
+        let _apply_guard = apply_lock.lock().await;
         let doc = self.doc_for_note_mut(note_id).await;
         let tree = doc.get_tree("blocks");
         let block_hex = hex_id(&block_id);
@@ -656,7 +714,6 @@ impl LoroEngine {
                 .map_err(|e| SyncError::Storage(format!("loro text_seq insert_utf16: {e}")))?;
         }
         doc.commit();
-        self.register_note_blocks(note_id, &[block_id]).await;
         self.refresh_note_derived(note_id, &doc).await;
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
@@ -931,24 +988,21 @@ impl LoroEngine {
     /// import: re-register its live blocks in block_index and rebuild
     /// its index entry from the doc's root content.
     async fn refresh_note_derived(&self, note_id: [u8; 16], doc: &LoroDoc) {
+        let _ownership_guard = self.inner.ownership_transition.lock().await;
+        self.refresh_note_derived_under_ownership(note_id, doc)
+            .await;
+    }
+
+    async fn refresh_note_derived_under_ownership(&self, note_id: [u8; 16], doc: &LoroDoc) {
         // The views registry doc is not a note: no blocks to register, and
         // it must NOT grow a phantom index entry / appear in note lists.
         if Self::is_views_doc(&note_id) {
             return;
         }
         let tree = doc.get_tree("blocks");
-        let mut ids = Vec::new();
-        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
-            if matches!(tree.is_node_deleted(&node), Ok(true)) {
-                continue;
-            }
-            if let Some(hex) = read_meta_str(&tree, node, "block_id") {
-                if let Some(b) = parse_note_id_from_hex(&hex) {
-                    ids.push(b);
-                }
-            }
-        }
-        self.register_note_blocks(note_id, &ids).await;
+        let ids: Vec<[u8; 16]> = live_block_ids(&tree).collect();
+        self.replace_note_blocks_under_ownership(note_id, &ids)
+            .await;
         let root = doc.get_map("root");
         let read = |k: &str| -> String {
             root.get(k)
@@ -1079,26 +1133,119 @@ impl LoroEngine {
     /// apply-vs-apply race the lock was originally added for).
     ///
     /// Ops that carry `note_id` directly return it as-is. `BlockMove` /
-    /// `BlockDelete` carry only a `block_id`, so it's resolved through
-    /// `block_index` — read-then-release, same as `find_doc_for_block`,
-    /// upholding the "`apply_locks` before `docs`/`block_index`" ordering
-    /// rule on `Inner::apply_locks` (this lookup fully completes and drops
-    /// its lock before the caller acquires the note's apply guard). An
-    /// unregistered block_id resolves to `None` — `apply_payload_inner`
-    /// treats that as a no-op too, so no lock is needed. Attachment ops
-    /// never touch a per-note doc (see the no-op arm in
-    /// `apply_payload_inner`) and always resolve to `None`.
-    async fn note_id_for_payload(&self, payload: &OpPayload) -> Option<[u8; 16]> {
+    /// `BlockDelete` carry only a `block_id`, so an initial `block_index`
+    /// read chooses the candidate note apply lock. `record_local_bid_only`
+    /// then takes `ownership_transition` and revalidates before mutation. An
+    /// unregistered block id resolves to `None` and remains the legacy no-op.
+    /// Attachment ops never touch a per-note doc and always resolve to `None`.
+    async fn note_id_for_payload(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
         match payload {
             OpPayload::NoteUpsert { note_id, .. }
             | OpPayload::NoteDelete { note_id, .. }
             | OpPayload::BlockUpsert { note_id, .. }
             | OpPayload::BlockPropertySet { note_id, .. }
-            | OpPayload::PagePropertySet { note_id, .. } => Some(*note_id),
+            | OpPayload::PagePropertySet { note_id, .. } => Ok(Some(*note_id)),
             OpPayload::BlockMove { block_id, .. } | OpPayload::BlockDelete { block_id } => {
-                self.inner.block_index.read().await.get(block_id).copied()
+                self.unique_note_for_block(block_id).await
             }
-            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => None,
+            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => Ok(None),
+        }
+    }
+
+    /// Resolve one block id to exactly one owning note. A duplicate bid in
+    /// multiple notes is ambiguous: log every owner and fail closed before
+    /// any note is mutated.
+    async fn unique_note_for_block(&self, block_id: &[u8; 16]) -> SyncResult<Option<[u8; 16]>> {
+        let index = self.inner.block_index.read().await;
+        let Some(owners) = index.get(block_id) else {
+            return Ok(None);
+        };
+        if owners.len() == 1 {
+            return Ok(owners.iter().next().copied());
+        }
+
+        let owner_ids: Vec<String> = owners.iter().map(hex_id).collect();
+        tracing::warn!(
+            "tesela-sync/loro: ambiguous block ownership for {}: owners={owner_ids:?}",
+            hex_id(block_id)
+        );
+        Err(SyncError::Protocol(format!(
+            "ambiguous block ownership for {}",
+            hex_id(block_id)
+        )))
+    }
+
+    fn payload_transitions_ownership(payload: &OpPayload) -> bool {
+        matches!(
+            payload,
+            OpPayload::NoteUpsert { .. }
+                | OpPayload::NoteDelete { .. }
+                | OpPayload::BlockUpsert { .. }
+                | OpPayload::BlockMove { .. }
+                | OpPayload::BlockDelete { .. }
+                | OpPayload::BlockPropertySet { .. }
+        )
+    }
+
+    /// Bid-only local mutations need a note apply lock, but ownership can
+    /// change after the initial lookup used to choose that lock. Revalidate
+    /// after acquiring both the candidate note lock and the global ownership
+    /// transition lock. A changed unique owner retries with its own note lock;
+    /// ambiguity fails closed; unknown remains the legacy no-op.
+    async fn record_local_bid_only(&self, payload: OpPayload) -> SyncResult<ContentHash> {
+        debug_assert!(matches!(
+            payload,
+            OpPayload::BlockMove { .. } | OpPayload::BlockDelete { .. }
+        ));
+
+        loop {
+            match self.note_id_for_payload(&payload).await? {
+                Some(note_id) => {
+                    let apply_lock = self.apply_lock_for_note(note_id).await;
+                    let _apply_guard = apply_lock.lock().await;
+                    let _ownership_guard = self.inner.ownership_transition.lock().await;
+                    match self.note_id_for_payload(&payload).await? {
+                        Some(current_note) if current_note == note_id => {
+                            #[cfg(test)]
+                            self.pause_bid_mutation_after_validation().await;
+                            return self.record_local_locked_under_ownership(payload).await;
+                        }
+                        Some(_) => continue,
+                        None => {
+                            return self.record_local_locked_under_ownership(payload).await;
+                        }
+                    }
+                }
+                None => {
+                    let _ownership_guard = self.inner.ownership_transition.lock().await;
+                    match self.note_id_for_payload(&payload).await? {
+                        Some(_) => continue,
+                        None => {
+                            return self.record_local_locked_under_ownership(payload).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn pause_next_bid_mutation_after_validation(
+        &self,
+    ) -> (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>) {
+        let validated = Arc::new(tokio::sync::Barrier::new(2));
+        let resume = Arc::new(tokio::sync::Barrier::new(2));
+        *self.inner.ownership_mutation_pause.write().await =
+            Some((validated.clone(), resume.clone()));
+        (validated, resume)
+    }
+
+    #[cfg(test)]
+    async fn pause_bid_mutation_after_validation(&self) {
+        let pause = self.inner.ownership_mutation_pause.write().await.take();
+        if let Some((validated, resume)) = pause {
+            validated.wait().await;
+            resume.wait().await;
         }
     }
 
@@ -1123,44 +1270,75 @@ impl LoroEngine {
             .clone()
     }
 
-    /// Locate the doc + tree node hosting a given block id by walking
-    /// every doc the engine has seen. `BlockMove` / `BlockDelete` ops
-    /// carry only the block id (not the owning note), so this lookup
-    /// has to be a scan. For the scaffold it's fine — typical mosaics
-    /// have a few hundred notes. Replace with an index once profiling
-    /// flags it.
-    ///
-    /// Returns the note_id alongside the doc+node so the outer
-    /// `apply_payload` wrapper knows which snapshot to refresh.
-    ///
-    /// Resolves via the resident `block_index` (block_id → note_id)
-    /// rather than scanning every doc's tree. Besides being O(1), this
-    /// is a prerequisite for lazy-load/evict (Phase 3/6): once docs can
-    /// be evicted, a scan can't see them, but the block_index always can
-    /// point at the owning note so its doc can be loaded on demand.
-    /// Stale entries (note deleted) self-correct: the docs lookup misses
-    /// and we return None, matching "unknown block → no-op".
-    async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<([u8; 16], LoroDoc, TreeID)> {
-        let note_id = *self.inner.block_index.read().await.get(block_id)?;
+    /// Locate the doc + tree node hosting a block whose ownership is unique.
+    /// Resolves through the resident owner-set index without scanning docs;
+    /// ambiguous ownership is an error and an unknown/stale block is `None`.
+    /// Returns the note id alongside the doc and node so the outer apply
+    /// wrapper knows which snapshot to refresh.
+    async fn find_doc_for_block(
+        &self,
+        block_id: &[u8; 16],
+    ) -> SyncResult<Option<([u8; 16], LoroDoc, TreeID)>> {
+        let Some(note_id) = self.unique_note_for_block(block_id).await? else {
+            return Ok(None);
+        };
         let block_hex = hex_id(block_id);
         // The final `docs` step is the one KEYED lookup here that needs
         // load-on-demand (tesela-engc.5 audit) — `block_index` above is
         // always-resident by design and already resolves the owning note
         // for an evicted-but-on-disk block.
-        let doc = self.lazy_load_doc(note_id).await?;
+        let Some(doc) = self.lazy_load_doc(note_id).await else {
+            return Ok(None);
+        };
         let tree = doc.get_tree("blocks");
-        let node = find_node_by_block_id(&tree, &block_hex)?;
-        Some((note_id, doc, node))
+        let Some(node) = find_node_by_block_id(&tree, &block_hex) else {
+            return Ok(None);
+        };
+        Ok(Some((note_id, doc, node)))
     }
 
-    /// Register every block in a note as owned by it (block_id →
-    /// note_id), so block-only ops (BlockMove/BlockDelete) and lazy-load
-    /// can resolve the owning note without scanning all docs.
-    async fn register_note_blocks(&self, note_id: [u8; 16], block_ids: &[[u8; 16]]) {
+    /// Add one note to every supplied block's owner set, so block-only ops
+    /// can resolve unique ownership without scanning all docs.
+    async fn register_note_blocks_under_ownership(
+        &self,
+        note_id: [u8; 16],
+        block_ids: &[[u8; 16]],
+    ) {
         let mut idx = self.inner.block_index.write().await;
         for b in block_ids {
-            idx.insert(*b, note_id);
+            idx.entry(*b).or_default().insert(note_id);
         }
+    }
+
+    /// Replace one note's ownership projection after importing or otherwise
+    /// refreshing its whole document.
+    async fn replace_note_blocks_under_ownership(&self, note_id: [u8; 16], block_ids: &[[u8; 16]]) {
+        let mut idx = self.inner.block_index.write().await;
+        for owners in idx.values_mut() {
+            owners.remove(&note_id);
+        }
+        idx.retain(|_, owners| !owners.is_empty());
+        for block_id in block_ids {
+            idx.entry(*block_id).or_default().insert(note_id);
+        }
+    }
+
+    async fn unregister_note_block_under_ownership(&self, note_id: [u8; 16], block_id: [u8; 16]) {
+        let mut idx = self.inner.block_index.write().await;
+        if let Some(owners) = idx.get_mut(&block_id) {
+            owners.remove(&note_id);
+            if owners.is_empty() {
+                idx.remove(&block_id);
+            }
+        }
+    }
+
+    async fn unregister_note_under_ownership(&self, note_id: [u8; 16]) {
+        let mut idx = self.inner.block_index.write().await;
+        for owners in idx.values_mut() {
+            owners.remove(&note_id);
+        }
+        idx.retain(|_, owners| !owners.is_empty());
     }
 
     /// Best-effort wrapper used by ordinary single mutations.
@@ -2087,23 +2265,26 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
 }
 
 mod prop_containers;
+use prop_containers::ResolvedValue;
+mod relocation;
 mod render;
 use render::{
     classify_block_prose_and_props, dedup_intext_props_against_container, doc_full_markdown,
     page_properties_materialized, set_page_properties,
 };
 mod index;
-use index::{build_block_index, frontmatter_title, INDEX_SCHEMA_VERSION};
+use index::{
+    build_block_index, frontmatter_title, live_block_ids, BlockIndex, INDEX_SCHEMA_VERSION,
+};
 mod apply;
 #[cfg(test)]
 use apply::probe_import_poison;
 mod twins;
-use twins::{
-    dedup_twins_by_block_id, tombstone_duplicate_twins, twin_winners_for, PeerBlockChange,
-    ResolvedValue,
-};
 #[cfg(test)]
 use twins::duplicate_block_ids;
+use twins::{
+    dedup_twins_by_block_id, tombstone_duplicate_twins, twin_winners_for, PeerBlockChange,
+};
 
 /// True if the tree's live blocks (in render order) match `blocks` by
 /// id + STRIPPED prose + indent. Props are deliberately NOT part of the
@@ -2543,6 +2724,13 @@ impl SyncEngine for LoroEngine {
         self.inner.device
     }
 
+    async fn relocate_subtree(
+        &self,
+        request: BlockRelocationRequest,
+    ) -> SyncResult<BlockRelocationOutcome> {
+        self.relocate_subtree_in_memory(request).await
+    }
+
     /// Local-side mutation. Stamps a fresh HLC + content hash, then
     /// runs the payload through the same per-op logic that
     /// `apply_changes` uses for peer-originated ops.
@@ -2559,7 +2747,13 @@ impl SyncEngine for LoroEngine {
     /// block, an attachment-only op — see `note_id_for_payload`) skip
     /// locking; there's no per-note doc mutation to serialize.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
-        match self.note_id_for_payload(&payload).await {
+        if matches!(
+            payload,
+            OpPayload::BlockMove { .. } | OpPayload::BlockDelete { .. }
+        ) {
+            return self.record_local_bid_only(payload).await;
+        }
+        match self.note_id_for_payload(&payload).await? {
             Some(note_id) => {
                 let apply_lock = self.apply_lock_for_note(note_id).await;
                 let _apply_guard = apply_lock.lock().await;
@@ -2766,9 +2960,8 @@ impl LoroEngine {
     /// The un-locked body of `record_local` (tesela-4ju REVIEW REJECT
     /// follow-up). `SyncEngine::record_local` takes the target note's
     /// `apply_locks` guard, then calls this. Internal callers that ALREADY
-    /// hold that guard — currently only `reassert_prop_heals`, invoked from
-    /// inside `apply_import` and `heal_disjoint_twins`, both of which hold
-    /// the note's guard for their whole body — must call this directly
+    /// hold that guard — internal heal/lifecycle writers invoked from inside
+    /// `apply_import` and `heal_disjoint_twins` — must call this directly
     /// instead of the public `record_local`: re-entering the same note's
     /// `tokio::sync::Mutex` from within its own critical section deadlocks
     /// (it is not reentrant).
@@ -2781,11 +2974,33 @@ impl LoroEngine {
         payload: OpPayload,
         persist_index_snapshot: bool,
     ) -> SyncResult<ContentHash> {
+        self.record_local_locked_with_index_and_ownership(payload, persist_index_snapshot, false)
+            .await
+    }
+
+    async fn record_local_locked_under_ownership(
+        &self,
+        payload: OpPayload,
+    ) -> SyncResult<ContentHash> {
+        self.record_local_locked_with_index_and_ownership(payload, true, true)
+            .await
+    }
+
+    async fn record_local_locked_with_index_and_ownership(
+        &self,
+        payload: OpPayload,
+        persist_index_snapshot: bool,
+        ownership_transition_held: bool,
+    ) -> SyncResult<ContentHash> {
         let hlc = self.inner.hlc.now();
         let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
         let hash = op.content_hash;
-        self.apply_payload_with_index_snapshot(&payload, persist_index_snapshot)
-            .await?;
+        self.apply_payload_with_index_snapshot_and_ownership(
+            &payload,
+            persist_index_snapshot,
+            ownership_transition_held,
+        )
+        .await?;
         Ok(hash)
     }
 
@@ -2827,6 +3042,16 @@ impl LoroEngine {
         payload: &OpPayload,
         persist_index_snapshot: bool,
     ) -> SyncResult<()> {
+        self.apply_payload_with_index_snapshot_and_ownership(payload, persist_index_snapshot, false)
+            .await
+    }
+
+    async fn apply_payload_with_index_snapshot_and_ownership(
+        &self,
+        payload: &OpPayload,
+        persist_index_snapshot: bool,
+        ownership_transition_held: bool,
+    ) -> SyncResult<()> {
         // For an authoritative NoteDelete, resolve the slug BEFORE the
         // inner apply drops the doc + index entry — afterwards
         // `slug_for_note` can't find it, so a NoteDelete whose op carries
@@ -2844,7 +3069,11 @@ impl LoroEngine {
         } else {
             None
         };
-        let touched_note = self.apply_payload_inner(payload).await?;
+        let touched_note = if ownership_transition_held {
+            self.apply_payload_inner_under_ownership(payload).await?
+        } else {
+            self.apply_payload_inner(payload).await?
+        };
         if let (Some(dir), Some(note_id)) = (self.inner.snapshot_dir.as_ref(), touched_note) {
             self.save_snapshot(dir, note_id).await;
             // The index only changes on note create/delete; persist it
@@ -2885,6 +3114,20 @@ impl LoroEngine {
     /// `None` for ops that don't touch a single note (AttachmentUpsert,
     /// no-op cases) — those don't trigger a snapshot write.
     async fn apply_payload_inner(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
+        if Self::payload_transitions_ownership(payload) {
+            let _ownership_guard = self.inner.ownership_transition.lock().await;
+            self.apply_payload_inner_under_ownership(payload).await
+        } else {
+            self.apply_payload_inner_under_ownership(payload).await
+        }
+    }
+
+    /// Apply body used after the caller has serialized ownership-sensitive
+    /// payloads. Non-ownership payloads also use this body without the mutex.
+    async fn apply_payload_inner_under_ownership(
+        &self,
+        payload: &OpPayload,
+    ) -> SyncResult<Option<[u8; 16]>> {
         // Defense in depth: refuse note-shaped ops addressed at the views
         // registry doc. The views doc is mutated ONLY via the views_* API;
         // letting a NoteUpsert/BlockUpsert land there would graft a
@@ -3043,7 +3286,8 @@ impl LoroEngine {
                 // Register this note's blocks in the block_index.
                 let block_ids: Vec<[u8; 16]> =
                     parsed.blocks.iter().map(|b| *b.id.as_bytes()).collect();
-                self.register_note_blocks(*note_id, &block_ids).await;
+                self.register_note_blocks_under_ownership(*note_id, &block_ids)
+                    .await;
                 Some(*note_id)
             }
             OpPayload::BlockUpsert {
@@ -3137,7 +3381,8 @@ impl LoroEngine {
                 )
                 .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
-                self.register_note_blocks(*note_id, &[*block_id]).await;
+                self.register_note_blocks_under_ownership(*note_id, &[*block_id])
+                    .await;
                 Some(*note_id)
             }
             OpPayload::BlockMove {
@@ -3145,7 +3390,7 @@ impl LoroEngine {
                 new_parent,
                 new_order_key: _,
             } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await? else {
                     // We never saw the prior BlockUpsert (e.g. the
                     // engine started after the block was created).
                     // SqliteEngine handles it; LoroEngine catches up
@@ -3181,7 +3426,7 @@ impl LoroEngine {
                 Some(note_id)
             }
             OpPayload::BlockDelete { block_id } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await? else {
                     tracing::debug!(
                         "tesela-sync/loro: BlockDelete for unknown block {}",
                         hex_id(block_id)
@@ -3221,6 +3466,8 @@ impl LoroEngine {
                         .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
                 }
                 doc.commit();
+                self.unregister_note_block_under_ownership(note_id, *block_id)
+                    .await;
                 Some(note_id)
             }
             OpPayload::NoteDelete { note_id, .. } => {
@@ -3231,8 +3478,11 @@ impl LoroEngine {
                 // The outer wrapper sees `save_snapshot(note_id)` find
                 // the doc missing and removes the .bin file too.
                 self.index_remove(*note_id);
-                let mut docs = self.inner.docs.write().await;
-                docs.remove(note_id);
+                {
+                    let mut docs = self.inner.docs.write().await;
+                    docs.remove(note_id);
+                }
+                self.unregister_note_under_ownership(*note_id).await;
                 Some(*note_id)
             }
             OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => {
@@ -3274,7 +3524,8 @@ impl LoroEngine {
                 let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
                 apply_prop_op(&props, &prop_keys, key, value)?;
                 doc.commit();
-                self.register_note_blocks(*note_id, &[*block_id]).await;
+                self.register_note_blocks_under_ownership(*note_id, &[*block_id])
+                    .await;
                 Some(*note_id)
             }
             OpPayload::PagePropertySet {

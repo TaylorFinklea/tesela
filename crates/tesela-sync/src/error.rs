@@ -45,6 +45,23 @@ pub enum SyncError {
     #[error("protocol violation: {0}")]
     Protocol(String),
 
+    /// A subtree relocation request failed authoritative precondition checks.
+    #[error("relocation rejected: {0}")]
+    RelocationRejected(String),
+
+    /// An idempotency key was reused for a different relocation request.
+    #[error("relocation conflict: {0}")]
+    RelocationConflict(String),
+
+    /// An interrupted relocation must be recovered before this request can continue.
+    #[error("relocation {move_id:?} requires recovery: {message}")]
+    RelocationRecoveryRequired {
+        /// Idempotency key of the interrupted move.
+        move_id: [u8; 16],
+        /// Recovery failure detail.
+        message: String,
+    },
+
     /// Transport-level error (connection refused, channel closed, etc.).
     #[error("transport error: {0}")]
     Transport(String),

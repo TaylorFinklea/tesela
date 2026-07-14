@@ -417,7 +417,7 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { Annotation, Compartment, EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
 
   // Tags transactions dispatched by the prop→cm6 sync $effect (e.g. when
@@ -448,6 +448,7 @@
   import * as keybindings from "$lib/stores/keybindings.svelte";
   import type { SlashContext } from "$lib/editor/slash-context";
   import { planEnterSplit } from "$lib/editor/enter-split";
+  import { createDeferredEditorLifecycle, createEditorFocusOwnerId } from "$lib/editor/focus-lifecycle";
   import "$lib/editor/commands/heading";
   import "$lib/editor/commands/date";
   import "$lib/editor/commands/task";
@@ -483,7 +484,13 @@
     setFocusedNoteDoc,
     clearFocusedNoteDoc,
   } from "$lib/loro/note-doc-registry.svelte";
-  import { deltaToChanges } from "$lib/loro/text-delta";
+  import {
+    createTextBindingGenerationOwner,
+    planTextReconciliation,
+    publishCanonicalTextIfChanged,
+    type TextBindingGenerationLease,
+    type TextDeltaOp,
+  } from "$lib/loro/text-delta";
   // Phase 2 desktop presence: publish this caret + render remote ones.
   import { sendBinary } from "$lib/ws-client.svelte";
   import { encodePresence } from "$lib/loro/presence";
@@ -580,6 +587,7 @@
     propertyDefs,
     onInsertTemplate,
     isPinnedTab = false,
+    editorKey,
     blockId,
     blockProperties = {},
     bid,
@@ -664,6 +672,10 @@
      *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
      *  children of the current block. */
     onInsertTemplate?: (templateNoteId: string) => void;
+    /** Stable, namespaced identity shared with the parent's keyed row. Used
+     *  by ID-guarded focus stores so local-to-canonical line-id changes cannot
+     *  strand stale registrations while this bid-keyed editor stays mounted. */
+    editorKey: string;
     blockId?: string;
     blockProperties?: Record<string, string>;
     /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
@@ -707,6 +719,7 @@
 
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
+  const loroTextBindingOwner = createTextBindingGenerationOwner<EditorView | null, LoroText>();
 
   // Slash menu state — Phase 10.3: chord-leader popover via ChordMenu.
   // No filter/typing-narrow; single-letter chords run actions immediately.
@@ -1595,39 +1608,46 @@
   // focusedIndex — which then triggered its `view.focus()` effect and
   // snapped DOM focus to that day. Wiring vimCtx in the actual DOM focus
   // event ensures it follows the editor the user is really in.
-  function wireVimCtx() {
-    if (!view) return;
-    vimCtx.view = view;
-    vimCtx.navigate = onNavigate ?? null;
-    vimCtx.leader = onLeader ?? null;
-    vimCtx.deleteBlock = onDeleteBlock ?? null;
-    vimCtx.yankBlock = onYankBlock ?? null;
-    vimCtx.pasteBlock = onPasteBlock ?? null;
-    vimCtx.newBlockBelow = onNewBlockBelow ?? null;
-    vimCtx.newBlockAbove = onNewBlockAbove ?? null;
-    vimCtx.indent = onIndent ?? null;
-    vimCtx.drillIn = onDrillIn ?? null;
-    vimCtx.enterVisualMode = onEnterVisualMode ?? null;
-    vimCtx.exitVisualMode = onExitVisualMode ?? null;
-    vimCtx.visualNav = onVisualNav ?? null;
-    vimCtx.visualDelete = onVisualDelete ?? null;
-    vimCtx.visualYank = onVisualYank ?? null;
-    vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
-    vimCtx.bulkIndent = onBulkIndent ?? null;
-    vimCtx.toggleFold = onToggleFold ?? null;
-    vimCtx.toggleProps = onToggleProps ?? null;
-    vimCtx.pageJump = onPageJump ?? null;
-    vimCtx.navigateTopLevel = onNavigateTopLevel ?? null;
-    vimCtx.undoOutliner = onUndoOutliner ?? null;
-    vimCtx.redoOutliner = onRedoOutliner ?? null;
-    vimCtx.beginInsertSession = onBeginInsertSession ?? null;
-    vimCtx.endInsertSession = onEndInsertSession ?? null;
-    // Only expose drawer-tab cycling when inside a pinned-tab editor so that
-    // gt / gT in the main focus-area editor remains a no-op.
-    vimCtx.cycleDrawerTab = isPinnedTab ? cycleBottomDrawerTab : null;
+  function captureVimContext(capturedView: EditorView): typeof vimCtx {
+    return {
+      view: capturedView,
+      navigate: onNavigate ?? null,
+      leader: onLeader ?? null,
+      deleteBlock: onDeleteBlock ?? null,
+      yankBlock: onYankBlock ?? null,
+      pasteBlock: onPasteBlock ?? null,
+      newBlockBelow: onNewBlockBelow ?? null,
+      newBlockAbove: onNewBlockAbove ?? null,
+      indent: onIndent ?? null,
+      drillIn: onDrillIn ?? null,
+      enterVisualMode: onEnterVisualMode ?? null,
+      exitVisualMode: onExitVisualMode ?? null,
+      visualMode: inVisualMode ?? false,
+      visualNav: onVisualNav ?? null,
+      visualDelete: onVisualDelete ?? null,
+      visualYank: onVisualYank ?? null,
+      bulkTagPicker: onBulkTagPicker ?? null,
+      bulkIndent: onBulkIndent ?? null,
+      toggleFold: onToggleFold ?? null,
+      toggleProps: onToggleProps ?? null,
+      pageJump: onPageJump ?? null,
+      navigateTopLevel: onNavigateTopLevel ?? null,
+      undoOutliner: onUndoOutliner ?? null,
+      redoOutliner: onRedoOutliner ?? null,
+      beginInsertSession: onBeginInsertSession ?? null,
+      endInsertSession: onEndInsertSession ?? null,
+      // Only expose drawer-tab cycling when inside a pinned-tab editor so that
+      // gt / gT in the main focus-area editor remains a no-op.
+      cycleDrawerTab: isPinnedTab ? cycleBottomDrawerTab : null,
+    };
   }
-  function clearVimCtxIfMine() {
-    if (vimCtx.view === view) vimCtx.view = null;
+
+  function wireVimCtx(context: typeof vimCtx) {
+    Object.assign(vimCtx, context);
+  }
+
+  function clearVimCtxIfMine(capturedView: EditorView) {
+    if (vimCtx.view === capturedView) vimCtx.view = null;
   }
 
   /** Resolve this block's `text_seq` LoroText handle off ITS OWN note's doc in
@@ -1666,58 +1686,243 @@
     return any;
   }
 
-  /** C2.3 read path. Apply a REMOTE block-text event to this view as a minimal
-   *  CM ChangeSet so CM auto-remaps the caret (no hand-rolled cursor math). The
-   *  Loro TextDiff is a quill delta (retain/insert/delete) in UTF-16 index space
-   *  — the SAME space as CM offsets. `deltaToChanges` maps each delta into
-   *  ORIGINAL-doc coordinates (CM interprets every from/to in a multi-change
-   *  dispatch relative to the PRE-transaction doc — see text-delta.ts for the
-   *  coordinate contract; the previous in-line mapping inverted insert/delete
-   *  and misapplied any multi-run delta, e.g. a peer's Alt-Enter tag demote).
-   *  Each EVENT gets its own dispatch: a batch's later events are relative to
-   *  the doc AFTER the earlier ones applied, so they can't share one change
-   *  array. Dispatches are annotated `externalSync` + `addToHistory:false` (so
-   *  they don't loop through the write path or pollute per-block undo) and
-   *  wrapped in the `localApplyInProgress` guard. After applying, `onLoroText`
-   *  syncs the parent's ParsedBlock without re-saving. Ignores local-origin
-   *  events. */
-  function applyRemoteTextEvent(batch: LoroEventBatch): void {
-    const v = view;
-    if (!v) return;
+  function dispatchCanonicalText(v: EditorView, canonicalText: string): void {
+    if (v.state.doc.toString() === canonicalText) return;
+    const selection = v.state.selection.main;
+    const length = canonicalText.length;
+    localApplyInProgress = true;
+    try {
+      v.dispatch({
+        changes: { from: 0, to: v.state.doc.length, insert: canonicalText },
+        selection: {
+          anchor: Math.max(0, Math.min(selection.anchor, length)),
+          head: Math.max(0, Math.min(selection.head, length)),
+        },
+        annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+      });
+    } finally {
+      localApplyInProgress = false;
+    }
+  }
+
+  /** Project remote event deltas only when they provably take this view from
+   *  its current document to the exact subscribed LoroText value. A stale view,
+   *  malformed coordinate, or missing event takes the canonical replacement
+   *  path instead. The final check is a synchronous postcondition, not an
+   *  assumption: the view must equal this exact container before the parent is
+   *  notified. */
+  function reconcileLoroText(
+    capturedView: EditorView,
+    container: LoroText,
+    eventDeltas: readonly (readonly TextDeltaOp[])[],
+    ownsGeneration: () => boolean,
+  ): void {
+    if (!ownsGeneration()) return;
+    const v = capturedView;
+    const canonicalText = container.toString();
+    const plan = planTextReconciliation(v.state.doc.toString(), eventDeltas, canonicalText);
+
+    if (plan.kind === "incremental") {
+      for (const changes of plan.events) {
+        if (changes.length === 0) continue;
+        if (!ownsGeneration()) return;
+        localApplyInProgress = true;
+        try {
+          v.dispatch({
+            changes,
+            annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+          });
+        } finally {
+          localApplyInProgress = false;
+        }
+      }
+    } else if (plan.kind === "canonical") {
+      if (!ownsGeneration()) return;
+      dispatchCanonicalText(v, canonicalText);
+    }
+
+    if (v.state.doc.toString() !== canonicalText) {
+      if (!ownsGeneration()) return;
+      dispatchCanonicalText(v, canonicalText);
+    }
+    if (!ownsGeneration()) return;
+    publishCanonicalTextIfChanged(
+      untrack(() => initialText),
+      canonicalText,
+      (text) => {
+        if (!ownsGeneration()) return;
+        onLoroText?.(text);
+      },
+    );
+  }
+
+  /** C2.3 read path. Remote/import event deltas are a caret-preserving fast
+   *  path, while the bound LoroText remains the source of truth. Local typing
+   *  is already present in CodeMirror and remains ignored to avoid an echo;
+   *  Loro undo/redo uses the same canonical reconciliation path. */
+  function applyRemoteTextEvent(
+    capturedView: EditorView,
+    container: LoroText,
+    batch: LoroEventBatch,
+    ownsGeneration: () => boolean,
+  ): void {
+    if (!ownsGeneration()) return;
     // `by: "local"` events are our own splices — already in the editor — EXCEPT
     // when a Loro undo/redo is applying: its inverse ops are also `by: "local"`
     // but the editor does NOT have them yet, so they must be applied here. That
     // window is flagged by the doc-registry undo wrapper.
     if (batch.by === "local" && !isLoroUndoApplying()) return;
-    let applied = false;
+    const eventDeltas: TextDeltaOp[][] = [];
     for (const ev of batch.events) {
       const diff = ev.diff;
       if (diff.type !== "text") continue;
-      const changes = deltaToChanges(diff.diff);
-      if (changes.length === 0) continue;
-      // Clamp to the current doc length defensively — the CM doc and LoroText
-      // should be in lock-step, but a clamp avoids a dispatch throw if a race
-      // ever leaves them briefly divergent.
-      const docLen = v.state.doc.length;
-      const safe = changes
-        .map((c) => ({ from: Math.min(c.from, docLen), to: Math.min(c.to, docLen), insert: c.insert }))
-        .filter((c) => c.from <= c.to);
-      localApplyInProgress = true;
-      try {
-        v.dispatch({
-          changes: safe,
-          annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
-        });
-      } finally {
-        localApplyInProgress = false;
-      }
-      applied = true;
+      eventDeltas.push(diff.diff);
     }
-    if (!applied) return;
-    onLoroText?.(v.state.doc.toString());
+    reconcileLoroText(capturedView, container, eventDeltas, ownsGeneration);
   }
 
+  // C2.3 reactive subscription lifecycle — a bid-keyed BlockEditor stays
+  // mounted when its local line id round-trips to a canonical id. Reading
+  // `blockId` makes that transition restart the bounded bootstrap retry,
+  // replacing the remount/retry that line-id keys previously provided. Each
+  // effect generation owns exactly one timer and one unsubscribe handle;
+  // cleanup runs before a restart and again on component teardown.
+  $effect(() => {
+    const currentView = view;
+    const bindingBlockId = blockId;
+    const blockBid = bid;
+    const slug = noteSlug;
+    if (!browser || !currentView || !bindingBlockId || !blockBid || !slug) return;
+    const capturedView: EditorView = currentView;
+    const subscribedBid = blockBid;
+    const subscribedSlug = slug;
+
+    let disposed = false;
+    let loroUnsub: (() => void) | null = null;
+    let bindingLease: TextBindingGenerationLease<EditorView | null, LoroText> | null = null;
+    let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attemptsLeft = 15;
+
+    function trySubscribeLoro() {
+      if (
+        disposed
+        || view !== capturedView
+        || blockId !== bindingBlockId
+        || bid !== subscribedBid
+        || noteSlug !== subscribedSlug
+      ) return;
+      const container = getNoteDoc(subscribedSlug)?.blockTextContainer(subscribedBid) ?? null;
+      if (container) {
+        bindingLease = loroTextBindingOwner.claim({
+          view: capturedView,
+          container,
+          noteSlug: subscribedSlug,
+          bid: subscribedBid,
+        });
+        const lease = bindingLease;
+        const ownsGeneration = () => lease.owns({
+          view,
+          container,
+          noteSlug: noteSlug ?? "",
+          bid: bid ?? "",
+        });
+        loroUnsub = container.subscribe((batch) =>
+          applyRemoteTextEvent(capturedView, container, batch, ownsGeneration));
+        reconcileLoroText(capturedView, container, [], ownsGeneration);
+        return;
+      }
+      if (attemptsLeft <= 0) return;
+      attemptsLeft -= 1;
+      subRetryTimer = setTimeout(() => {
+        subRetryTimer = null;
+        trySubscribeLoro();
+      }, 200);
+    }
+
+    trySubscribeLoro();
+    return () => {
+      disposed = true;
+      bindingLease?.revoke();
+      bindingLease = null;
+      if (subRetryTimer) clearTimeout(subRetryTimer);
+      subRetryTimer = null;
+      try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
+      loroUnsub = null;
+    };
+  });
+
+  type EditorFocusLifecycleTarget = {
+    view: EditorView;
+    editorKey: string;
+    focusOwnerId: string;
+    noteSlug: string | undefined;
+    vimContext: typeof vimCtx;
+    onFocus: (() => void) | undefined;
+    onBlur: () => void;
+    onSetProperty: ((p: { key: string; value: string }) => void) | undefined;
+    detectConfig: DetectConfig | undefined;
+    slashMenuOpen: boolean;
+    autocompleteOpen: boolean;
+  };
+
   onMount(() => {
+    const focusOwnerId = createEditorFocusOwnerId(editorKey);
+    const captureFocusTarget = (eventView: EditorView): EditorFocusLifecycleTarget => ({
+      view: eventView,
+      editorKey,
+      focusOwnerId,
+      noteSlug,
+      vimContext: captureVimContext(eventView),
+      onFocus,
+      onBlur,
+      onSetProperty,
+      detectConfig,
+      slashMenuOpen: showSlashMenu,
+      autocompleteOpen: showAutocomplete,
+    });
+    const focusLifecycle = createDeferredEditorLifecycle<EditorFocusLifecycleTarget>({
+      queue: (task) => queueMicrotask(task),
+      isCurrent: (target) => view === target.view && target.view.dom.isConnected,
+      isFocused: (target) => target.view.hasFocus,
+      clearOwnership: (target) => {
+        clearFocusedEditor(target.focusOwnerId);
+        clearFocusedNoteDoc(target.focusOwnerId);
+      },
+      applyFocus: (target) => {
+        setFocusedEditor(target.focusOwnerId);
+        // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
+        // block's note doc while the block is focused.
+        setFocusedNoteDoc(target.focusOwnerId, target.noteSlug);
+        target.onFocus?.();
+      },
+      applyBlur: (target) => {
+        // Model B — lift detected tokens when LEAVING the block (commit-time),
+        // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
+        // the line under you. Gated on the block's DIRECT tags via the config
+        // (single lift path → no double-lift). The strip dispatch flows through
+        // the normal persist path; props go via onSetProperty (container op).
+        if (
+          target.onSetProperty && target.detectConfig
+          && !target.slashMenuOpen && !target.autocompleteOpen
+        ) {
+          const doc = target.view.state.doc.toString();
+          const spec = resolveDetectSpec(getBlockTags(doc), target.detectConfig);
+          if (spec) {
+            const det = detectTaskTokens(doc, spec);
+            if (det.props.length > 0) {
+              target.view.dispatch({
+                changes: { from: 0, to: doc.length, insert: det.stripped },
+              });
+              for (const p of det.props) {
+                target.onSetProperty({ key: p.key, value: p.value });
+              }
+            }
+          }
+        }
+        if (!target.slashMenuOpen) target.onBlur();
+      },
+    });
+
     const theme = EditorView.theme({
       "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "var(--theme-font-sans)", lineHeight: "1.7" },
       // cm-vim's status / macro-recording / ex panel (the "recording @a" bar).
@@ -1758,36 +1963,16 @@
     });
 
     const focusBlurHandler = EditorView.domEventHandlers({
-      focus: () => {
-        setFocusedEditor(blockId ?? "");
-        // Route vim undo/redo (u / Ctrl-R are GLOBAL Vim actions) to THIS
-        // block's note doc while the block is focused.
-        setFocusedNoteDoc(blockId ?? "", noteSlug);
-        wireVimCtx();
-        onFocus?.();
+      focus: (_e, eventView) => {
+        const target = captureFocusTarget(eventView);
+        wireVimCtx(target.vimContext);
+        focusLifecycle.focus(target);
         return false;
       },
-      blur: (_e, v) => {
-        clearFocusedEditor(blockId ?? "");
-        clearFocusedNoteDoc(blockId ?? "");
-        clearVimCtxIfMine();
-        // Model B — lift detected tokens when LEAVING the block (commit-time),
-        // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
-        // the line under you. Gated on the block's DIRECT tags via the config
-        // (single lift path → no double-lift). The strip dispatch flows through
-        // the normal persist path; props go via onSetProperty (container op).
-        if (onSetProperty && detectConfig && !showSlashMenu && !showAutocomplete) {
-          const doc = v.state.doc.toString();
-          const spec = resolveDetectSpec(getBlockTags(doc), detectConfig);
-          if (spec) {
-            const det = detectTaskTokens(doc, spec);
-            if (det.props.length > 0) {
-              v.dispatch({ changes: { from: 0, to: doc.length, insert: det.stripped } });
-              for (const p of det.props) onSetProperty({ key: p.key, value: p.value });
-            }
-          }
-        }
-        if (!showSlashMenu) onBlur();
+      blur: (_e, eventView) => {
+        const target = captureFocusTarget(eventView);
+        clearVimCtxIfMine(target.view);
+        focusLifecycle.blur(target);
         return false;
       },
       paste: (e) => {
@@ -2235,9 +2420,9 @@
     // per-block `noteSlug` PROP (the day this editor belongs to), NOT the single
     // global active doc — a non-focused day's editor must filter incoming frames
     // against ITS OWN slug or it never matches → carets blacked out. `noteSlug`
-    // is stable for this editor's lifetime (the parent re-keys blocks by
-    // `block.id`, which re-mints on any note change), so baking it into the
-    // extension at create time is safe — no Compartment reconfigure needed.
+    // is stable for this editor's lifetime (the parent keys by canonical bid,
+    // with a local-id fallback), so baking it into the extension at create time
+    // is safe — no Compartment reconfigure needed.
     const state = EditorState.create({
       doc: initialText,
       selection: clampedCursor !== undefined ? { anchor: clampedCursor, head: clampedCursor } : undefined,
@@ -2338,38 +2523,16 @@
       });
     }
 
-    // C2.3 read path — subscribe to this block's `text_seq` LoroText so remote
-    // splices apply live into the editor. The container may not exist at mount
-    // (the snapshot bootstrap is async, or this is a brand-new local block), so
-    // we retry on a short backoff until it resolves (or the editor unmounts).
-    // Once subscribed we hold the unsubscribe handle for teardown.
-    let loroUnsub: (() => void) | null = null;
-    let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
-    let loroSubscribed = false;
-    function trySubscribeLoro(attemptsLeft: number) {
-      if (loroSubscribed || !view) return;
-      const container = loroTextContainer();
-      if (container) {
-        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(batch));
-        loroSubscribed = true;
-        return;
-      }
-      if (attemptsLeft <= 0) return;
-      subRetryTimer = setTimeout(() => {
-        subRetryTimer = null;
-        trySubscribeLoro(attemptsLeft - 1);
-      }, 200);
-    }
-    if (browser && bid) trySubscribeLoro(15); // ~3s of retries for slow bootstraps
-
     return () => {
       if (presenceTimer) clearTimeout(presenceTimer);
-      clearFocusedEditor(blockId ?? "");
+      const mountedView = view;
+      if (!mountedView) return;
+      const target = captureFocusTarget(mountedView);
+      focusLifecycle.teardown(target);
+      clearVimCtxIfMine(mountedView);
       vimModeOff?.();
-      if (subRetryTimer) clearTimeout(subRetryTimer);
-      try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
-      view?.destroy();
       view = null;
+      mountedView.destroy();
     };
   });
 

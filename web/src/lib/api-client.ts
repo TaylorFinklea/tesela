@@ -17,8 +17,13 @@ import type { TableColumnConfig } from "$lib/table/table-config";
 import type { KeymapConfig } from "$lib/stores/keybindings.svelte";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
+import {
+  executeBlockSubtreeRelocation,
+  type BlockMoveRequest,
+} from "$lib/block-tree-move";
 import { buildUpdateNoteBody } from "$lib/api-request-bodies";
 import { apiBase } from "$lib/runtime-base";
+import { noteWriteBarrier, propertyMutationBarrier } from "$lib/block-ops-saver";
 
 // `/api` in vite-dev / hosted web (proxy strips `/api` → server root); `""`
 // (same-origin root) in the desktop Tauri shell, whose embedded tesela-server
@@ -98,6 +103,13 @@ async function put<T>(path: string, body: unknown, signal?: AbortSignal): Promis
   return (await res.json()) as T;
 }
 
+async function del(path: string): Promise<Response> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, { method: "DELETE" });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  return res;
+}
+
 export const api = {
   health: () => get<{ status: string }>("/health"),
   uploadImage,
@@ -136,7 +148,7 @@ export const api = {
     content: string,
     baseContent?: string,
     signal?: AbortSignal,
-  ) => {
+  ) => noteWriteBarrier.track(id, () => {
     // Open the own-echo suppression window BEFORE the PUT round-trips, so the
     // server's `note_updated` echo for this id is recognised as ours even if
     // it races back ahead of the response. Re-record on the response in case
@@ -153,7 +165,7 @@ export const api = {
         return note;
       },
     );
-  },
+  }),
   /** Block-granular write (sync redesign 2026-06-02). Submits ONLY the
    *  block ops the user actually changed (in-place text edit, indent/
    *  outdent move) to `POST /notes/{id}/blocks`, instead of PUTting the
@@ -165,25 +177,33 @@ export const api = {
    *  `updateNote`) so the server's `note_updated` echo for this id is
    *  recognised as ours, then re-records on the response in case the
    *  canonical id differs. Returns the updated Note. */
-  upsertBlocks: (noteId: string, ops: BlockOp[], signal?: AbortSignal) => {
-    recordLocalSave(noteId);
-    return post<Note>(`/notes/${encodeURIComponent(noteId)}/blocks`, { ops }, signal).then(
-      (note) => {
+  upsertBlocks: (noteId: string, ops: BlockOp[], signal?: AbortSignal) =>
+    noteWriteBarrier.track(noteId, () => {
+      recordLocalSave(noteId);
+      return post<Note>(
+        `/notes/${encodeURIComponent(noteId)}/blocks`,
+        { ops },
+        signal,
+      ).then((note) => {
         recordLocalSave(note.id);
         return note;
-      },
-    );
+      });
+    }),
+  relocateBlockSubtree: (req: BlockMoveRequest, signal?: AbortSignal) => {
+    return executeBlockSubtreeRelocation<Note>(req, signal, { post, recordLocalSave });
   },
-  createNote: (title: string, content: string, tags: string[] = []) => {
+  createNote: (title: string, content: string, tags: string[] = []) =>
+    noteWriteBarrier.track(title, () => {
     recordLocalSave(title);
     return post<Note>("/notes", { title, content, tags }).then((note) => {
       recordLocalSave(note.id);
       return note;
     });
-  },
+  }),
   getDailyNote: (date?: string) => {
     const q = date ? `?date=${date}` : "";
-    return get<Note>(`/notes/daily${q}`);
+    const request = () => get<Note>(`/notes/daily${q}`);
+    return date ? noteWriteBarrier.track(date, request) : request();
   },
   search: (query: string, limit = 20) => {
     const q = new URLSearchParams({ q: query, limit: String(limit) });
@@ -247,8 +267,10 @@ export const api = {
   },
   getNoteVersion: (id: string, versionId: number) =>
     get<NoteVersion>(`/notes/${encodeURIComponent(id)}/versions/${versionId}`),
-  deleteNote: (id: string) =>
-    fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  deleteNote: (id: string) => noteWriteBarrier.track(
+    id,
+    () => del(`/notes/${encodeURIComponent(id)}`),
+  ),
   /** Explicit per-block deletion. Phase 2.2 (sync redesign 2026-05-27):
    *  the server-side PUT diff no longer infers `BlockDelete` from
    *  "absent in PUT body" because clients with stale views were
@@ -256,11 +278,10 @@ export const api = {
    *  block deletes (dd, backspace-into-empty, backspace-merge) call
    *  this directly so the delete intent is carried explicitly. `bid`
    *  must be the 36-char dashed canonical UUID. */
-  deleteBlock: (noteId: string, bid: string) =>
-    fetch(
-      `${BASE_URL}/notes/${encodeURIComponent(noteId)}/blocks/${encodeURIComponent(bid)}`,
-      { method: "DELETE" },
-    ),
+  deleteBlock: (noteId: string, bid: string) => noteWriteBarrier.track(
+    noteId,
+    () => del(`/notes/${encodeURIComponent(noteId)}/blocks/${encodeURIComponent(bid)}`),
+  ),
   getBacklinks: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/backlinks`),
   getForwardLinks: (id: string) =>
@@ -321,11 +342,14 @@ export const api = {
 
   /** Phase 12.2 — fired when status flips to done. Server is responsible
    *  for deciding whether the block actually has a recurring rule. */
-  recurBump: (blockId: string, mode: "complete" | "skip" = "complete") =>
-    post<{ bumped: boolean; next_deadline: string | null }>(
+  recurBump: (blockId: string, mode: "complete" | "skip" = "complete") => {
+    const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
+    const mutation = () => post<{ bumped: boolean; next_deadline: string | null }>(
       "/blocks/recur-bump",
       { block_id: blockId, mode },
-    ),
+    );
+    return noteId ? noteWriteBarrier.track(noteId, mutation) : mutation();
+  },
   /** Agenda interactions — upsert a single `key:: value` property on a block.
    *  The server loads the note, rewrites the property, and saves (triggering
    *  `apply_post_save_bumps` so recurring tasks auto-advance on done).
@@ -339,12 +363,15 @@ export const api = {
    *  `<note_id>:<line>`, so the note id is the prefix before the last colon. */
   setBlockProperty: (blockId: string, key: string, value: string) => {
     const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
-    if (noteId) recordLocalSave(noteId);
-    return post<{ ok: boolean }>("/blocks/set-property", {
-      block_id: blockId,
-      key,
-      value,
-    });
+    const mutation = () => {
+      if (noteId) recordLocalSave(noteId);
+      return post<{ ok: boolean }>("/blocks/set-property", {
+        block_id: blockId,
+        key,
+        value,
+      });
+    };
+    return noteId ? propertyMutationBarrier.track(noteId, mutation) : mutation();
   },
   /** Clear a single `key:: value` property line from a block. Block-granular
    *  counterpart of `setBlockProperty` for the "unset" case — only this block
@@ -352,11 +379,14 @@ export const api = {
    *  own-echo suppression window before the POST, same as `setBlockProperty`. */
   clearBlockProperty: (blockId: string, key: string) => {
     const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
-    if (noteId) recordLocalSave(noteId);
-    return post<{ ok: boolean }>("/blocks/clear-property", {
-      block_id: blockId,
-      key,
-    });
+    const mutation = () => {
+      if (noteId) recordLocalSave(noteId);
+      return post<{ ok: boolean }>("/blocks/clear-property", {
+        block_id: blockId,
+        key,
+      });
+    };
+    return noteId ? propertyMutationBarrier.track(noteId, mutation) : mutation();
   },
   /** Phase 12.1 — Apple Reminders sync (macOS only). The combined
    *  `remindersSync` is what the "Sync now" UI button hits. */

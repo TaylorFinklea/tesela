@@ -15,6 +15,17 @@
 use super::*;
 use tesela_core::property::PropScalar;
 
+/// A property value resolved from a Loro container without flattening its type.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ResolvedValue {
+    /// Primitive scalar register.
+    Scalar(PropScalar),
+    /// Mergeable text container.
+    Text(String),
+    /// Ordered, stable-deduplicated list members.
+    List(Vec<PropScalar>),
+}
+
 /// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
 pub(super) fn node_prop_containers(
     meta: &loro::LoroMap,
@@ -273,6 +284,21 @@ fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList
         .and_then(|c| c.into_list().ok())
 }
 
+/// Ensure a multi-value property has an ordered-list container and key even
+/// when it currently has no members.
+pub(super) fn prop_ensure_list(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+) -> SyncResult<loro::LoroList> {
+    clear_incompatible_child(props, key, loro::ContainerType::List)?;
+    let list = props
+        .get_or_create_container(key, loro::LoroList::new())
+        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    prop_keys_ensure(prop_keys, key)?;
+    Ok(list)
+}
+
 /// Add a value to a multi-value property's nested LoroList, union semantics
 /// (a value already present is a no-op).
 pub(super) fn prop_add_to_list(
@@ -281,14 +307,11 @@ pub(super) fn prop_add_to_list(
     key: &str,
     value: &PropScalar,
 ) -> SyncResult<()> {
-    clear_incompatible_child(props, key, loro::ContainerType::List)?;
-    let list: loro::LoroList = props
-        .get_or_create_container(key, loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    let list = prop_ensure_list(props, prop_keys, key)?;
     if list_position(&list, value).is_none() {
         list_push_scalar(&list, value)?;
     }
-    prop_keys_ensure(prop_keys, key)
+    Ok(())
 }
 
 /// Remove a value from a multi-value property's list (no-op if absent or the
@@ -416,15 +439,15 @@ pub(super) fn materialize_props(
 pub(super) fn read_props_typed(
     props: &loro::LoroMap,
     prop_keys: &loro::LoroList,
-) -> Vec<(String, super::ResolvedValue)> {
-    let mut out: Vec<(String, super::ResolvedValue)> = Vec::new();
+) -> Vec<(String, ResolvedValue)> {
+    let mut out: Vec<(String, ResolvedValue)> = Vec::new();
     for key in prop_keys_resolved(props, prop_keys) {
         let value = if let Some(scalar) = prop_get_scalar(props, &key) {
-            super::ResolvedValue::Scalar(scalar)
+            ResolvedValue::Scalar(scalar)
         } else if get_list_container(props, &key).is_some() {
-            super::ResolvedValue::List(prop_get_list_dedup(props, &key))
+            ResolvedValue::List(prop_get_list_dedup(props, &key))
         } else if let Some(text) = prop_get_text(props, &key) {
-            super::ResolvedValue::Text(text)
+            ResolvedValue::Text(text)
         } else {
             continue;
         };

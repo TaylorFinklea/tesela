@@ -621,3 +621,78 @@ An environment-only `MACOSX_DEPLOYMENT_TARGET` override was rejected: it would l
 **Decision:** embedded desktop mode resolves its relay URL from `TESELA_EMBED_RELAY_URL` / `desktop.toml` first, then falls back to the selected mosaic's `[sync.relay]` configuration. Pairing writes that mosaic configuration and reports that a restart is required; the restarted app must therefore consume it rather than forcing `TESELA_DISABLE_RELAY` and remaining LAN-only.
 
 The earlier explicit-opt-in-only rule was meant to prevent a desktop embed and standalone server from joining the relay with the same device identity. That duplicate-writer state cannot occur through the supported embedded path because `serve()` holds the mosaic's exclusive server flock for the app lifetime; a standalone server on the same mosaic makes the app fail to start. Explicit desktop configuration remains the highest-precedence escape hatch, while an unpaired mosaic with no relay remains loopback/LAN-only.
+
+### 2026-07-12 — Cross-note subtree relocation is a recoverable engine operation
+
+**Decision:** moving a block subtree within or between notes is one first-class
+engine operation behind one server command. It preserves every block's stable
+`bid`, relative hierarchy, text, and typed property values. The engine derives
+the source subtree, locks both addressed notes in deterministic note-id order,
+and records a durable idempotent relocation intent before mutating either doc.
+For a cross-note move, the destination snapshot becomes durable before the
+source snapshot may remove the subtree. Startup and retry finish any surviving
+intent.
+
+**Why:** the existing `BlockMove` has no destination note and does not reorder
+rows. Client-side copy/delete cannot close the failure window: destination-first
+repoints the global block index so a later generic delete can delete the new
+copy, while source-first can lose the subtree if destination creation fails.
+Whole-note PUT deliberately treats absence as non-delete, and fresh destination
+ids would break block identity and references. Cross-document Loro changes are
+two per-note deltas rather than one CRDT transaction, so a small durable intent
+is the crash-consistency boundary.
+
+**Conflict boundary:** edits racing the old source location follow the existing
+delete-wins rule once relocation commits. Concurrent moves of the same source
+subtree to two different destination notes are not automatically resolved in
+this slice; duplicate live ownership must be detected and surfaced rather than
+silently choosing an order-dependent block-index owner. Full contract:
+`phases/2026-07-12-block-subtree-relocation-spec.md`.
+
+**Replay-history trade-off:** full relocation receipts are capped at the newest
+4,096, but exact `move_id → request_hash` tombstones are retained permanently
+(about 48 bytes per move). A strictly bounded store cannot distinguish an old
+random move UUID after the same root moves away and back; forgetting it could
+execute the move twice. Reliability wins over bounded metadata growth. Pruned
+matching requests fail closed as stale, while mismatched reuse conflicts
+forever. Active intents also reserve their source root until recovery/completion.
+
+**Same-note proof supersession (2026-07-13):** destination-root proof metadata
+is the latest durable relocation marker, not a permanent lock on that block.
+After a new intent is durable, a different move's proof may be superseded only
+when it is attached to the uniquely live captured source `TreeID` of a
+same-note move; it is inherited source lineage, so the new move treats its
+destination as incomplete and overwrites the marker while applying. A proof on
+another node or note, or the current `move_id` with a different request hash,
+still fails closed. This gate is structural rather than tombstone-based because
+the proof syncs in the Loro document while relocation tombstones are local; a
+local-tombstone requirement would reject legitimate sequential moves on a
+converged peer.
+
+**Deterministic daily seed (2026-07-13):** retain the seed in the canonical
+request hash. The server attaches the same slug-derived seed to every
+cross-note ISO-daily append, whether or not that daily already exists. The
+engine consumes it only when creating an absent destination and permits but
+ignores it for an existing cross-note destination; same-note seeds remain
+invalid. A state-dependent `Some` on first apply and `None` after creation would
+turn an identical HTTP retry into a false move-id conflict. Excluding the seed
+from the hash would weaken mismatch detection, so the stable-input contract is
+preferred.
+
+**Ordered local-edit barrier (2026-07-13):** relocation HTTP must not overtake
+the web editor's local writes. Bound CodeMirror text uses Loro deltas on a
+WebSocket, while structural/fallback saves use HTTP, so awaiting only the HTTP
+queues is insufficient and `WebSocket.send` proves handoff, not server apply.
+Before relocation, Dailies freezes the move interaction, drains its HTTP save
+queues without aborting live requests, flushes each affected note's Loro
+registry entry, then sends a UUID-tagged barrier on that same WebSocket. The
+server's sequential receive loop acknowledges the barrier to that connection
+only after every earlier binary frame has finished, and returns success only
+when each update applied cleanly. The client advances a separate acknowledged
+doc-version checkpoint only on that positive reply; pending/failed/timeout
+keeps the checkpoint so a retry re-exports the cumulative update. This is
+chosen over timing delays, socket `bufferedAmount`, and client-side aborts
+because none is a server-ordering proof. HTTP queues are awaited through live
+requests, successors, and Promise-capable fallbacks. Offline, timed-out, or
+client-minted states fail closed with retry feedback; relocation never guesses
+that the source is current.
