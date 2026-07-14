@@ -1,6 +1,6 @@
 # Shipped relocation remediation report
 
-**Bead:** `tesela-8ig` · **Date:** 2026-07-14 · **Verdict:** the desktop and iOS no-op boundaries are repaired and automated gates pass; release installation, device QA, and TestFlight artifacts remain pending.
+**Bead:** `tesela-8ig` · **Date:** 2026-07-14 · **Verdict:** the desktop and iOS no-op boundaries are repaired, the corrected desktop is installed, and TestFlight build 79 was accepted for processing; Taylor's real-device product test is the remaining gate.
 
 ## Root causes
 
@@ -110,7 +110,7 @@
 | Workspace Rust suites | relocation, server fencing, stale-session rejection, and recovery suites pass; the broad serial command also exposed the two known spawned-process/history flakes documented below, both green on focused rerun |
 | `cargo test -p tesela-desktop` | pass; includes native drag/drop interception regression |
 | `cargo test -p tesela-sync-ffi` | pass; includes complete nested relocation, replay/reopen/conflict, exact multi-note delta framing, strict ID parsing, and partial-export rejection |
-| Full Tesela iOS simulator suite | pass |
+| Full Tesela iOS simulator suite | pass; 573/573 in the build-79 release run |
 | Focused iOS activation/admission regression set | pass; 7/7 |
 | `pnpm --dir web test:unit` | pass; 973/973 |
 | `pnpm --dir web check` | pass; 0 errors, 48 pre-existing warnings |
@@ -139,22 +139,22 @@ spawned server non-zero; the unchanged test passed both focused reruns. This is
 outside relocation delivery, did not reproduce in isolation, and is tracked as
 `tesela-uy4`.
 
-## Release artifacts - PENDING
-
-**No release artifact or device result is claimed by this report yet.**
+## Release artifacts
 
 | Artifact / gate | Status |
 |---|---|
-| Remediation commit and merge to `main` | pending |
-| Corrected desktop production bundle | pending |
-| `/Applications` installation updated | pending |
+| Remediation commit and merge to `main` | complete at `85d914ed` |
+| Corrected desktop production bundle | complete; release bundle rebuilt from merged `main` |
+| `/Applications` installation updated | complete; Apple Development signed and strict deep-signature verification passed |
+| Installed desktop health check | awaiting one-time user approval of the existing `tesela-sync-group-key` Keychain access prompt; the signed process launches and listens, but Keychain blocks request handling until **Always Allow** is clicked |
 | Real installed-shell parent-plus-children drag between days | pending manual QA |
-| iOS archive and TestFlight upload | pending |
-| App Store Connect processing and build-number confirmation | pending |
-| Harness-deck product-test report updated with final artifact evidence | pending |
+| iOS archive and TestFlight upload | complete; Tesela 1.1 build 79, `Upload succeeded` / `EXPORT SUCCEEDED` |
+| App Store Connect processing | accepted and processing; availability to testers not yet claimed |
+| Harness-deck product-test report | refreshed in place for desktop + iOS device verification |
 
-Manual release QA must verify the visible handle moves one parent with all
-children to another day in the installed desktop shell, and that iOS
-`Move to...` can search/select daily and page destinations, cancel without
-mutation, retry a recoverable failure with the same intent, and move the full
-subtree after profile activation completes.
+Manual release QA must first click **Always Allow** on the installed desktop's
+existing Keychain prompt, then verify the visible handle moves one parent with
+all children to another day. On TestFlight build 79, verify that iOS `Move
+to...` can search/select daily and page destinations, cancel without mutation,
+retry a recoverable failure with the same intent, and move the full subtree
+after profile activation completes.

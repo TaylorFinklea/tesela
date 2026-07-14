@@ -28,10 +28,33 @@ SRC="$REPO/target/release/bundle/macos/Tesela.app"
 DST="/Applications/Tesela.app"
 BACKUP="/tmp/Tesela-prev.app"
 BIN_PATTERN='Tesela.app/Contents/MacOS/tesela-desktop'
+# A stable Apple Development requirement lets macOS retain Keychain ACL approval
+# across local rebuilds. Ad-hoc signatures are content hashes and change on
+# every build, so the installer must fail closed instead of falling back.
+SIGNING_IDENTITY="${TESELA_DESKTOP_SIGNING_IDENTITY:-E120EDBF23788B8359F8FBB727015F43AD5E989B}"
+SIGNING_TEAM="${TESELA_DESKTOP_SIGNING_TEAM:-K7CBQW6MPG}"
+
+restore_previous_install() {
+  local status="${1:-1}"
+  trap - ERR
+  echo "ERROR: desktop signing failed; restoring $BACKUP" >&2
+  rm -rf "$DST"
+  if [ -d "$BACKUP" ]; then
+    cp -R "$BACKUP" "$DST"
+  fi
+  exit "$status"
+}
 
 if [ ! -d "$SRC" ]; then
   echo "ERROR: no built app at $SRC" >&2
   echo "  run: cargo tauri build --bundles app" >&2
+  exit 1
+fi
+
+SIGNING_IDENTITIES="$(security find-identity -v -p codesigning)"
+if ! grep -Fq -- "$SIGNING_IDENTITY" <<<"$SIGNING_IDENTITIES"; then
+  echo "ERROR: required Apple Development identity $SIGNING_IDENTITY is unavailable." >&2
+  echo "  Set TESELA_DESKTOP_SIGNING_IDENTITY and TESELA_DESKTOP_SIGNING_TEAM together to override." >&2
   exit 1
 fi
 
@@ -53,14 +76,22 @@ echo "→ backing up current install → $BACKUP"
 rm -rf "$BACKUP"
 [ -d "$DST" ] && cp -R "$DST" "$BACKUP"
 
+trap 'restore_previous_install $?' ERR
 echo "→ installing new build → $DST"
 rm -rf "$DST"
 cp -R "$SRC" "$DST"
-if ! codesign --verify --deep --strict "$DST" >/dev/null 2>&1; then
-  echo "→ sealing local bundle with an ad-hoc signature…"
-  codesign --force --deep --sign - "$DST"
-fi
+echo "→ signing local bundle with Apple Development identity $SIGNING_IDENTITY…"
+codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$DST"
 codesign --verify --deep --strict "$DST"
+SIGNATURE_INFO="$(codesign -d --verbose=4 "$DST" 2>&1)"
+if ! grep -Fq -- "Identifier=app.tesela.desktop" <<<"$SIGNATURE_INFO" \
+  || ! grep -Fq -- "Authority=Apple Development:" <<<"$SIGNATURE_INFO" \
+  || ! grep -Fq -- "TeamIdentifier=$SIGNING_TEAM" <<<"$SIGNATURE_INFO" \
+  || ! grep -Fq -- "(runtime)" <<<"$SIGNATURE_INFO"; then
+  echo "ERROR: installed signature is not the expected Apple Development team/runtime." >&2
+  restore_previous_install 1
+fi
+trap - ERR
 echo "  installed: $(stat -f '%Sm' "$DST/Contents/MacOS/tesela-desktop")"
 
 echo "→ relaunching…"

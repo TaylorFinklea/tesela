@@ -751,3 +751,15 @@ These rules prefer a visible retry or temporarily frozen data surface over a
 best-effort write to an identity that has changed. The relocation operation
 continues to live only in the Rust/Loro engine; Swift never implements a
 copy/delete fallback.
+
+### 2026-07-14 — Local desktop installs require a stable Apple Development signature
+
+`scripts/install-desktop.sh` signs `/Applications/Tesela.app` with Taylor's
+configured Apple Development certificate fingerprint and verifies the expected
+team plus hardened-runtime flag. It no longer accepts or creates an ad-hoc
+fallback: an ad-hoc designated requirement is tied to the build's content hash,
+so every rebuild looks like a different application to Keychain and repeatedly
+prompts for the sync-group key. A missing/expired identity now fails visibly
+before replacing the installed app; signing failures restore the prior bundle.
+Fingerprint and team can be rotated together through the documented environment
+overrides without weakening final signature verification.
