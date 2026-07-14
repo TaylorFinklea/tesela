@@ -38,6 +38,14 @@
     targetBid: string | null;
     placement: MovePlacement | null;
     pending: boolean;
+    onPointerDown: (
+      event: PointerEvent,
+      sourceBid: string,
+      sourceSubtreeBids: readonly string[],
+    ) => boolean;
+    onPointerMove: (event: PointerEvent) => void;
+    onPointerUp: (event: PointerEvent) => void;
+    onPointerCancel: (event: PointerEvent) => void;
     onDragStart: (event: DragEvent, sourceBid: string) => boolean;
     onDragOver: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
     onDrop: (event: DragEvent, targetBid: string, placement: Exclude<MovePlacement, "append">) => void;
@@ -1859,6 +1867,25 @@
     requestAnimationFrame(() => preview.remove());
   }
 
+  function handleRelocationPointerDown(event: PointerEvent, block: ParsedBlock) {
+    if (noteMutationIsReserved()) return;
+    const bid = block.bid;
+    if (
+      !relocation
+      || relocation.pending
+      || event.button !== 0
+      || typeof bid !== "string"
+      || bid.length === 0
+      || isClientMintedId(block.id)
+    ) return;
+    const sourceSubtreeBids = extractSubtree(blocks, bid)
+      .map((sourceBlock) => sourceBlock.bid)
+      .filter((sourceBid): sourceBid is string => typeof sourceBid === "string" && sourceBid.length > 0);
+    if (!relocation.onPointerDown(event, bid, sourceSubtreeBids)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function handleRelocationDragOver(event: DragEvent, block: ParsedBlock) {
     if (!relocation || relocation.pending || !carriesInternalBlockMove(event)) return;
     if (invalidRelocationTarget(block)) {
@@ -2574,11 +2601,16 @@
           <button
             type="button"
             data-move-handle
-            draggable={!noteMutationIsReserved() && !relocation.pending && !!block.bid && !isClientMintedId(block.id)}
-            class="shrink-0 w-4 pt-[10px] cursor-grab active:cursor-grabbing text-muted-foreground/25 hover:text-muted-foreground/70 transition-colors"
+            draggable="false"
+            class="shrink-0 w-4 pt-[10px] touch-none select-none cursor-grab active:cursor-grabbing text-muted-foreground/25 hover:text-muted-foreground/70 transition-colors"
             aria-label="Move block subtree"
             title={isClientMintedId(block.id) ? "Wait for this block to save before moving" : "Move block subtree"}
             onclick={(event) => event.stopPropagation()}
+            onpointerdown={(event) => handleRelocationPointerDown(event, block)}
+            onpointermove={(event) => relocation.onPointerMove(event)}
+            onpointerup={(event) => relocation.onPointerUp(event)}
+            onpointercancel={(event) => relocation.onPointerCancel(event)}
+            onlostpointercapture={(event) => relocation.onPointerCancel(event)}
             ondragstart={(event) => handleRelocationDragStart(event, block)}
             ondragend={() => relocation.onCancel()}
           >⠿</button>

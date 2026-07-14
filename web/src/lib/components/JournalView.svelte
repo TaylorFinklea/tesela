@@ -36,6 +36,7 @@
     IDLE_BLOCK_MOVE_SESSION,
     blockMoveDragHasSupportedType,
     blockMoveDragMatchesRequest,
+    classifyDropPlacement,
     classifyBlockMoveFailure,
     createFocusRestorationController,
     reduceBlockMoveSession,
@@ -82,6 +83,19 @@
   const moveActive = $derived(moveSession.phase !== "idle");
   const moveFrozen = $derived(moveSession.phase === "pending" || moveSession.phase === "retryable");
   let moveToastId: number | null = null;
+  type PointerMoveGesture = {
+    pointerId: number;
+    sourceNoteId: string;
+    sourceBid: string;
+    startX: number;
+    startY: number;
+    handle: HTMLElement;
+    sourceSubtreeBids: Set<string>;
+    active: boolean;
+    hasTarget: boolean;
+  };
+  const POINTER_MOVE_THRESHOLD_PX = 4;
+  let pointerMoveGesture: PointerMoveGesture | null = null;
   let componentDisposed = false;
   let pageInactive = false;
   let ensureDailiesRetryNeeded = false;
@@ -601,7 +615,7 @@
     ) ?? null;
   }
 
-  function autoScrollMove(event: DragEvent) {
+  function autoScrollMove(event: { clientY: number }) {
     const outline = scrollContainer?.closest<HTMLElement>(".gr-outline");
     if (!outline) return;
     const rect = outline.getBoundingClientRect();
@@ -625,6 +639,26 @@
     );
   }
 
+  function startMoveSelection(
+    noteId: string,
+    sourceBid: string,
+    moveId = crypto.randomUUID(),
+  ): boolean {
+    if (moveSession.phase !== "idle") return false;
+    dispatchMove({
+      type: "start",
+      request: {
+        move_id: moveId,
+        source_note_id: noteId,
+        root_bid: sourceBid,
+        destination_note_id: noteId,
+        target_bid: null,
+        placement: "append",
+      },
+    });
+    return true;
+  }
+
   function beginPointerMove(event: DragEvent, noteId: string, sourceBid: string): boolean {
     const transfer = event.dataTransfer;
     if (!transfer || moveSession.phase !== "idle") {
@@ -640,18 +674,150 @@
       event.preventDefault();
       return false;
     }
-    dispatchMove({
-      type: "start",
+    return startMoveSelection(noteId, sourceBid, moveId);
+  }
+
+  function beginDirectPointerMove(
+    event: PointerEvent,
+    noteId: string,
+    sourceBid: string,
+    sourceSubtreeBids: readonly string[],
+  ): boolean {
+    if (event.button !== 0 || moveSession.phase !== "idle" || pointerMoveGesture) return false;
+    const handle = event.currentTarget;
+    if (!(handle instanceof HTMLElement)) return false;
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      return false;
+    }
+    pointerMoveGesture = {
+      pointerId: event.pointerId,
+      sourceNoteId: noteId,
+      sourceBid,
+      startX: event.clientX,
+      startY: event.clientY,
+      handle,
+      sourceSubtreeBids: new Set(sourceSubtreeBids),
+      active: false,
+      hasTarget: false,
+    };
+    return true;
+  }
+
+  function releaseDirectPointerGesture(): PointerMoveGesture | null {
+    const gesture = pointerMoveGesture;
+    pointerMoveGesture = null;
+    if (!gesture) return null;
+    try {
+      if (gesture.handle.hasPointerCapture(gesture.pointerId)) {
+        gesture.handle.releasePointerCapture(gesture.pointerId);
+      }
+    } catch {
+      // The browser may already have released capture during cancellation.
+    }
+    return gesture;
+  }
+
+  function clearDirectPointerTarget() {
+    if (moveSession.phase !== "selecting" || !moveSession.request) return;
+    const request = moveSession.request;
+    moveSession = {
+      phase: "selecting",
       request: {
-        move_id: moveId,
-        source_note_id: noteId,
-        root_bid: sourceBid,
-        destination_note_id: noteId,
+        ...request,
+        destination_note_id: request.source_note_id,
         target_bid: null,
         placement: "append",
       },
-    });
-    return true;
+      targetBid: null,
+      targetNoteId: null,
+      placement: null,
+    };
+  }
+
+  function targetDirectPointerMove(event: PointerEvent, gesture: PointerMoveGesture) {
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const target = hit?.closest<HTMLElement>("[data-move-key-target]") ?? null;
+    if (
+      !target
+      || !scrollContainer?.contains(target)
+      || target.dataset.moveInvalid === "true"
+    ) {
+      gesture.hasTarget = false;
+      clearDirectPointerTarget();
+      return;
+    }
+
+    const noteId = target.dataset.noteId;
+    if (!noteId) {
+      gesture.hasTarget = false;
+      clearDirectPointerTarget();
+      return;
+    }
+    if (target.dataset.moveDayTarget === "true") {
+      targetMove(noteId, null, "append");
+      gesture.hasTarget = true;
+      return;
+    }
+
+    const bid = target.dataset.blockBid;
+    if (!bid || gesture.sourceSubtreeBids.has(bid)) {
+      gesture.hasTarget = false;
+      clearDirectPointerTarget();
+      return;
+    }
+    const placement = classifyDropPlacement(event.clientY, target.getBoundingClientRect());
+    targetMove(noteId, bid, placement);
+    gesture.hasTarget = true;
+  }
+
+  function updateDirectPointerMove(event: PointerEvent) {
+    const gesture = pointerMoveGesture;
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!gesture.active) {
+      const distance = Math.hypot(
+        event.clientX - gesture.startX,
+        event.clientY - gesture.startY,
+      );
+      if (distance < POINTER_MOVE_THRESHOLD_PX) return;
+      if (!startMoveSelection(gesture.sourceNoteId, gesture.sourceBid)) {
+        releaseDirectPointerGesture();
+        return;
+      }
+      gesture.active = true;
+    }
+    autoScrollMove(event);
+    targetDirectPointerMove(event, gesture);
+  }
+
+  function finishDirectPointerMove(event: PointerEvent) {
+    const gesture = pointerMoveGesture;
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const selected = moveSession;
+    const shouldSubmit = gesture.active
+      && gesture.hasTarget
+      && selected.phase === "selecting";
+    releaseDirectPointerGesture();
+    if (!gesture.active) return;
+    if (!shouldSubmit) {
+      cancelSelectingMove();
+      return;
+    }
+    void submitSelectedMove(selected);
+  }
+
+  function cancelDirectPointerMove(event: PointerEvent) {
+    const gesture = pointerMoveGesture;
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    releaseDirectPointerGesture();
+    if (gesture.active) cancelSelectingMove();
   }
 
   function targetMove(noteId: string, bid: string | null, placement: MovePlacement): BlockMoveSession {
@@ -701,6 +867,7 @@
   }
 
   function cancelSelectingMove() {
+    releaseDirectPointerGesture();
     if (moveSession.phase !== "selecting") return;
     const request = moveSession.request;
     dispatchMove({ type: "cancel" });
@@ -998,6 +1165,15 @@
       targetBid: isTarget ? moveSession.targetBid : null,
       placement: isTarget ? moveSession.placement : null,
       pending: moveFrozen && affected,
+      onPointerDown: (event, sourceBid, sourceSubtreeBids) => beginDirectPointerMove(
+        event,
+        noteId,
+        sourceBid,
+        sourceSubtreeBids,
+      ),
+      onPointerMove: updateDirectPointerMove,
+      onPointerUp: finishDirectPointerMove,
+      onPointerCancel: cancelDirectPointerMove,
       onDragStart: (event, sourceBid) => beginPointerMove(event, noteId, sourceBid),
       onDragOver: (event, targetBid, placement) => hoverBlockTarget(event, noteId, targetBid, placement),
       onDrop: (event, targetBid, placement) => dropOnBlock(event, noteId, targetBid, placement),
@@ -1163,6 +1339,7 @@
     document.addEventListener("keydown", keyHandler, true);
     return () => {
       componentDisposed = true;
+      releaseDirectPointerGesture();
       for (const [noteId, state] of saveStates) {
         if (state.timer) {
           clearTimeout(state.timer);

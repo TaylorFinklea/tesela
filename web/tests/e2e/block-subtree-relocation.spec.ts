@@ -51,6 +51,8 @@ const BIDS = {
   propertyFailureRoot: "20000000-0000-4000-8000-000000000028",
   webkitFallbackRoot: "20000000-0000-4000-8000-000000000029",
   webkitFallbackChild: "20000000-0000-4000-8000-000000000030",
+  directPointerRoot: "20000000-0000-4000-8000-000000000031",
+  directPointerChild: "20000000-0000-4000-8000-000000000032",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -71,6 +73,7 @@ const BIDS = {
   propertyRaceTarget: "30000000-0000-4000-8000-000000000017",
   propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
   webkitFallbackTarget: "30000000-0000-4000-8000-000000000019",
+  directPointerTarget: "30000000-0000-4000-8000-000000000020",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
@@ -656,6 +659,46 @@ test.describe("block subtree relocation", () => {
       BIDS.webkitFallbackChild,
     ]);
     expect(occurrences(await noteContent(request, DESTINATION), BIDS.webkitFallbackChild)).toBe(1);
+  });
+
+  test("pointer relocation does not depend on the native HTML drag lifecycle", async ({ page, request }) => {
+    const { source, destination } = await openJournal(page);
+    const handle = row(page, BIDS.directPointerRoot).locator("[data-move-handle]");
+    let moveRequests = 0;
+    page.on("request", (outgoing) => {
+      if (outgoing.method() === "POST" && outgoing.url().includes("/api/blocks/move-subtree")) {
+        moveRequests += 1;
+      }
+    });
+    await handle.evaluate((element) => element.setAttribute("draggable", "false"));
+
+    await dragAcrossDaysToPlacement(
+      page,
+      handle,
+      row(page, BIDS.directPointerChild),
+      "inside",
+    );
+    await waitForMoveIdle(page);
+    expect(moveRequests).toBe(0);
+    await expect(source.locator(`[data-block-bid="${BIDS.directPointerRoot}"]`)).toHaveCount(1);
+    await expect(source.locator(`[data-block-bid="${BIDS.directPointerChild}"]`)).toHaveCount(1);
+
+    await dragAcrossDaysToPlacement(
+      page,
+      handle,
+      row(page, BIDS.directPointerTarget),
+      "inside",
+    );
+    await waitForMoveIdle(page);
+
+    expect(moveRequests).toBe(1);
+    await expect(source.locator(`[data-block-bid="${BIDS.directPointerRoot}"]`)).toHaveCount(0);
+    await expectOrdered(destination, [
+      BIDS.directPointerTarget,
+      BIDS.directPointerRoot,
+      BIDS.directPointerChild,
+    ]);
+    expect(occurrences(await noteContent(request, DESTINATION), BIDS.directPointerChild)).toBe(1);
   });
 
   test("cross-day pointer moves honor before, inside, and after with exact hierarchy", async ({ page, request }) => {

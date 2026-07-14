@@ -59,6 +59,8 @@ const BIDS = {
   propertyFailureRoot: "20000000-0000-4000-8000-000000000028",
   webkitFallbackRoot: "20000000-0000-4000-8000-000000000029",
   webkitFallbackChild: "20000000-0000-4000-8000-000000000030",
+  directPointerRoot: "20000000-0000-4000-8000-000000000031",
+  directPointerChild: "20000000-0000-4000-8000-000000000032",
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
   existingEnd: "30000000-0000-4000-8000-000000000003",
@@ -78,6 +80,7 @@ const BIDS = {
   propertyRaceTarget: "30000000-0000-4000-8000-000000000017",
   propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
   webkitFallbackTarget: "30000000-0000-4000-8000-000000000019",
+  directPointerTarget: "30000000-0000-4000-8000-000000000020",
 };
 
 const children = new Set();
@@ -317,6 +320,8 @@ try {
     `  status:: todo`,
     `- WEBKIT_FALLBACK_ROOT <!-- bid:${BIDS.webkitFallbackRoot} -->`,
     `  - WEBKIT_FALLBACK_CHILD <!-- bid:${BIDS.webkitFallbackChild} -->`,
+    `- DIRECT_POINTER_ROOT <!-- bid:${BIDS.directPointerRoot} -->`,
+    `  - DIRECT_POINTER_CHILD <!-- bid:${BIDS.directPointerChild} -->`,
     "",
   ].join("\n"));
 
@@ -340,6 +345,7 @@ try {
     `- PROPERTY_RACE_TARGET <!-- bid:${BIDS.propertyRaceTarget} -->`,
     `- PROPERTY_FAILURE_TARGET <!-- bid:${BIDS.propertyFailureTarget} -->`,
     `- WEBKIT_FALLBACK_TARGET <!-- bid:${BIDS.webkitFallbackTarget} -->`,
+    `- DIRECT_POINTER_TARGET <!-- bid:${BIDS.directPointerTarget} -->`,
     "",
   ].join("\n"));
 
