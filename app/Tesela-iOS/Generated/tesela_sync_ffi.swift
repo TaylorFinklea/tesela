@@ -1644,9 +1644,10 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
      * The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
      * only (anything else is an error). Returns `1` when recorded, `0` when
-     * the block isn't present in the note's rendered view — the FFI mirror
-     * of the route's 404, so a stale/minted bid surfaces instead of
-     * silently no-opping in the apply arm.
+     * the block has no live Loro node — the FFI mirror of the route's 404,
+     * so a stale/minted bid surfaces instead of silently no-oping in the
+     * apply arm. Live empty reservations count even while projections hide
+     * them; their first property write makes them meaningful.
      */
     func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String) async throws  -> UInt32
 
@@ -2368,9 +2369,10 @@ open func resolveCursor(slug: String, cursorBytes: Data)async throws  -> UInt32?
      * (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
      * The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
      * only (anything else is an error). Returns `1` when recorded, `0` when
-     * the block isn't present in the note's rendered view — the FFI mirror
-     * of the route's 404, so a stale/minted bid surfaces instead of
-     * silently no-opping in the apply arm.
+     * the block has no live Loro node — the FFI mirror of the route's 404,
+     * so a stale/minted bid surfaces instead of silently no-oping in the
+     * apply arm. Live empty reservations count even while projections hide
+     * them; their first property write makes them meaningful.
      */
 open func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String)async throws  -> UInt32  {
     return
@@ -5430,7 +5432,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_resolve_cursor() != 11381) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property() != 18420) {
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property() != 23266) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {

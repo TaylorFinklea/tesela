@@ -199,23 +199,22 @@ fn note_tree_from_doc(
         .collect();
     for node in dedup_twins_by_block_id(&tree, live) {
         if let Some(fb) = flatblock_from_node(&tree, node) {
-            // NOTE: blank (empty) bullets are KEPT. They are the editing
-            // surface — the web outliner relies on a trailing empty bullet
-            // existing so an "empty" day has a focusable row to type into
-            // (`JournalView.ensureTrailingEmpty`). Dropping them made empty
-            // days zero-block and un-editable (keyboard + mouse), so the
-            // 2026-05-29 "drop blank blocks" experiment is reverted.
-            // Lifted headings, prose, and fences are ordinary FlatBlocks and
-            // therefore follow this exact same render path.
             blocks.push(fb);
         }
     }
-    tesela_core::note_tree::NoteTree {
+    let mut note = tesela_core::note_tree::NoteTree {
         frontmatter,
         page_properties: page_properties_materialized(doc),
         blocks,
         stamped_any: false,
-    }
+    };
+    // A bare leaf is an optimistic editing reservation, not shared content.
+    // Keep the Loro node intact so its creator can splice into the stable bid,
+    // but omit it from every materialized/indexed projection so another device
+    // cannot reuse the same empty row for an independent entry. Empty parents
+    // with kept descendants remain structural and are retained by the helper.
+    tesela_core::note_tree::prune_bare_leaf_blocks_in_tree(&mut note);
+    note
 }
 
 /// Page-level properties for materialization: container `props`/`prop_keys`
@@ -291,8 +290,9 @@ fn doc_frontmatter(doc: &LoroDoc) -> Option<String> {
 /// body — which equals what materialization writes to disk and what the
 /// index derives tags/links from. Lean (current-version) docs reconstruct
 /// from the tree; pre-dedup docs that still carry the full markdown on root
-/// `content` return it verbatim (matching the old derivation exactly until
-/// a reseed converts them).
+/// `content` pass through the same bare-leaf pruner (byte-identical when no
+/// reservation is removed), matching the tree-backed projection contract until
+/// a reseed converts them.
 pub(super) fn doc_full_markdown(doc: &LoroDoc) -> String {
     let content = doc
         .get_map("root")
@@ -302,7 +302,7 @@ pub(super) fn doc_full_markdown(doc: &LoroDoc) -> String {
         .map(|s| (*s).clone())
         .unwrap_or_default();
     if !content.is_empty() {
-        return content;
+        return tesela_core::note_tree::prune_bare_leaf_blocks(&content);
     }
     tesela_core::note_tree::serialize_note(&note_tree_from_doc(doc, doc_frontmatter(doc)))
 }

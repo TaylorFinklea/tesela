@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust 2021, Loro 1.13.6, Tokio tests, `tesela-core::note_tree`, `tesela-sync::LoroEngine`.
 
+**Result:** Implemented and verified. Review added a byte-preserving legacy source pruner, explicit materialization/creator-splice coverage, and a live-node FFI property gate. Workspace fmt remains red only on pre-existing untouched Rust 1.96 drift; all changed hunks are clean. Live repair moved to user-gated bead `tesela-bw84`.
+
 ## Global Constraints
 
 - Untouched empty leaves are omitted; empty parents with descendants remain.
@@ -31,7 +33,7 @@
 - Produces: `pub fn prune_bare_leaf_blocks_in_tree(tree: &mut NoteTree) -> bool`; returns whether any block was removed.
 - `prune_bare_leaf_blocks(content: &str)` must delegate to this helper and preserve its byte-identical no-op behavior.
 
-- [ ] **Step 1: Add failing tree-level tests**
+- [x] **Step 1: Add failing tree-level tests**
 
 Add focused unit tests beside the existing `prune_bare_leaf_blocks` cases:
 
@@ -62,7 +64,7 @@ fn prune_tree_keeps_empty_parent_with_child() {
 }
 ```
 
-- [ ] **Step 2: Run the new tests and verify RED**
+- [x] **Step 2: Run the new tests and verify RED**
 
 Run:
 
@@ -72,7 +74,7 @@ cargo test -p tesela-core note_tree::tests::prune_tree_ -- --nocapture
 
 Expected: compile failure because `prune_bare_leaf_blocks_in_tree` does not exist.
 
-- [ ] **Step 3: Extract the existing reverse-walk policy**
+- [x] **Step 3: Extract the existing reverse-walk policy**
 
 Implement the public tree helper by moving the current keep-vector/reverse-walk logic out of `prune_bare_leaf_blocks`. Preserve these invariants:
 
@@ -104,7 +106,7 @@ pub fn prune_bare_leaf_blocks_in_tree(tree: &mut NoteTree) -> bool {
 
 Then make `prune_bare_leaf_blocks(content)` call the helper and return the original bytes when it returns `false`.
 
-- [ ] **Step 4: Run core pruning tests and verify GREEN**
+- [x] **Step 4: Run core pruning tests and verify GREEN**
 
 Run:
 
@@ -114,7 +116,7 @@ cargo test -p tesela-core note_tree::tests::prune_ -- --nocapture
 
 Expected: all tree-level and string-level pruning tests pass.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add crates/tesela-core/src/note_tree.rs
@@ -137,7 +139,7 @@ git commit -m "refactor(core): expose note-tree bare-leaf pruning (tesela-ju7)"
 - Produces: identical pruning for `render_note`, `render_note_full`, materialized Markdown, and index derivation through `doc_full_markdown`.
 - Leaves `read_block_text` and the underlying Loro node unchanged so the creating client can splice into its reservation.
 
-- [ ] **Step 1: Invert the old blank-render regression and add the parent case**
+- [x] **Step 1: Invert the old blank-render regression and add the parent case**
 
 Replace `blank_blocks_are_kept_as_editing_surface` with assertions that the real block remains and the bare leaf bid is absent. Add a second test creating an empty parent plus non-empty child and assert both bids remain in `render_note`.
 
@@ -195,7 +197,7 @@ async fn empty_parent_with_child_remains_in_rendered_projection() {
 
 Use the existing `record_local(OpPayload::NoteUpsert { ... })` setup pattern in the adjacent test rather than constructing Loro containers directly.
 
-- [ ] **Step 2: Add the two-replica incident regression**
+- [x] **Step 2: Add the two-replica incident regression**
 
 Add a test near `write_block_text_empty_base_concurrent_char_merges` that uses real engine exports/imports:
 
@@ -238,7 +240,7 @@ async fn peer_hidden_blank_reservations_become_distinct_authored_blocks() {
 }
 ```
 
-- [ ] **Step 3: Run the incident tests and verify RED**
+- [x] **Step 3: Run the incident tests and verify RED**
 
 Run:
 
@@ -249,13 +251,13 @@ cargo test -p tesela-sync peer_hidden_blank_reservations_become_distinct_authore
 
 Expected: both fail because current `note_tree_from_doc` explicitly keeps blank bullets.
 
-- [ ] **Step 4: Prune once in the shared renderer**
+- [x] **Step 4: Prune once in the shared renderer**
 
 In `note_tree_from_doc`, build the complete `NoteTree`, call `prune_bare_leaf_blocks_in_tree`, and return the pruned tree. Remove the stale comment claiming blank bullets must be persisted. Do not delete Loro nodes.
 
 For legacy docs whose root `content` bypasses `note_tree_from_doc`, route the content through the existing byte-preserving `prune_bare_leaf_blocks` function before returning it from `doc_full_markdown`; its no-change path preserves non-outliner bodies byte-for-byte.
 
-- [ ] **Step 5: Run focused sync tests and verify GREEN**
+- [x] **Step 5: Run focused sync tests and verify GREEN**
 
 Run:
 
@@ -268,7 +270,7 @@ cargo test -p tesela-sync write_block_text_empty_base_concurrent_char_merges -- 
 
 Expected: all pass; the last confirms ordinary concurrent edits to an explicitly shared blank block still retain current CRDT semantics.
 
-- [ ] **Step 6: Run the bead verification gate**
+- [x] **Step 6: Run the bead verification gate**
 
 Run serially:
 
@@ -283,7 +285,7 @@ xcodebuild test -project app/Tesela-iOS/Tesela.xcodeproj -scheme Tesela -destina
 
 Expected: all commands pass. If the named simulator is unavailable, list installed simulators and use the available iPhone 17 Pro runtime without changing source.
 
-- [ ] **Step 7: Update handoff and commit Task 2**
+- [x] **Step 7: Update handoff and commit Task 2**
 
 - Mark `tesela-ju7` complete in `.docs/ai/current-state.md` and clear its active plan line.
 - Change the spec status to implemented and record the verification commands and counts.

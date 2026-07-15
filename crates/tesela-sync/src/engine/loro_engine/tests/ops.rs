@@ -1540,30 +1540,76 @@ async fn stale_partial_note_upsert_cannot_retire_legacy_root_content() {
 }
 
 #[tokio::test]
-async fn blank_blocks_are_kept_as_editing_surface() {
-    // Blank bullets are KEPT (reverted the 2026-05-29 drop): the web
-    // outliner needs a trailing empty bullet as the focusable editing
-    // surface for "empty" days. A note with a real block + a blank one
-    // round-trips BOTH.
-    let hlc = Arc::new(Hlc::new(test_device()));
-    let engine = LoroEngine::new(test_device(), hlc);
+async fn legacy_root_content_prunes_reservation_without_rewriting_retained_bytes() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x70; 16];
+    let empty_id = uuid::Uuid::from_bytes([0x71; 16]);
+    let legacy = format!("# Heading\n\nLegacy prose\n\n- <!-- bid:{empty_id} -->\n");
+    let expected = "# Heading\n\nLegacy prose\n\n";
+    {
+        let doc = engine.doc_for_note_mut(note_id).await;
+        doc.get_map("root")
+            .insert("content", legacy.as_str())
+            .unwrap();
+        doc.commit();
+    }
+
+    assert_eq!(
+        engine.render_note_full(note_id).await.as_deref(),
+        Some(expected)
+    );
+    assert_eq!(
+        engine.render_note_full(note_id).await.as_deref(),
+        Some(expected),
+        "repeated legacy projection must be byte-stable"
+    );
+}
+
+#[tokio::test]
+async fn bare_leaf_blocks_are_hidden_from_rendered_projection() {
+    let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
     let note_id = [0x4b; 16];
-    let content = "- real <!-- bid:aaaaaaaa-0000-0000-0000-000000000001 -->\n-  <!-- bid:aaaaaaaa-0000-0000-0000-000000000002 -->\n";
+    let real_id = uuid::Uuid::from_bytes([0x4a; 16]);
+    let empty_id = uuid::Uuid::from_bytes([0x4b; 16]);
+    let content = format!("- real <!-- bid:{real_id} -->\n- <!-- bid:{empty_id} -->\n");
     engine
         .record_local(OpPayload::NoteUpsert {
             note_id,
-            display_alias: Some("b".into()),
-            title: "B".into(),
-            content: content.into(),
+            display_alias: Some("blank-leaf".into()),
+            title: "Blank leaf".into(),
+            content,
             created_at_millis: 1,
         })
         .await
         .unwrap();
+
     let rendered = engine.render_note(note_id).await.unwrap();
-    assert!(
-        rendered.contains("- real ") && rendered.contains("000000000002"),
-        "both real and blank blocks kept: {rendered:?}"
-    );
+    assert!(rendered.contains(&real_id.to_string()));
+    assert!(!rendered.contains(&empty_id.to_string()));
+}
+
+#[tokio::test]
+async fn empty_parent_with_child_remains_in_rendered_projection() {
+    let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+    let note_id = [0x4c; 16];
+    let parent_id = uuid::Uuid::from_bytes([0x4c; 16]);
+    let child_id = uuid::Uuid::from_bytes([0x4d; 16]);
+    let content = format!("- <!-- bid:{parent_id} -->\n  - child <!-- bid:{child_id} -->\n");
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("empty-parent".into()),
+            title: "Empty parent".into(),
+            content,
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+    let rendered = engine.render_note(note_id).await.unwrap();
+    assert!(rendered.contains(&parent_id.to_string()));
+    assert!(rendered.contains(&child_id.to_string()));
 }
 
 #[tokio::test]
@@ -3213,6 +3259,71 @@ async fn authoritative_engine_materializes_and_deletes_md_files() {
         .await
         .unwrap();
     assert!(!path.exists(), "NoteDelete removes the materialized file");
+}
+
+#[tokio::test]
+async fn authoritative_materialization_hides_reservation_until_creator_splices() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dev = test_device();
+    let notes = tmp.path().join("notes");
+    let engine = LoroEngine::with_dirs(
+        dev,
+        Arc::new(Hlc::new(dev)),
+        tmp.path().join("loro"),
+        Some(notes.clone()),
+    )
+    .await
+    .unwrap();
+    let note_id = blake3_note_id("local-reservation-materialization");
+    let kept_id = uuid::Uuid::from_bytes([0x72; 16]);
+    let empty_id = [0x73; 16];
+    let empty_uuid = uuid::Uuid::from_bytes(empty_id);
+    let content = format!("- kept <!-- bid:{kept_id} -->\n");
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("local-reservation".into()),
+            title: "Local reservation".into(),
+            content,
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id: empty_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "b".into(),
+            indent_level: 0,
+            text: String::new(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+
+    let path = notes.join("local-reservation.md");
+    let hidden = tokio::fs::read_to_string(&path).await.unwrap();
+    assert_eq!(hidden, format!("- kept <!-- bid:{kept_id} -->\n"));
+    {
+        let docs = engine.inner.docs.read().await;
+        let tree = docs.get(&note_id).unwrap().get_tree("blocks");
+        assert!(
+            find_node_by_block_id(&tree, &hex_id(&empty_id)).is_some(),
+            "hidden reservation remains in the creator's Loro tree"
+        );
+    }
+
+    assert_eq!(
+        engine
+            .splice_block_text(note_id, empty_id, 0, 0, "creator text")
+            .await
+            .unwrap(),
+        1
+    );
+    let visible = tokio::fs::read_to_string(path).await.unwrap();
+    assert!(visible.contains("creator text"));
+    assert!(visible.contains(&empty_uuid.to_string()));
 }
 
 #[tokio::test]
