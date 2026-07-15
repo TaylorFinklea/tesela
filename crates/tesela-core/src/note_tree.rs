@@ -1739,6 +1739,22 @@ mod tests {
     }
 
     #[test]
+    fn prune_preserves_frontmatter_and_page_properties_at_eof() {
+        let kept_id = fixture_uuid(0x45);
+        let empty_id = fixture_uuid(0x46);
+        let content = format!(
+            "---\ntitle: Legacy\n---\n\nquery:: kind:block\n- Kept <!-- bid:{kept_id} -->\n- <!-- bid:{empty_id} -->"
+        );
+
+        assert_eq!(
+            prune_bare_leaf_blocks(&content),
+            format!(
+                "---\ntitle: Legacy\n---\n\nquery:: kind:block\n- Kept <!-- bid:{kept_id} -->\n"
+            )
+        );
+    }
+
+    #[test]
     fn prune_preserves_frontmatter() {
         let kept_id = fixture_uuid(0x40);
         let drop_id = fixture_uuid(0x41);

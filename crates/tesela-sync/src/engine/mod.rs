@@ -450,6 +450,13 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
+    /// Whether a live node carries this block id, including an empty editing
+    /// reservation omitted from rendered projections. Default `false`;
+    /// LoroEngine overrides.
+    async fn has_live_block(&self, _note_id: [u8; 16], _block_id: [u8; 16]) -> bool {
+        false
+    }
+
     /// Mint a stable, op-anchored cursor at `utf16_offset` in a block's text,
     /// as transport bytes (Phase 1 presence). Default `None`; LoroEngine
     /// overrides. See [`LoroEngine::mint_block_cursor`].

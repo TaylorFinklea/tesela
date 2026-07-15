@@ -1366,9 +1366,10 @@ impl SyncEngineHandle {
     /// (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
     /// The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
     /// only (anything else is an error). Returns `1` when recorded, `0` when
-    /// the block isn't present in the note's rendered view — the FFI mirror
-    /// of the route's 404, so a stale/minted bid surfaces instead of
-    /// silently no-opping in the apply arm.
+    /// the block has no live Loro node — the FFI mirror of the route's 404,
+    /// so a stale/minted bid surfaces instead of silently no-oping in the
+    /// apply arm. Live empty reservations count even while projections hide
+    /// them; their first property write makes them meaningful.
     pub async fn set_block_property(
         &self,
         slug: String,
@@ -1605,19 +1606,13 @@ impl SyncEngineHandle {
 }
 
 impl SyncEngineHandle {
-    /// True when the block is present (live) in the note's rendered view —
-    /// the engine's `serialize_note` output stamps every live block with its
-    /// `<!-- bid:<dashed-uuid> -->` marker. This is the FFI counterpart of
-    /// the server route's `block_bid_from_suffix` 404 check (resolve the
-    /// target against the materialized view before emitting the op): the
-    /// engine's `BlockPropertySet` apply arm treats an unknown block as a
-    /// SAFE NO-OP, so without this probe a stale or freshly-minted bid would
-    /// silently drop the write — the exact class P1.11 exists to close.
+    /// True when the block has a live Loro node, including an empty local
+    /// reservation intentionally omitted from rendered projections. This is
+    /// the FFI counterpart of the server route's 404 check: the engine's
+    /// `BlockPropertySet` apply arm treats an unknown block as a safe no-op,
+    /// so a stale or freshly minted bid must still surface as not found.
     async fn block_exists(&self, note_id: [u8; 16], block_id: &[u8; 16]) -> bool {
-        let Some(rendered) = self.inner.render_note(note_id).await else {
-            return false;
-        };
-        rendered.contains(&format_dashed_uuid(block_id))
+        self.inner.has_live_block(note_id, *block_id).await
     }
 }
 
@@ -3553,6 +3548,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_property_write_makes_hidden_empty_reservation_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "prop-empty-reservation".to_string();
+        let kept = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        let empty = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+        let base = format!("- kept <!-- bid:{kept} -->\n");
+        h.record_note_upsert_by_slug(slug.clone(), "Props".into(), base.clone(), 1)
+            .await
+            .unwrap();
+        h.record_note_diff(
+            slug.clone(),
+            format!("{base}- <!-- bid:{empty} -->\n"),
+            "Props".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let note_id = stable_uuid_from_slug(&slug);
+        assert!(!h.inner.render_note(note_id).await.unwrap().contains(empty));
+        assert_eq!(
+            h.set_block_property(slug.clone(), empty.into(), "status".into(), "todo".into(),)
+                .await
+                .unwrap(),
+            1
+        );
+        let rendered = h.inner.render_note(note_id).await.unwrap();
+        assert!(
+            rendered.contains(empty),
+            "property makes block meaningful: {rendered:?}"
+        );
+        assert!(rendered.contains("status:: todo"), "{rendered:?}");
+    }
+
+    #[tokio::test]
     async fn set_block_property_converges_to_peer_via_relay_update() {
         // The property set must travel as an ordinary per-note Loro update:
         // peer B applies A's delta frame and renders the same single line.
@@ -3972,8 +4003,14 @@ mod tests {
             "the deletes must propagate to the desktop: {after_a:?}"
         );
         assert!(
-            after_a.contains(bid_trail),
-            "the un-deleted trailing block survives on desktop: {after_a:?}"
+            !after_a.contains(bid_trail),
+            "untouched trailing reservation stays out of materialized Markdown: {after_a:?}"
+        );
+        assert!(
+            a.inner
+                .has_live_block(note_id, parse_block_id_hex(bid_trail).unwrap())
+                .await,
+            "the un-deleted trailing reservation remains live in desktop Loro state"
         );
     }
 

@@ -774,6 +774,16 @@ impl LoroEngine {
         read_block_text(&tree, node)
     }
 
+    /// Whether a live Loro tree node carries this block id, including an
+    /// empty local editing reservation omitted from rendered projections.
+    pub async fn has_live_block(&self, note_id: [u8; 16], block_id: [u8; 16]) -> bool {
+        let Some(doc) = self.lazy_load_doc(note_id).await else {
+            return false;
+        };
+        let tree = doc.get_tree("blocks");
+        find_node_by_block_id(&tree, &hex_id(&block_id)).is_some()
+    }
+
     /// Mint a stable, op-anchored [`loro::cursor::Cursor`] at `utf16_offset`
     /// within a block's `text_seq` LoroText, returned as postcard bytes for
     /// transport. Unlike a raw index, the cursor follows concurrent edits, so a
@@ -2963,6 +2973,10 @@ impl SyncEngine for LoroEngine {
     /// to read a block's merged text after applying a remote splice.
     async fn read_block_text(&self, note_id: [u8; 16], block_id: [u8; 16]) -> Option<String> {
         LoroEngine::read_block_text(self, note_id, block_id).await
+    }
+
+    async fn has_live_block(&self, note_id: [u8; 16], block_id: [u8; 16]) -> bool {
+        LoroEngine::has_live_block(self, note_id, block_id).await
     }
 
     async fn mint_block_cursor(
