@@ -53,6 +53,8 @@ const BIDS = {
   webkitFallbackChild: "20000000-0000-4000-8000-000000000030",
   directPointerRoot: "20000000-0000-4000-8000-000000000031",
   directPointerChild: "20000000-0000-4000-8000-000000000032",
+  rootPromotionRoot: "20000000-0000-4000-8000-000000000033",
+  nestedPlacementRoot: "20000000-0000-4000-8000-000000000034",
 
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
@@ -74,6 +76,9 @@ const BIDS = {
   propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
   webkitFallbackTarget: "30000000-0000-4000-8000-000000000019",
   directPointerTarget: "30000000-0000-4000-8000-000000000020",
+  rootPromotionParent: "30000000-0000-4000-8000-000000000021",
+  nestedPlacementParent: "30000000-0000-4000-8000-000000000022",
+  nestedPlacementChild: "30000000-0000-4000-8000-000000000023",
 } as const;
 
 const MOVE_ROUTE = "**/api/blocks/move-subtree";
@@ -130,8 +135,10 @@ async function dragAcrossDaysToPlacement(
   targetRow: Locator,
   placement: "before" | "inside" | "after",
 ): Promise<void> {
-  await sourceHandle.scrollIntoViewIfNeeded();
-  await expect(sourceHandle).toBeVisible();
+  await expect.poll(() => sourceHandle.evaluate((element) =>
+    element.closest("[data-block-outliner]")?.hasAttribute("inert") === false,
+  )).toBe(true);
+  await sourceHandle.hover();
   const sourceBox = await sourceHandle.boundingBox();
   if (!sourceBox) throw new Error("Drag source has no bounding box");
 
@@ -168,6 +175,54 @@ async function dragAcrossDaysToPlacement(
   }
 }
 
+async function dragToDayRootSurface(
+  page: Page,
+  sourceHandle: Locator,
+  targetDay: Locator,
+): Promise<void> {
+  await expect.poll(() => sourceHandle.evaluate((element) =>
+    element.closest("[data-block-outliner]")?.hasAttribute("inert") === false,
+  )).toBe(true);
+  await sourceHandle.hover();
+  const sourceBox = await sourceHandle.boundingBox();
+  if (!sourceBox) throw new Error("Drag source has no bounding box");
+
+  const sourcePoint = {
+    x: sourceBox.x + sourceBox.width / 2,
+    y: sourceBox.y + sourceBox.height / 2,
+  };
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down();
+  let mouseDown = true;
+  try {
+    await page.mouse.move(sourcePoint.x + 8, sourcePoint.y + 2, { steps: 4 });
+    await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "selecting");
+    await targetDay.evaluate((element) => element.scrollIntoView({ block: "end", behavior: "auto" }));
+    const targetPoint = await targetDay.evaluate((section) => {
+      const outliner = section.querySelector<HTMLElement>("[data-block-outliner]");
+      if (!outliner) throw new Error("Day root target has no outliner");
+      const sectionRect = section.getBoundingClientRect();
+      const outlinerRect = outliner.getBoundingClientRect();
+      const x = sectionRect.left + Math.min(120, sectionRect.width / 2);
+      const y = Math.min(sectionRect.bottom - 16, window.innerHeight - 16);
+      const hit = document.elementFromPoint(x, y);
+      if (
+        y <= outlinerRect.bottom + 8
+        || hit?.closest(".day") !== section
+        || hit?.closest("[data-move-key-target]")
+      ) {
+        throw new Error("Could not locate visible blank day-root surface");
+      }
+      return { x, y };
+    });
+    await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 12 });
+    await page.mouse.up();
+    mouseDown = false;
+  } finally {
+    if (mouseDown) await page.mouse.up();
+  }
+}
+
 async function dispatchToPlacement(
   page: Page,
   sourceHandle: Locator,
@@ -175,6 +230,12 @@ async function dispatchToPlacement(
   placement: "before" | "inside" | "after",
 ): Promise<void> {
   await expect(sourceHandle).toBeAttached();
+  await expect.poll(() => sourceHandle.evaluate((element) =>
+    element.closest("[data-block-outliner]")?.hasAttribute("inert") === false,
+  )).toBe(true);
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await sourceHandle.dispatchEvent("dragstart", { dataTransfer });
+  await expect(page.locator(".journal")).toHaveAttribute("data-move-mode", "selecting");
   await target.scrollIntoViewIfNeeded();
   const box = await target.boundingBox();
   if (!box) throw new Error("Drop target has no bounding box");
@@ -183,13 +244,11 @@ async function dispatchToPlacement(
     : placement === "inside"
       ? box.y + box.height / 2
       : box.y + Math.max(2, box.height - 2);
-  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   const event = {
     dataTransfer,
     clientX: box.x + Math.min(24, Math.max(2, box.width / 2)),
     clientY,
   };
-  await sourceHandle.dispatchEvent("dragstart", { dataTransfer });
   await target.dispatchEvent("dragover", event);
   await expect(target).toHaveAttribute("data-drop-placement", placement);
   await target.dispatchEvent("drop", event);
@@ -712,6 +771,69 @@ test.describe("block subtree relocation", () => {
       .toContainText("DIRECT_POINTER_MARKDOWN_PAYLOAD");
     await expect(destination.locator("[data-drop-placement]"))
       .toHaveCount(0);
+  });
+
+  test("a nested block can be promoted to the day root through the blank day surface", async ({ page }) => {
+    const { destination } = await openJournal(page);
+    const moveRequests: Record<string, unknown>[] = [];
+    page.on("request", (outgoing) => {
+      if (outgoing.method() === "POST" && outgoing.url().includes("/api/blocks/move-subtree")) {
+        moveRequests.push(outgoing.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    await dragAcrossDaysToPlacement(
+      page,
+      row(page, BIDS.rootPromotionRoot).locator("[data-move-handle]"),
+      row(page, BIDS.rootPromotionParent),
+      "inside",
+    );
+    await waitForMoveIdle(page);
+    await expect.poll(() => moveRequests.length).toBe(1);
+    await expect(row(page, BIDS.rootPromotionRoot)).toHaveAttribute("style", /padding-left:\s*24px/);
+
+    await dragToDayRootSurface(
+      page,
+      row(page, BIDS.rootPromotionRoot).locator("[data-move-handle]"),
+      destination,
+    );
+    await waitForMoveIdle(page);
+
+    await expect.poll(() => moveRequests.length).toBe(2);
+    expect(moveRequests[1]).toMatchObject({
+      root_bid: BIDS.rootPromotionRoot,
+      destination_note_id: DESTINATION,
+      target_bid: null,
+      placement: "append",
+    });
+    await expect(row(page, BIDS.rootPromotionRoot)).toHaveAttribute("style", /padding-left:\s*0px/);
+  });
+
+  test("inside placement accepts an already nested target", async ({ page }) => {
+    await openJournal(page);
+    const moveRequests: Record<string, unknown>[] = [];
+    page.on("request", (outgoing) => {
+      if (outgoing.method() === "POST" && outgoing.url().includes("/api/blocks/move-subtree")) {
+        moveRequests.push(outgoing.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    await dispatchToPlacement(
+      page,
+      row(page, BIDS.nestedPlacementRoot).locator("[data-move-handle]"),
+      row(page, BIDS.nestedPlacementChild),
+      "inside",
+    );
+    await waitForMoveIdle(page);
+
+    await expect.poll(() => moveRequests.length).toBe(1);
+    expect(moveRequests[0]).toMatchObject({
+      root_bid: BIDS.nestedPlacementRoot,
+      destination_note_id: DESTINATION,
+      target_bid: BIDS.nestedPlacementChild,
+      placement: "inside",
+    });
+    await expect(row(page, BIDS.nestedPlacementRoot)).toHaveAttribute("style", /padding-left:\s*48px/);
   });
 
   test("cross-day pointer moves honor before, inside, and after with exact hierarchy", async ({ page, request }) => {

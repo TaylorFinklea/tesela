@@ -61,6 +61,8 @@ const BIDS = {
   webkitFallbackChild: "20000000-0000-4000-8000-000000000030",
   directPointerRoot: "20000000-0000-4000-8000-000000000031",
   directPointerChild: "20000000-0000-4000-8000-000000000032",
+  rootPromotionRoot: "20000000-0000-4000-8000-000000000033",
+  nestedPlacementRoot: "20000000-0000-4000-8000-000000000034",
   crossTarget: "30000000-0000-4000-8000-000000000001",
   crossTargetChild: "30000000-0000-4000-8000-000000000002",
   existingEnd: "30000000-0000-4000-8000-000000000003",
@@ -81,6 +83,9 @@ const BIDS = {
   propertyFailureTarget: "30000000-0000-4000-8000-000000000018",
   webkitFallbackTarget: "30000000-0000-4000-8000-000000000019",
   directPointerTarget: "30000000-0000-4000-8000-000000000020",
+  rootPromotionParent: "30000000-0000-4000-8000-000000000021",
+  nestedPlacementParent: "30000000-0000-4000-8000-000000000022",
+  nestedPlacementChild: "30000000-0000-4000-8000-000000000023",
 };
 
 const children = new Set();
@@ -323,6 +328,8 @@ try {
     `- DIRECT_POINTER_ROOT <!-- bid:${BIDS.directPointerRoot} -->`,
     `  - DIRECT_POINTER_CHILD <!-- bid:${BIDS.directPointerChild} -->`,
     `    \t- DIRECT_POINTER_MARKDOWN_PAYLOAD`,
+    `- ROOT_PROMOTION_ROOT <!-- bid:${BIDS.rootPromotionRoot} -->`,
+    `- NESTED_PLACEMENT_ROOT <!-- bid:${BIDS.nestedPlacementRoot} -->`,
     "",
   ].join("\n"));
 
@@ -347,6 +354,9 @@ try {
     `- PROPERTY_FAILURE_TARGET <!-- bid:${BIDS.propertyFailureTarget} -->`,
     `- WEBKIT_FALLBACK_TARGET <!-- bid:${BIDS.webkitFallbackTarget} -->`,
     `- DIRECT_POINTER_TARGET <!-- bid:${BIDS.directPointerTarget} -->`,
+    `- ROOT_PROMOTION_PARENT <!-- bid:${BIDS.rootPromotionParent} -->`,
+    `- NESTED_PLACEMENT_PARENT <!-- bid:${BIDS.nestedPlacementParent} -->`,
+    `  - NESTED_PLACEMENT_CHILD <!-- bid:${BIDS.nestedPlacementChild} -->`,
     "",
   ].join("\n"));
 

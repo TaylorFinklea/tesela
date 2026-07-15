@@ -739,9 +739,20 @@
   function targetDirectPointerMove(event: PointerEvent, gesture: PointerMoveGesture) {
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     const target = hit?.closest<HTMLElement>("[data-move-key-target]") ?? null;
+    if (!target) {
+      const dayTarget = hit?.closest<HTMLElement>(".day[data-note-id]") ?? null;
+      const noteId = dayTarget?.dataset.noteId;
+      if (!dayTarget || !noteId || !scrollContainer?.contains(dayTarget)) {
+        gesture.hasTarget = false;
+        clearDirectPointerTarget();
+        return;
+      }
+      targetMove(noteId, null, "append");
+      gesture.hasTarget = true;
+      return;
+    }
     if (
-      !target
-      || !scrollContainer?.contains(target)
+      !scrollContainer?.contains(target)
       || target.dataset.moveInvalid === "true"
     ) {
       gesture.hasTarget = false;

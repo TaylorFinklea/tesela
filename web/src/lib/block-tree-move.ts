@@ -442,8 +442,9 @@ export function classifyDropPlacement(
   clientY: number,
   rect: Pick<DOMRect, "top" | "height">,
 ): Exclude<MovePlacement, "append"> {
-  const firstBoundary = rect.top + rect.height / 3;
-  const secondBoundary = rect.top + rect.height * 2 / 3;
+  const edgeRail = Math.min(6, rect.height / 4);
+  const firstBoundary = rect.top + edgeRail;
+  const secondBoundary = rect.top + rect.height - edgeRail;
   if (clientY < firstBoundary) return "before";
   if (clientY < secondBoundary) return "inside";
   return "after";

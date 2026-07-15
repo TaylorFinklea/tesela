@@ -545,20 +545,26 @@ test("planBlockMove enforces target requirements for each placement", () => {
   );
 });
 
-test("classifyDropPlacement divides a block row into exact vertical thirds", () => {
+test("classifyDropPlacement reserves narrow edge rails and treats the row body as inside", () => {
   const rect = { top: 100, height: 90 };
   const cases = [
     [99, "before"],
-    [129.999, "before"],
-    [130, "inside"],
-    [159.999, "inside"],
-    [160, "after"],
+    [105.999, "before"],
+    [106, "inside"],
+    [183.999, "inside"],
+    [184, "after"],
     [191, "after"],
   ];
 
   for (const [clientY, expected] of cases) {
     assert.equal(classifyDropPlacement(clientY, rect), expected, String(clientY));
   }
+
+  const shortRect = { top: 20, height: 16 };
+  assert.equal(classifyDropPlacement(23.999, shortRect), "before");
+  assert.equal(classifyDropPlacement(24, shortRect), "inside");
+  assert.equal(classifyDropPlacement(31.999, shortRect), "inside");
+  assert.equal(classifyDropPlacement(32, shortRect), "after");
 });
 
 test("decodeBlockMoveDragPayload rejects external and malformed drag data", () => {
