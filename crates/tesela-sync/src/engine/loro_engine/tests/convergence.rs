@@ -1198,6 +1198,63 @@ async fn write_block_text_concurrent_rewrites_one_coherent_value() {
 }
 
 #[tokio::test]
+async fn peer_hidden_blank_reservations_become_distinct_authored_blocks() {
+    let note = blake3_note_id("local-only-blank-leaves");
+    let a_blank = [0xd1; 16];
+    let b_blank = [0xd2; 16];
+    let dev_a = DeviceId::from_bytes([0xa1; 16]);
+    let dev_b = DeviceId::from_bytes([0xb1; 16]);
+    let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+    let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+
+    upsert_block(&a, note, a_blank, "", None).await;
+    let a_reservation = a.export_doc_update(note, None).await.unwrap();
+    b.import_doc_update(note, &a_reservation).await.unwrap();
+    let a_bid = uuid::Uuid::from_bytes(a_blank).to_string();
+    assert!(!b.render_note(note).await.unwrap().contains(&a_bid));
+
+    let a_vv = a.doc_version(note).await;
+    let b_vv = b.doc_version(note).await;
+    upsert_block(&b, note, b_blank, "", None).await;
+    upsert_block(
+        &a,
+        note,
+        a_blank,
+        "Is our conductor arena duplicating terminal bench?",
+        None,
+    )
+    .await;
+    upsert_block(
+        &b,
+        note,
+        b_blank,
+        "OpenCode desktop app\nstatus:: todo\ntags:: Task",
+        None,
+    )
+    .await;
+
+    let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+    let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+    a.import_doc_update(note, &b_delta).await.unwrap();
+    b.import_doc_update(note, &a_delta).await.unwrap();
+
+    for engine in [&a, &b] {
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(rendered.contains("Is our conductor arena"));
+        assert!(rendered.contains("OpenCode desktop app"));
+        assert!(!rendered.contains("tags:: TaskIs our conductor arena"));
+        assert_eq!(
+            block_text(engine, note, a_blank).await.as_deref(),
+            Some("Is our conductor arena duplicating terminal bench?")
+        );
+        assert_eq!(
+            block_text(engine, note, b_blank).await.as_deref(),
+            Some("OpenCode desktop app\nstatus:: todo\ntags:: Task")
+        );
+    }
+}
+
+#[tokio::test]
 async fn write_block_text_empty_base_concurrent_char_merges() {
     // Shared EMPTY placeholder (the daily empty block); two devices type
     // DIFFERENT whole text into it concurrently, then merge. With no

@@ -1540,30 +1540,49 @@ async fn stale_partial_note_upsert_cannot_retire_legacy_root_content() {
 }
 
 #[tokio::test]
-async fn blank_blocks_are_kept_as_editing_surface() {
-    // Blank bullets are KEPT (reverted the 2026-05-29 drop): the web
-    // outliner needs a trailing empty bullet as the focusable editing
-    // surface for "empty" days. A note with a real block + a blank one
-    // round-trips BOTH.
-    let hlc = Arc::new(Hlc::new(test_device()));
-    let engine = LoroEngine::new(test_device(), hlc);
+async fn bare_leaf_blocks_are_hidden_from_rendered_projection() {
+    let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
     let note_id = [0x4b; 16];
-    let content = "- real <!-- bid:aaaaaaaa-0000-0000-0000-000000000001 -->\n-  <!-- bid:aaaaaaaa-0000-0000-0000-000000000002 -->\n";
+    let real_id = uuid::Uuid::from_bytes([0x4a; 16]);
+    let empty_id = uuid::Uuid::from_bytes([0x4b; 16]);
+    let content = format!("- real <!-- bid:{real_id} -->\n- <!-- bid:{empty_id} -->\n");
     engine
         .record_local(OpPayload::NoteUpsert {
             note_id,
-            display_alias: Some("b".into()),
-            title: "B".into(),
-            content: content.into(),
+            display_alias: Some("blank-leaf".into()),
+            title: "Blank leaf".into(),
+            content,
             created_at_millis: 1,
         })
         .await
         .unwrap();
+
     let rendered = engine.render_note(note_id).await.unwrap();
-    assert!(
-        rendered.contains("- real ") && rendered.contains("000000000002"),
-        "both real and blank blocks kept: {rendered:?}"
-    );
+    assert!(rendered.contains(&real_id.to_string()));
+    assert!(!rendered.contains(&empty_id.to_string()));
+}
+
+#[tokio::test]
+async fn empty_parent_with_child_remains_in_rendered_projection() {
+    let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+    let note_id = [0x4c; 16];
+    let parent_id = uuid::Uuid::from_bytes([0x4c; 16]);
+    let child_id = uuid::Uuid::from_bytes([0x4d; 16]);
+    let content = format!("- <!-- bid:{parent_id} -->\n  - child <!-- bid:{child_id} -->\n");
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("empty-parent".into()),
+            title: "Empty parent".into(),
+            content,
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+    let rendered = engine.render_note(note_id).await.unwrap();
+    assert!(rendered.contains(&parent_id.to_string()));
+    assert!(rendered.contains(&child_id.to_string()));
 }
 
 #[tokio::test]
