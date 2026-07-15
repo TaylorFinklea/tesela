@@ -1,8 +1,7 @@
 # Current State
-Branch: main (ahead 11, unpushed)
+Branch: fix/tesela-ju7-empty-leaves (verified; ready to merge)
 
 ## Plan
-- [ ] Fix tesela-ju7: bare leaf blocks local-only until meaningful; incident spec approved. Verify: bead `verify_cmd`
 - [x] Fix tesela-73b (P0): relocation boot recovery fails SOFT. Verify: `cargo test -p tesela-sync -p tesela-server` — 292 + 107 green, clippy clean. Committed `afae5d02`
 - [ ] Week-1 correctness floor, in order: tesela-gqd + tesela-fdd + tesela-zip (one relay-durability train) → tesela-9ut → tesela-h8m + tesela-507 → tesela-6hu. Verify: each bead's `verify_cmd`
 - [?] Taylor verifies installed `054ebeb4`: multiline child renders once, no stuck red lines, subtree persists once after relaunch

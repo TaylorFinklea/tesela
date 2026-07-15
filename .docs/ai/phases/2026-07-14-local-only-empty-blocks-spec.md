@@ -1,6 +1,6 @@
 # Local-only empty leaf blocks
 
-Bead: `tesela-ju7` · Status: approved design, not implemented
+Bead: `tesela-ju7` · Status: implemented and verified
 
 ## Incident
 
@@ -55,9 +55,27 @@ TDD order:
 4. Existing blank-block, materialization, relocation, and sync suites remain green.
 5. Client checks confirm no parser assumptions regress; no client behavior fork is introduced.
 
+## Implementation
+
+- Shared `NoteTree` projection pruning hides bare leaves without tombstoning Loro nodes.
+- Legacy `root.content` pruning deletes exact source ranges; retained frontmatter, page properties, lifted prose, fences, and EOF bytes remain stable.
+- `SyncEngine::has_live_block` lets iOS property/task-state writes make a hidden reservation meaningful without accepting unknown bids.
+- Two-replica incident regression uses creator splices and converges to two independent blocks without property absorption.
+- Independent review: three passes; final verdict ready to merge, no findings.
+
+## Verification
+
+- `cargo test -p tesela-core -p tesela-sync -p tesela-sync-ffi`: core 427, sync 296 + integration suites, FFI 46; green.
+- Targeted clippy for all three changed crates: green with allowances only for pre-existing Rust 1.96 lints/deprecations outside this change.
+- `pnpm --dir web test:unit`: 978 green.
+- `pnpm --dir web check`: 0 errors, 48 pre-existing warnings.
+- `bash scripts/check-ffi-drift.sh`: bindings in sync.
+- iOS simulator: 573 tests green on iPhone 17 Pro.
+- `git diff --check`: clean. Workspace `cargo fmt --all -- --check` remains red on pre-existing untouched formatting drift; changed core file and introduced hunks are rustfmt-clean.
+
 ## Live-data repair
 
-Out of implementation scope. After the code fix is verified, repair the already-corrupted 2026-07-14 daily through the engine in a separate backed-up operation, with explicit user approval. Do not edit only the materialized Markdown because the Loro document would overwrite it.
+Out of implementation scope. Bead `tesela-bw84` holds the separate backed-up repair and is labeled `user-verify`; do not execute without explicit user approval. Repair through `LoroEngine`, never Markdown-only.
 
 ## Non-goals
 
