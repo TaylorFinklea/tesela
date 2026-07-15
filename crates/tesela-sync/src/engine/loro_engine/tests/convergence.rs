@@ -1216,22 +1216,28 @@ async fn peer_hidden_blank_reservations_become_distinct_authored_blocks() {
     let a_vv = a.doc_version(note).await;
     let b_vv = b.doc_version(note).await;
     upsert_block(&b, note, b_blank, "", None).await;
-    upsert_block(
-        &a,
-        note,
-        a_blank,
-        "Is our conductor arena duplicating terminal bench?",
-        None,
-    )
-    .await;
-    upsert_block(
-        &b,
-        note,
-        b_blank,
-        "OpenCode desktop app\nstatus:: todo\ntags:: Task",
-        None,
-    )
-    .await;
+    let a_spliced = a
+        .splice_block_text(
+            note,
+            a_blank,
+            0,
+            0,
+            "Is our conductor arena duplicating terminal bench?",
+        )
+        .await
+        .unwrap();
+    let b_spliced = b
+        .splice_block_text(
+            note,
+            b_blank,
+            0,
+            0,
+            "OpenCode desktop app\nstatus:: todo\ntags:: Task",
+        )
+        .await
+        .unwrap();
+    assert_eq!(a_spliced, 1, "creator can splice its hidden reservation");
+    assert_eq!(b_spliced, 1, "peer can splice its own reservation");
 
     let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
     let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();

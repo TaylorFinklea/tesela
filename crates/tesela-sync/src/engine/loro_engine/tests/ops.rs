@@ -1540,6 +1540,33 @@ async fn stale_partial_note_upsert_cannot_retire_legacy_root_content() {
 }
 
 #[tokio::test]
+async fn legacy_root_content_prunes_reservation_without_rewriting_retained_bytes() {
+    let device = test_device();
+    let engine = LoroEngine::new(device, Arc::new(Hlc::new(device)));
+    let note_id = [0x70; 16];
+    let empty_id = uuid::Uuid::from_bytes([0x71; 16]);
+    let legacy = format!("# Heading\n\nLegacy prose\n\n- <!-- bid:{empty_id} -->\n");
+    let expected = "# Heading\n\nLegacy prose\n\n";
+    {
+        let doc = engine.doc_for_note_mut(note_id).await;
+        doc.get_map("root")
+            .insert("content", legacy.as_str())
+            .unwrap();
+        doc.commit();
+    }
+
+    assert_eq!(
+        engine.render_note_full(note_id).await.as_deref(),
+        Some(expected)
+    );
+    assert_eq!(
+        engine.render_note_full(note_id).await.as_deref(),
+        Some(expected),
+        "repeated legacy projection must be byte-stable"
+    );
+}
+
+#[tokio::test]
 async fn bare_leaf_blocks_are_hidden_from_rendered_projection() {
     let engine = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
     let note_id = [0x4b; 16];
@@ -3232,6 +3259,71 @@ async fn authoritative_engine_materializes_and_deletes_md_files() {
         .await
         .unwrap();
     assert!(!path.exists(), "NoteDelete removes the materialized file");
+}
+
+#[tokio::test]
+async fn authoritative_materialization_hides_reservation_until_creator_splices() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dev = test_device();
+    let notes = tmp.path().join("notes");
+    let engine = LoroEngine::with_dirs(
+        dev,
+        Arc::new(Hlc::new(dev)),
+        tmp.path().join("loro"),
+        Some(notes.clone()),
+    )
+    .await
+    .unwrap();
+    let note_id = blake3_note_id("local-reservation-materialization");
+    let kept_id = uuid::Uuid::from_bytes([0x72; 16]);
+    let empty_id = [0x73; 16];
+    let empty_uuid = uuid::Uuid::from_bytes(empty_id);
+    let content = format!("- kept <!-- bid:{kept_id} -->\n");
+    engine
+        .record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("local-reservation".into()),
+            title: "Local reservation".into(),
+            content,
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    engine
+        .record_local(OpPayload::BlockUpsert {
+            block_id: empty_id,
+            note_id,
+            parent_block_id: None,
+            order_key: "b".into(),
+            indent_level: 0,
+            text: String::new(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+
+    let path = notes.join("local-reservation.md");
+    let hidden = tokio::fs::read_to_string(&path).await.unwrap();
+    assert_eq!(hidden, format!("- kept <!-- bid:{kept_id} -->\n"));
+    {
+        let docs = engine.inner.docs.read().await;
+        let tree = docs.get(&note_id).unwrap().get_tree("blocks");
+        assert!(
+            find_node_by_block_id(&tree, &hex_id(&empty_id)).is_some(),
+            "hidden reservation remains in the creator's Loro tree"
+        );
+    }
+
+    assert_eq!(
+        engine
+            .splice_block_text(note_id, empty_id, 0, 0, "creator text")
+            .await
+            .unwrap(),
+        1
+    );
+    let visible = tokio::fs::read_to_string(path).await.unwrap();
+    assert!(visible.contains("creator text"));
+    assert!(visible.contains(&empty_uuid.to_string()));
 }
 
 #[tokio::test]

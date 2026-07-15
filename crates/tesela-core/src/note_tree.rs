@@ -242,27 +242,31 @@ fn block_is_bare(block: &FlatBlock) -> bool {
     block.text.trim().is_empty() && block.properties.is_empty()
 }
 
+fn bare_leaf_keep_mask(blocks: &[(u16, bool)]) -> Vec<bool> {
+    let mut keep = vec![true; blocks.len()];
+    let mut next_kept_indent: Option<u16> = None;
+    for (idx, (indent, is_bare)) in blocks.iter().enumerate().rev() {
+        let has_deeper_successor = next_kept_indent.is_some_and(|next| next > *indent);
+        if *is_bare && !has_deeper_successor {
+            keep[idx] = false;
+        } else {
+            next_kept_indent = Some(*indent);
+        }
+    }
+    keep
+}
+
 /// Remove bare leaf blocks from an already-parsed note tree.
 ///
 /// Empty structural parents are retained when they own a kept descendant.
 /// Returns `true` when at least one block was removed.
 pub fn prune_bare_leaf_blocks_in_tree(tree: &mut NoteTree) -> bool {
-    // Walk back-to-front, tracking the indent of every block we've
-    // decided to keep. A block has a deeper successor iff the most
-    // recent kept block (which, in reverse order, is the block
-    // immediately *after* it in the file) sits deeper than it.
-    let mut keep = vec![true; tree.blocks.len()];
-    let mut kept_indents: Vec<u16> = Vec::with_capacity(tree.blocks.len());
-    for (idx, block) in tree.blocks.iter().enumerate().rev() {
-        let has_deeper_successor = kept_indents
-            .last()
-            .is_some_and(|next_indent| *next_indent > block.indent);
-        if block_is_bare(block) && !has_deeper_successor {
-            keep[idx] = false;
-        } else {
-            kept_indents.push(block.indent);
-        }
-    }
+    let descriptors: Vec<(u16, bool)> = tree
+        .blocks
+        .iter()
+        .map(|block| (block.indent, block_is_bare(block)))
+        .collect();
+    let keep = bare_leaf_keep_mask(&descriptors);
     let changed = keep.iter().any(|kept| !kept);
     if changed {
         tree.blocks = std::mem::take(&mut tree.blocks)
@@ -274,19 +278,43 @@ pub fn prune_bare_leaf_blocks_in_tree(tree: &mut NoteTree) -> bool {
     changed
 }
 
+/// Remove bare leaf bullet source ranges without canonicalizing retained text.
+///
+/// This is used for legacy documents whose full Markdown still lives in
+/// `root.content`: lifted prose and unstamped bullets must remain byte-stable
+/// until that document is migrated to the structured tree representation.
 pub fn prune_bare_leaf_blocks(content: &str) -> String {
-    let mut tree = parse_note(content);
-    // Bail when nothing needs pruning. Critical for non-outliner
-    // notes (Query / Tag / Property / Template) whose bodies carry
-    // `key:: value` lines rather than bullets — `parse_note`'s
-    // round-trip only retains bullet blocks, so a no-op re-serialize
-    // would silently strip the user's `query::` definition. Returning
-    // the original content keeps every byte intact when we have
-    // nothing to do anyway.
-    if !prune_bare_leaf_blocks_in_tree(&mut tree) {
+    let (_, body) = split_frontmatter(content);
+    let (_, block_body) = split_page_properties(body);
+    let block_body_offset = content.len() - block_body.len();
+    let (raw, _) = scan_body_blocks(block_body);
+    let descriptors: Vec<(u16, bool)> = raw
+        .iter()
+        .map(|block| {
+            (
+                block.indent,
+                block.source == SourceKind::Bullet && block.text.trim().is_empty(),
+            )
+        })
+        .collect();
+    let keep = bare_leaf_keep_mask(&descriptors);
+    if keep.iter().all(|kept| *kept) {
         return content.to_string();
     }
-    serialize_note(&tree)
+
+    let mut pruned = String::with_capacity(content.len());
+    let mut copied_through = 0;
+    for (block, kept) in raw.iter().zip(keep) {
+        if kept {
+            continue;
+        }
+        let start = block_body_offset + block.source_range.start;
+        let end = block_body_offset + block.source_range.end;
+        pruned.push_str(&content[copied_through..start]);
+        copied_through = end;
+    }
+    pruned.push_str(&content[copied_through..]);
+    pruned
 }
 
 /// Serialize a [`NoteTree`] back to canonical markdown.
@@ -582,6 +610,7 @@ struct RawBlock {
     bid: Option<Uuid>,
     text: String,
     source: SourceKind,
+    source_range: std::ops::Range<usize>,
     fence: Option<FenceMarker>,
 }
 
@@ -607,6 +636,7 @@ fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) 
             };
             let closes = closes_fence(content_line, marker);
             let block = current.as_mut().expect("fence state has a current block");
+            block.source_range.end = line_range.end;
             block.text.push('\n');
             block.text.push_str(content_line);
             if closes {
@@ -631,13 +661,14 @@ fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) 
             }
             let fence = fence_marker(&text);
             if fence.is_some() {
-                fenced_ranges.push(line_range);
+                fenced_ranges.push(line_range.clone());
             }
             current = Some(RawBlock {
                 indent,
                 bid,
                 text,
                 source: SourceKind::Bullet,
+                source_range: line_range,
                 fence,
             });
             continue;
@@ -654,6 +685,7 @@ fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) 
             if let Some(continuation) = continuation_line(line, indent) {
                 let opening_fence = fence_marker(continuation);
                 let block = current.as_mut().expect("checked current bullet");
+                block.source_range.end = line_range.end;
                 // Preserve the legacy leading newline for an empty bullet's
                 // ordinary continuation/property line. A fence-first block
                 // is the one exception: its bid-only canonical bullet is
@@ -677,16 +709,18 @@ fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) 
         {
             if let Some(opening_fence) = fence_marker(line) {
                 raw.push(current.take().expect("checked lifted block"));
-                fenced_ranges.push(line_range);
+                fenced_ranges.push(line_range.clone());
                 current = Some(RawBlock {
                     indent: 0,
                     bid: None,
                     text: line.to_string(),
                     source: SourceKind::Lifted,
+                    source_range: line_range,
                     fence: Some(opening_fence),
                 });
             } else {
                 let block = current.as_mut().expect("checked lifted block");
+                block.source_range.end = line_range.end;
                 block.text.push('\n');
                 block.text.push_str(line);
             }
@@ -695,13 +729,14 @@ fn scan_body_blocks(body: &str) -> (Vec<RawBlock>, Vec<std::ops::Range<usize>>) 
 
         let fence = fence_marker(line);
         if fence.is_some() {
-            fenced_ranges.push(line_range);
+            fenced_ranges.push(line_range.clone());
         }
         current = Some(RawBlock {
             indent: 0,
             bid: None,
             text: line.to_string(),
             source: SourceKind::Lifted,
+            source_range: line_range,
             fence,
         });
     }
@@ -1654,14 +1689,53 @@ mod tests {
     }
 
     #[test]
+    fn prune_respects_sibling_boundary_before_later_deep_block() {
+        let empty_id = fixture_uuid(0x33);
+        let sibling_id = fixture_uuid(0x34);
+        let deep_id = fixture_uuid(0x35);
+        let content = format!(
+            "- <!-- bid:{empty_id} -->\n- Sibling <!-- bid:{sibling_id} -->\n    - Skipped-indent child <!-- bid:{deep_id} -->\n"
+        );
+
+        assert_eq!(
+            prune_bare_leaf_blocks(&content),
+            format!(
+                "- Sibling <!-- bid:{sibling_id} -->\n    - Skipped-indent child <!-- bid:{deep_id} -->\n"
+            )
+        );
+    }
+
+    #[test]
     fn prune_is_byte_identical_noop_on_non_outliner_body() {
-        // Regression: `parse_note → serialize_note` only retains bullet
-        // blocks, so a no-op re-serialize would strip `key:: value`
-        // body content from non-outliner notes (the `inbox` Query note,
-        // Tag pages, Property pages, Templates). The pruner must bail
-        // when nothing changes so those bodies survive every PUT.
+        // Regression: a source pruner must not canonicalize non-outliner
+        // bodies (`query::` definitions, Tag pages, Property pages, or
+        // Templates). When there is nothing to remove, every byte survives.
         let content = "---\ntitle: \"Views\"\ntype: \"Query\"\ntags: []\n---\n\nquery:: kind:block -has:status tag-in:Task\n";
         assert_eq!(prune_bare_leaf_blocks(content), content);
+    }
+
+    #[test]
+    fn prune_preserves_lifted_source_bytes_when_removing_bare_leaf() {
+        let empty_id = fixture_uuid(0x42);
+        let content = format!("# Heading\n\nLegacy prose\n\n- <!-- bid:{empty_id} -->\n");
+
+        assert_eq!(
+            prune_bare_leaf_blocks(&content),
+            "# Heading\n\nLegacy prose\n\n"
+        );
+    }
+
+    #[test]
+    fn prune_ignores_bullet_shaped_lines_inside_fences() {
+        let fenced_id = fixture_uuid(0x43);
+        let empty_id = fixture_uuid(0x44);
+        let content =
+            format!("```md\n- <!-- bid:{fenced_id} -->\n```\n\n- <!-- bid:{empty_id} -->\n");
+
+        assert_eq!(
+            prune_bare_leaf_blocks(&content),
+            format!("```md\n- <!-- bid:{fenced_id} -->\n```\n\n")
+        );
     }
 
     #[test]
