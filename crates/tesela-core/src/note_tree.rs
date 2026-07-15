@@ -242,8 +242,11 @@ fn block_is_bare(block: &FlatBlock) -> bool {
     block.text.trim().is_empty() && block.properties.is_empty()
 }
 
-pub fn prune_bare_leaf_blocks(content: &str) -> String {
-    let mut tree = parse_note(content);
+/// Remove bare leaf blocks from an already-parsed note tree.
+///
+/// Empty structural parents are retained when they own a kept descendant.
+/// Returns `true` when at least one block was removed.
+pub fn prune_bare_leaf_blocks_in_tree(tree: &mut NoteTree) -> bool {
     // Walk back-to-front, tracking the indent of every block we've
     // decided to keep. A block has a deeper successor iff the most
     // recent kept block (which, in reverse order, is the block
@@ -253,15 +256,26 @@ pub fn prune_bare_leaf_blocks(content: &str) -> String {
     for (idx, block) in tree.blocks.iter().enumerate().rev() {
         let has_deeper_successor = kept_indents
             .last()
-            .map(|next_indent| *next_indent > block.indent)
-            .unwrap_or(false);
-        let bare = block_is_bare(block);
-        if bare && !has_deeper_successor {
+            .is_some_and(|next_indent| *next_indent > block.indent);
+        if block_is_bare(block) && !has_deeper_successor {
             keep[idx] = false;
         } else {
             kept_indents.push(block.indent);
         }
     }
+    let changed = keep.iter().any(|kept| !kept);
+    if changed {
+        tree.blocks = std::mem::take(&mut tree.blocks)
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(block, kept)| kept.then_some(block))
+            .collect();
+    }
+    changed
+}
+
+pub fn prune_bare_leaf_blocks(content: &str) -> String {
+    let mut tree = parse_note(content);
     // Bail when nothing needs pruning. Critical for non-outliner
     // notes (Query / Tag / Property / Template) whose bodies carry
     // `key:: value` lines rather than bullets — `parse_note`'s
@@ -269,16 +283,9 @@ pub fn prune_bare_leaf_blocks(content: &str) -> String {
     // would silently strip the user's `query::` definition. Returning
     // the original content keeps every byte intact when we have
     // nothing to do anyway.
-    let any_dropped = keep.iter().any(|k| !k);
-    if !any_dropped {
+    if !prune_bare_leaf_blocks_in_tree(&mut tree) {
         return content.to_string();
     }
-    tree.blocks = tree
-        .blocks
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(b, k)| if k { Some(b) } else { None })
-        .collect();
     serialize_note(&tree)
 }
 
@@ -1565,6 +1572,31 @@ mod tests {
     }
 
     // ── prune_bare_leaf_blocks ───────────────────────────────────────────
+
+    #[test]
+    fn prune_tree_drops_bare_leaf_but_keeps_meaningful_sibling() {
+        let mut tree = parse_note(&format!(
+            "- Real <!-- bid:{} -->\n- <!-- bid:{} -->\n",
+            fixture_uuid(0x50),
+            fixture_uuid(0x51),
+        ));
+
+        assert!(prune_bare_leaf_blocks_in_tree(&mut tree));
+        assert_eq!(tree.blocks.len(), 1);
+        assert_eq!(tree.blocks[0].text, "Real");
+    }
+
+    #[test]
+    fn prune_tree_keeps_empty_parent_with_child() {
+        let mut tree = parse_note(&format!(
+            "- <!-- bid:{} -->\n  - Child <!-- bid:{} -->\n",
+            fixture_uuid(0x52),
+            fixture_uuid(0x53),
+        ));
+
+        assert!(!prune_bare_leaf_blocks_in_tree(&mut tree));
+        assert_eq!(tree.blocks.len(), 2);
+    }
 
     #[test]
     fn prune_drops_trailing_empty_bullets() {
