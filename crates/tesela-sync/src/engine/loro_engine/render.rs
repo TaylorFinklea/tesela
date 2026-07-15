@@ -290,8 +290,9 @@ fn doc_frontmatter(doc: &LoroDoc) -> Option<String> {
 /// body — which equals what materialization writes to disk and what the
 /// index derives tags/links from. Lean (current-version) docs reconstruct
 /// from the tree; pre-dedup docs that still carry the full markdown on root
-/// `content` return it verbatim (matching the old derivation exactly until
-/// a reseed converts them).
+/// `content` pass through the same bare-leaf pruner (byte-identical when no
+/// reservation is removed), matching the tree-backed projection contract until
+/// a reseed converts them.
 pub(super) fn doc_full_markdown(doc: &LoroDoc) -> String {
     let content = doc
         .get_map("root")
