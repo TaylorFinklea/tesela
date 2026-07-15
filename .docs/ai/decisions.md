@@ -789,3 +789,13 @@ canceled the native drag but left `selecting` latched, permanently rejecting
 later attempts. The custom payload remains the preferred exact source/root
 proof; the text marker is an opaque WebKit compatibility locator, not a second
 relocation protocol.
+
+### 2026-07-14 — Untouched empty leaf blocks are local-only until meaningful
+
+A live two-replica incident proved that synchronizing a visible empty leaf lets
+independent device entries reuse one block ID; Loro then correctly merges them
+as one logical block. Tesela will omit bare leaf reservations from materialized
+Markdown and indexing while preserving empty structural parents. Text, tags,
+properties, task state, or a child make the block meaningful and visible.
+Same-block concurrent editing remains unchanged. Full design and evidence:
+`phases/2026-07-14-local-only-empty-blocks-spec.md` (`tesela-ju7`).
