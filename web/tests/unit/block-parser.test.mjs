@@ -102,6 +102,25 @@ test("parseBlocks strips the owning rightmost bid and preserves earlier literal 
   assert.deepEqual(blocks[0].tags, ["Issue"]);
 });
 
+test("tab-prefixed Markdown list continuations remain inside their owning block", () => {
+  const bid = "e07cb4d8-58b2-4a13-a981-cf0e8be88e15";
+  const body = [
+    `  - - Pi <!-- bid:${bid} -->`,
+    "    \t- pi install npm:@quintinshaw/pi-dynamic-workflows",
+    "    \t- /trust",
+  ].join("\n");
+
+  const blocks = parseBlocks("2026-07-14", body);
+
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].bid, bid);
+  assert.equal(
+    blocks[0].raw_text,
+    "- Pi\n\t- pi install npm:@quintinshaw/pi-dynamic-workflows\n\t- /trust",
+  );
+  assert.equal(renderBlockBody(blocks), body);
+});
+
 test("canonical lifted heading, prose, and fence display and edit round-trip", () => {
   const headingBid = "11111111-1111-1111-1111-111111111111";
   const proseBid = "22222222-2222-2222-2222-222222222222";

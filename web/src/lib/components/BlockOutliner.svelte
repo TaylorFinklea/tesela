@@ -81,6 +81,7 @@
     blockMoveDragHasSupportedType,
     classifyDropPlacement,
     extractSubtree,
+    isBlockRelocationTarget,
     moveSubtreeDown,
     moveSubtreeUnder,
     moveSubtreeUp,
@@ -2548,13 +2549,14 @@
   >
     {#each visibleBlocks as block, vi (stableBlockKey(block))}
       {@const displayIndent = block.indent_level - drillRootIndent}
+      {@const blockIsRelocationTarget = isBlockRelocationTarget(relocation?.targetBid ?? null, block.bid)}
       <div
         data-block-vi={vi}
         data-note-id={noteId}
         data-block-bid={block.bid ?? undefined}
         data-move-key-target
         data-move-invalid={invalidRelocationTarget(block) ? "true" : undefined}
-        data-drop-placement={relocation && relocation.targetBid === block.bid ? relocation.placement ?? undefined : undefined}
+        data-drop-placement={blockIsRelocationTarget ? relocation?.placement ?? undefined : undefined}
         data-move-source={block.bid && relocationSourceBids.has(block.bid) ? "true" : undefined}
         ondragover={(event) => handleRelocationDragOver(event, block)}
         ondrop={(event) => handleRelocationDrop(event, block)}
@@ -2562,10 +2564,10 @@
           {outlinerHasFocus && focusedIndex === vi ? 'bg-accent/40' : ''}
           {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}
           {block.bid && relocationSourceBids.has(block.bid) ? (relocation?.pending ? 'opacity-60 bg-primary/10' : 'bg-primary/10 ring-1 ring-primary/20 rounded-md') : ''}
-          {relocation && relocation.targetBid === block.bid && relocation.placement === 'inside' ? 'bg-primary/15 ring-1 ring-primary/50 rounded-md' : ''}
-          {relocation && relocation.targetBid === block.bid && relocation.placement !== 'inside' ? `after:content-[''] after:absolute after:left-0 after:right-0 after:h-0.5 after:bg-primary after:z-10` : ''}
-          {relocation && relocation.targetBid === block.bid && relocation.placement === 'before' ? 'after:top-0' : ''}
-          {relocation && relocation.targetBid === block.bid && relocation.placement === 'after' ? 'after:bottom-0' : ''}"
+          {blockIsRelocationTarget && relocation?.placement === 'inside' ? 'bg-primary/15 ring-1 ring-primary/50 rounded-md' : ''}
+          {blockIsRelocationTarget && relocation?.placement !== 'inside' ? `after:content-[''] after:absolute after:left-0 after:right-0 after:h-0.5 after:bg-primary after:z-10` : ''}
+          {blockIsRelocationTarget && relocation?.placement === 'before' ? 'after:top-0' : ''}
+          {blockIsRelocationTarget && relocation?.placement === 'after' ? 'after:bottom-0' : ''}"
         style="padding-left: {displayIndent * 24}px;"
       >
         <!-- Threading lines -->

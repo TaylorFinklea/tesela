@@ -95,13 +95,18 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
 
     const trimStart = line.trimStart();
     if (trimStart === "") continue;
-    const spaces = line.length - trimStart.length;
+    const leadingWhitespace = line.slice(0, line.length - trimStart.length);
+    const spaces = leadingWhitespace.length;
     const indent = Math.floor(spaces / 2);
     // Bullet starts a block if the line begins with "- " (with content) OR
     // equals "-" / "- " exactly (empty-content block, used when tags/properties
-    // live on continuation lines).
+    // live on continuation lines). Canonical outliner indentation is spaces;
+    // a tab in the prefix belongs to multiline Markdown content inside the
+    // current block, even when that content itself begins with a list bullet.
     const trimmedEnd = trimStart.trimEnd();
-    const isBullet = trimStart.startsWith("- ") || trimmedEnd === "-";
+    const hasCanonicalIndent = /^ *$/.test(leadingWhitespace);
+    const isBullet = hasCanonicalIndent
+      && (trimStart.startsWith("- ") || trimmedEnd === "-");
     if (isBullet) {
       if (current) raw.push(current);
       const text = trimStart.startsWith("- ")

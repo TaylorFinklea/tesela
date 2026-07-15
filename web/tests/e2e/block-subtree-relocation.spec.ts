@@ -698,7 +698,20 @@ test.describe("block subtree relocation", () => {
       BIDS.directPointerRoot,
       BIDS.directPointerChild,
     ]);
+    await expect(row(page, BIDS.directPointerChild).locator(".cm-content"))
+      .toContainText("DIRECT_POINTER_MARKDOWN_PAYLOAD");
+    await expect(destination.locator("[data-drop-placement]"))
+      .toHaveCount(0);
     expect(occurrences(await noteContent(request, DESTINATION), BIDS.directPointerChild)).toBe(1);
+    expect(occurrences(await noteContent(request, DESTINATION), "DIRECT_POINTER_MARKDOWN_PAYLOAD")).toBe(1);
+
+    await page.reload();
+    await mountDay(page, SOURCE);
+    await mountDay(page, DESTINATION);
+    await expect(row(page, BIDS.directPointerChild).locator(".cm-content"))
+      .toContainText("DIRECT_POINTER_MARKDOWN_PAYLOAD");
+    await expect(destination.locator("[data-drop-placement]"))
+      .toHaveCount(0);
   });
 
   test("cross-day pointer moves honor before, inside, and after with exact hierarchy", async ({ page, request }) => {

@@ -110,14 +110,19 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
         if trim_start.is_empty() {
             continue;
         }
-        let spaces = line.len() - trim_start.len();
+        let leading_whitespace = &line[..line.len() - trim_start.len()];
+        let spaces = leading_whitespace.len();
         let indent = spaces / 2;
 
         // A bullet starts a block if the line begins with "- " (with content) OR
         // equals "-" / "- " exactly (an empty-content block, used for blocks
-        // whose tags/properties live on continuation lines).
+        // whose tags/properties live on continuation lines). Canonical outliner
+        // indentation is spaces; a tab in the prefix belongs to multiline
+        // Markdown content inside the current block.
         let trimmed_end = trim_start.trim_end();
-        let is_bullet = trim_start.starts_with("- ") || trimmed_end == "-";
+        let has_canonical_indent = leading_whitespace.bytes().all(|byte| byte == b' ');
+        let is_bullet =
+            has_canonical_indent && (trim_start.starts_with("- ") || trimmed_end == "-");
 
         if is_bullet {
             if let Some(b) = current.take() {
@@ -428,6 +433,25 @@ mod tests {
             Some(&"high".to_string())
         );
         assert_eq!(blocks[0].tags, vec!["Task"]);
+    }
+
+    #[test]
+    fn tab_prefixed_markdown_list_continuations_stay_in_the_owning_block() {
+        let bid = "e07cb4d8-58b2-4a13-a981-cf0e8be88e15";
+        let body = format!(
+            "  - - Pi <!-- bid:{bid} -->\n    \t- pi install npm:@quintinshaw/pi-dynamic-workflows\n    \t- /trust"
+        );
+
+        let blocks = parse_blocks("2026-07-14", &body);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].bid.as_deref(), Some(bid));
+        assert_eq!(
+            blocks[0].raw_text,
+            format!(
+                "- Pi <!-- bid:{bid} -->\n\t- pi install npm:@quintinshaw/pi-dynamic-workflows\n\t- /trust"
+            )
+        );
     }
 
     #[test]

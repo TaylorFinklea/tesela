@@ -322,6 +322,7 @@ try {
     `  - WEBKIT_FALLBACK_CHILD <!-- bid:${BIDS.webkitFallbackChild} -->`,
     `- DIRECT_POINTER_ROOT <!-- bid:${BIDS.directPointerRoot} -->`,
     `  - DIRECT_POINTER_CHILD <!-- bid:${BIDS.directPointerChild} -->`,
+    `    \t- DIRECT_POINTER_MARKDOWN_PAYLOAD`,
     "",
   ].join("\n"));
 

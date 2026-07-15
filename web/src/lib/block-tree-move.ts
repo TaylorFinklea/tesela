@@ -142,6 +142,13 @@ export const IDLE_BLOCK_MOVE_SESSION: BlockMoveSession = {
   placement: null,
 };
 
+export function isBlockRelocationTarget(
+  targetBid: string | null,
+  blockBid: string | null | undefined,
+): boolean {
+  return targetBid !== null && blockBid != null && targetBid === blockBid;
+}
+
 export function reduceBlockMoveSession(
   state: BlockMoveSession,
   action: BlockMoveSessionAction,

@@ -779,6 +779,16 @@ test("block move session covers start, target, submit, and success transitions",
   );
 });
 
+test("append placement does not target bidless block rows", () => {
+  assert.equal(typeof blockTreeMove.isBlockRelocationTarget, "function");
+  assert.equal(blockTreeMove.isBlockRelocationTarget(null, null), false);
+  assert.equal(blockTreeMove.isBlockRelocationTarget(null, "block-bid"), false);
+  assert.equal(blockTreeMove.isBlockRelocationTarget("target-bid", null), false);
+  assert.equal(blockTreeMove.isBlockRelocationTarget("target-bid", undefined), false);
+  assert.equal(blockTreeMove.isBlockRelocationTarget("target-bid", "other-bid"), false);
+  assert.equal(blockTreeMove.isBlockRelocationTarget("target-bid", "target-bid"), true);
+});
+
 test("cancel clears only selection while ordinary error clears submitted state", () => {
   const request = requestForSession();
   const selecting = blockTreeMove.reduceBlockMoveSession(
