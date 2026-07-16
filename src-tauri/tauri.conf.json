@@ -30,7 +30,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMDA1M0NEQzFGRkI3NDEKUldSQnQvL0J6Vk1BMHhlV0V2UllzM1VpTE1GQ0FKc21kOVRJTGNFOFJEQjZVUy9nblB1VnYvVTMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzRkU5NTQ0RjEyQUYwQjgKUldTNDhDcnhSSlGrawtaY0VzYkwxNTFtenlNQWkvUjE2TWtqN3c1VVlOWVgrMUZZWnhDN01OYUgK",
       "endpoints": [
         "https://github.com/TaylorFinklea/tesela/releases/latest/download/latest.json"
       ]

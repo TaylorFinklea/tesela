@@ -7,18 +7,20 @@
 # + `xcodebuild -exportArchive` with `destination: upload` (ExportOptions.plist)
 # uploads straight to App Store Connect / TestFlight.
 #
-# App Store Connect API auth — an ACCOUNT-LEVEL key (same one the other apps
-# use); override any of these via env:
-#   ASC_API_KEY_PATH   (default ~/.appstoreconnect/AuthKey_J79935N6P6.p8)
-#   ASC_API_KEY_ID     (default J79935N6P6)
-#   ASC_API_ISSUER_ID  (default fe27785a-1413-46ff-bd82-111de0da024f)
+# App Store Connect API auth comes from Tesela's Bitwarden Secrets Manager
+# mapping. Run this script through `bws-project run` so these are injected:
+#   TESELA_ASC_API_PRIVATE_KEY
+#   TESELA_ASC_API_KEY_ID
+#   TESELA_ASC_API_ISSUER_ID
+# The private key is materialized only in a mode-0700 temporary directory for
+# xcodebuild, then removed by the EXIT trap.
 #
 # One-time: the App Store Connect app record for `app.tesela.ios` must exist
 # (Apps -> + -> New App), and the Paid/Free agreements must be accepted.
 #
 # Run:
-#   scripts/ios-testflight.sh              # build -> archive -> upload to TestFlight
-#   scripts/ios-testflight.sh --no-upload  # stop after the archive (verify the build)
+#   bws-project run -- scripts/ios-testflight.sh
+#   bws-project run -- scripts/ios-testflight.sh --no-upload
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,16 +34,43 @@ EXPORT="$OUT/export"
 INFO="$IOS/Info.plist"
 RELEASE_NOTES="$OUT/release-notes.txt"
 
-ASC_KEY_PATH="${ASC_API_KEY_PATH:-$HOME/.appstoreconnect/AuthKey_J79935N6P6.p8}"
-ASC_KEY_ID="${ASC_API_KEY_ID:-J79935N6P6}"
-ASC_ISSUER="${ASC_API_ISSUER_ID:-fe27785a-1413-46ff-bd82-111de0da024f}"
-
 NO_UPLOAD=0
-[[ "${1:-}" == "--no-upload" ]] && NO_UPLOAD=1
-if [[ "$NO_UPLOAD" == 0 && ! -f "$ASC_KEY_PATH" ]]; then
-  echo "ASC API key not found at $ASC_KEY_PATH — set ASC_API_KEY_PATH (or use --no-upload)." >&2
-  exit 1
-fi
+case "${1:-}" in
+  --no-upload) NO_UPLOAD=1 ;;
+  --help|-h)
+    echo "Usage: scripts/ios-testflight.sh [--no-upload]"
+    echo ""
+    echo "  Full release: bws-project run -- scripts/ios-testflight.sh"
+    echo "  --no-upload  Build and archive without uploading to TestFlight."
+    exit 0
+    ;;
+  "") ;;
+  *) echo "Unknown flag: $1" >&2; exit 1 ;;
+esac
+
+for name in \
+  TESELA_ASC_API_PRIVATE_KEY \
+  TESELA_ASC_API_KEY_ID \
+  TESELA_ASC_API_ISSUER_ID
+do
+  if [[ -z "${!name:-}" ]]; then
+    echo "$name is missing — run through: bws-project run -- scripts/ios-testflight.sh" >&2
+    exit 1
+  fi
+done
+
+ASC_KEY_ID="$TESELA_ASC_API_KEY_ID"
+ASC_ISSUER="$TESELA_ASC_API_ISSUER_ID"
+ASC_CREDENTIAL_DIR="$(mktemp -d /private/tmp/tesela-asc.XXXXXX)"
+chmod 700 "$ASC_CREDENTIAL_DIR"
+ASC_KEY_PATH="$ASC_CREDENTIAL_DIR/AuthKey_${ASC_KEY_ID}.p8"
+printf '%s\n' "$TESELA_ASC_API_PRIVATE_KEY" > "$ASC_KEY_PATH"
+chmod 600 "$ASC_KEY_PATH"
+unset TESELA_ASC_API_PRIVATE_KEY TESELA_ASC_API_KEY_ID TESELA_ASC_API_ISSUER_ID
+cleanup_asc_credentials() {
+  rm -rf "$ASC_CREDENTIAL_DIR"
+}
+trap cleanup_asc_credentials EXIT
 
 echo "==> 1/6  Rust FFI static lib (aarch64-apple-ios, release)"
 cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios

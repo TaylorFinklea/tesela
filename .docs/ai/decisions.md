@@ -893,3 +893,31 @@ already materialized. Authoring before bootstrap was rejected because it mints
 a disjoint Loro lineage. A successfully imported tombstone remains absence and
 returns a conflict rather than silently recreating the deleted slug; explicit
 same-slug recreation stays in `tesela-7p8`.
+
+### 2026-07-16 — Project release secrets use shared Bitwarden storage; the desktop updater trust root is reset once
+
+Tesela's project release credentials live in the shared Bitwarden Secrets
+Manager project `finklea-dev`, namespaced with `TESELA_*` keys. Per-repository
+vault isolation was rejected by the owner as unnecessary; namespacing retains
+collision safety while one machine-account grant covers the developer
+projects. The macOS Keychain keeps only the machine bootstrap
+`BWS_ACCESS_TOKEN`. Release commands enter through `bws-project run`, and
+scripts materialize Apple key files or a Developer ID identity only inside
+mode-restricted temporary storage that is removed on exit.
+
+The lost Tauri updater private key makes the previously committed public key
+unrecoverable, so the owner explicitly approved a one-time trust-root reset and
+manual installation bridge for desktop 0.1.2. The replacement updater private
+key and password are `TESELA_TAURI_SIGNING_PRIVATE_KEY` and
+`TESELA_TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in Bitwarden; only the replacement
+public key is committed in `tauri.conf.json`. Future updater artifacts are
+rebuilt from the Developer-ID-signed, notarized, stapled app and then signed by
+the Tauri key, rather than publishing the pre-codesign tarball emitted during
+the initial bundle step.
+
+App Store Connect and APNs private keys were migrated from persistent `.p8`
+files to namespaced Bitwarden entries and the local files removed only after a
+value-by-value round-trip check. The Developer ID Application identity follows
+the same rule as an encrypted PKCS#12 in Bitwarden, imported into a disposable
+keychain for `codesign`; a long-lived local signing identity and the prior
+Keychain updater fallback are both superseded.

@@ -15,23 +15,18 @@ REPO="/Users/tfinklea/git/tesela"
 echo "==> 1/3  building web frontend (web/build)…"
 ( cd "$REPO/web" && npm run build )
 
-# Updater signing key. `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]` win if already
-# exported (e.g. CI secrets); otherwise pull from the macOS Keychain items
-# this repo's `tesela-ejn.1` setup created (`security add-generic-password`,
-# never a file on disk). Missing either just means `cargo tauri build` won't
-# emit updater artifacts. Tauri treats createUpdaterArtifacts=true plus a
-# configured public key as an error when the private key is unavailable, so
-# local builds explicitly override that one setting instead.
-if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
-  if TAURI_SIGNING_PRIVATE_KEY="$(security find-generic-password -a "$USER" -s tesela-desktop-updater-key -w 2>/dev/null)"; then
-    export TAURI_SIGNING_PRIVATE_KEY
-  fi
+# Release updater credentials live in Bitwarden Secrets Manager. Running this
+# through `bws-project run -- scripts/build-desktop.sh` injects the TESELA_*
+# names; discard ambient Tauri credentials, then map only the BWS names without
+# persisting them locally.
+unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+if [[ -n "${TESELA_TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$TESELA_TAURI_SIGNING_PRIVATE_KEY"
 fi
-if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && command -v security >/dev/null 2>&1; then
-  if TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -a "$USER" -s tesela-desktop-updater-key-password -w 2>/dev/null)"; then
-    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-  fi
+if [[ -n "${TESELA_TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$TESELA_TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
 fi
+unset TESELA_TAURI_SIGNING_PRIVATE_KEY TESELA_TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 echo "==> 2/3  bundling desktop app…"
 TAURI_CONFIG_ARGS=()
