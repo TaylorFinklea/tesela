@@ -30,6 +30,7 @@ OUT="$ROOT/build/ios"
 ARCHIVE="$OUT/Tesela.xcarchive"
 EXPORT="$OUT/export"
 INFO="$IOS/Info.plist"
+RELEASE_NOTES="$OUT/release-notes.txt"
 
 ASC_KEY_PATH="${ASC_API_KEY_PATH:-$HOME/.appstoreconnect/AuthKey_J79935N6P6.p8}"
 ASC_KEY_ID="${ASC_API_KEY_ID:-J79935N6P6}"
@@ -47,6 +48,7 @@ cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios
 
 echo "==> 2/6  FFI binding drift check (regenerate + diff — stale bindings abort the release)"
 scripts/check-ffi-drift.sh
+scripts/check-release-notes-drift.sh
 
 echo "==> 3/6  resolve SwiftPM packages (+ heal the SwiftWhisper submodule if it flakes)"
 # SwiftWhisper pulls a `whisper.cpp` git submodule that SwiftPM sometimes fails
@@ -85,11 +87,15 @@ echo "==> 5/6  stamp the next build number + archive (Release, generic iOS)"
 # project.yml is the source of truth that survives the next regen.
 PREV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
 BUILDNO=$((PREV + 1))
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
+node scripts/changelog.mjs validate --platform ios --version "$APP_VERSION" --build "$BUILDNO"
+IOS_RELEASE_ID="$(node -p "require('./release-notes/releases.json').current.ios")"
+mkdir -p "$OUT"
+node scripts/changelog.mjs render --release "$IOS_RELEASE_ID" --format plain > "$RELEASE_NOTES"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$INFO"
 /usr/bin/sed -i '' -E "s/^([[:space:]]*CFBundleVersion:).*/\1 \"$BUILDNO\"/" "$IOS/project.yml"
-APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
 echo "         version $APP_VERSION (build $BUILDNO)  — commit project.yml + Info.plist after the upload"
-mkdir -p "$OUT"
+echo "         release notes: $RELEASE_NOTES"
 /bin/rm -rf "$ARCHIVE"
 xcodebuild archive \
   -project "$PROJECT" -scheme "$SCHEME" -configuration Release \

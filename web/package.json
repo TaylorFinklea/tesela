@@ -13,6 +13,7 @@
 		"lint": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"generate:commands": "node scripts/generate-command-manifest.mjs",
 		"check:manifest": "node scripts/check-manifest-fresh.mjs",
+		"check:changelog": "node ../scripts/changelog.mjs validate && bash ../scripts/check-release-notes-drift.sh",
 		"test:unit": "node --test 'tests/unit/**/*.test.mjs'",
 		"test:perf": "node tests/perf/run.mjs",
 		"test:e2e": "node tests/e2e/run.mjs"

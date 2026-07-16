@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "current": {
+    "web": "2026-07-15.desktop-0.1.2",
+    "desktop": "2026-07-15.desktop-0.1.2",
+    "ios": "2026-07-15.ios-1.1-80"
+  },
+  "releases": [
+    {
+      "id": "2026-07-15.ios-1.1-80",
+      "publishedAt": "2026-07-15T22:00:00Z",
+      "title": "See what changed",
+      "summary": "Release notes now live inside Tesela, alongside sturdier multi-device recovery.",
+      "platforms": ["ios"],
+      "versions": {
+        "ios": {
+          "marketing": "1.1",
+          "build": "80"
+        }
+      },
+      "new": [
+        "Read the latest Tesela changes without leaving the app.",
+        "Browse earlier iPhone and iPad releases from Settings or the command palette."
+      ],
+      "fixed": [
+        "Sync recovery now protects newer relay snapshots and can replay retained changes before falling back to a full snapshot.",
+        "Moving a block to another daily note keeps its children together and persists after sync and relaunch."
+      ],
+      "important": [
+        "Tesela shows each release once after onboarding; you can reopen it anytime from Settings."
+      ]
+    },
+    {
+      "id": "2026-07-15.desktop-0.1.2",
+      "publishedAt": "2026-07-15T21:00:00Z",
+      "title": "Sharper daily work",
+      "summary": "A built-in What’s New view joins more predictable block moves between daily notes.",
+      "platforms": ["web", "desktop"],
+      "versions": {
+        "desktop": "0.1.2"
+      },
+      "new": [
+        "See the latest changes when Tesela updates, then revisit older releases from Settings.",
+        "Drag a block and all of its children from one daily note to another."
+      ],
+      "fixed": [
+        "Multiline blocks no longer appear as phantom children or leave the placement guide stuck after a move.",
+        "Dropping into blank day space or the body of a nested block now lands where the placement guide shows."
+      ],
+      "important": [
+        "Tesela shows each release once after an update; the What’s New command always opens it again."
+      ]
+    },
+    {
+      "id": "2026-07-14.ios-1.1-79",
+      "publishedAt": "2026-07-14T07:41:40Z",
+      "title": "Move work between days",
+      "summary": "Daily-note blocks can move without losing their structure.",
+      "platforms": ["ios"],
+      "versions": {
+        "ios": {
+          "marketing": "1.1",
+          "build": "79"
+        }
+      },
+      "new": [
+        "Use Move to… to relocate a block and its children to another daily note."
+      ],
+      "fixed": [
+        "Moved subtrees keep their identity and stay moved after sync and relaunch."
+      ],
+      "important": []
+    },
+    {
+      "id": "2026-07-08.ios-1.1-75",
+      "publishedAt": "2026-07-08T20:49:30Z",
+      "title": "Dictation as you speak",
+      "summary": "On-device transcription now appears live instead of arriving only at the end.",
+      "platforms": ["ios"],
+      "versions": {
+        "ios": {
+          "marketing": "1.1",
+          "build": "75"
+        }
+      },
+      "new": [
+        "Watch your words appear while FluidAudio transcribes on device."
+      ],
+      "fixed": [
+        "Shorter streaming windows reduce the delay between speaking and seeing text."
+      ],
+      "important": []
+    },
+    {
+      "id": "2026-07-02.desktop-0.1.1",
+      "publishedAt": "2026-07-02T17:05:06Z",
+      "title": "Find and shape your notes",
+      "summary": "Search, saved views, and signed desktop updates make Tesela easier to rely on every day.",
+      "platforms": ["web", "desktop"],
+      "versions": {
+        "desktop": "0.1.1"
+      },
+      "new": [
+        "Search note content from the command palette and jump directly to the matching block.",
+        "Work with saved views as compact tables and touch-friendly kanban boards.",
+        "The desktop app can check for and install signed updates."
+      ],
+      "fixed": [
+        "The ambient sync indicator now distinguishes a healthy relay from a stale or disconnected one."
+      ],
+      "important": [
+        "Desktop updates are signed and verified before installation."
+      ]
+    },
+    {
+      "id": "2026-06-04.desktop-0.1.0",
+      "publishedAt": "2026-06-04T06:56:51Z",
+      "title": "The Graphite daily workspace",
+      "summary": "Daily notes, agenda, views, search, and library now share one focused shell.",
+      "platforms": ["web", "desktop"],
+      "versions": {
+        "desktop": "0.1.0"
+      },
+      "new": [
+        "Use the Graphite workspace across the hosted web app and the native Mac app.",
+        "Move between Daily, Agenda, Views, Library, and Search without leaving the keyboard-first shell."
+      ],
+      "fixed": [],
+      "important": [
+        "The Mac app opens one mosaic at a time so two desktop writers cannot edit the same local data concurrently."
+      ]
+    }
+  ]
+}

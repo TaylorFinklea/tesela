@@ -38,14 +38,16 @@ struct AppShell: View {
     /// `@State`) so a voice transcript can be appended reliably even
     /// though the `tabViewBottomAccessory` recreates the bar.
     @StateObject private var composer = CaptureComposer()
+    @StateObject private var releaseNotes = ReleaseNotesPresenter()
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TeselaAppearance(controller: appearance) {
-            if onboardingComplete {
-                shell
+            Group {
+                if onboardingComplete {
+                    shell
                     .task {
                         mosaicRegistry.willChangeActiveProfile = { [weak mosaic, weak hubActivation] in
                             mosaic?.closeBackendMutationAdmissionForActivation()
@@ -216,14 +218,19 @@ struct AppShell: View {
                         guard let text = transcript.text(ifCurrent: voiceCaptureScope) else { return }
                         composer.append(text)
                     }
-            } else {
-                OnboardingView(
-                    onboardingComplete: $onboardingComplete,
-                    backend: backend,
-                    mosaic: mosaic,
-                    registry: mosaicRegistry
-                )
+                } else {
+                    OnboardingView(
+                        onboardingComplete: $onboardingComplete,
+                        backend: backend,
+                        mosaic: mosaic,
+                        registry: mosaicRegistry
+                    )
+                }
             }
+            .releaseNotesPresentation(
+                presenter: releaseNotes,
+                onboardingComplete: onboardingComplete
+            )
         }
     }
 

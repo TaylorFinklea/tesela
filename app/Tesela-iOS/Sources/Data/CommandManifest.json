@@ -267,6 +267,32 @@
     "description": null
   },
   {
+    "id": "move-block-subtree",
+    "verb": "move-block-subtree",
+    "label": "Move block subtree",
+    "glyph": "↕",
+    "category": "tile",
+    "shortcut": null,
+    "chord": [
+      "a",
+      "m"
+    ],
+    "surfaces": [
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "move",
+      "block",
+      "subtree",
+      "drag",
+      "daily"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "backlinks",
     "verb": "backlinks",
     "label": "Open Backlinks (follow)",
@@ -995,6 +1021,30 @@
     "description": null
   },
   {
+    "id": "whats-new",
+    "verb": "whats-new",
+    "label": "What’s New",
+    "glyph": "✦",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "release",
+      "notes",
+      "changes",
+      "changelog",
+      "update",
+      "new"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "new-note",
     "verb": "new",
     "label": "New note…",
@@ -1018,6 +1068,30 @@
     ],
     "takes_arg": true,
     "arg_prompt": "note title",
+    "description": null
+  },
+  {
+    "id": "toggle-favorite",
+    "verb": "favorite",
+    "label": "Toggle Favorite",
+    "glyph": "★",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "favorite",
+      "favorites",
+      "star",
+      "bookmark",
+      "pin",
+      "pinned"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
     "description": null
   },
   {

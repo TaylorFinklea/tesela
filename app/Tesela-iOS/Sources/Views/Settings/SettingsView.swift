@@ -15,6 +15,7 @@ struct SettingsView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openReleaseNotes) private var openReleaseNotes
     @EnvironmentObject private var mosaicRegistry: MosaicRegistry
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
@@ -172,10 +173,26 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Text("Tesela for iPhone · v0.4.1 · tesela-core 0.9.2")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(theme.fgFaint)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                    Button(action: showReleaseNotesAfterDismissal) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(theme.accentSpark)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("What’s New")
+                                    .foregroundStyle(theme.fgDefault)
+                                Text(ReleaseNotesAppVersion.displayName())
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(theme.fgFaint)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(theme.fgFaint)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings-whats-new")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -214,5 +231,13 @@ struct SettingsView: View {
             if case .downloaded = $0 { return true } else { return false }
         }.count
         return "\(downloaded)/\(TranscriptionCatalog.all.count) downloaded"
+    }
+
+    private func showReleaseNotesAfterDismissal() {
+        dismiss()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            openReleaseNotes()
+        }
     }
 }

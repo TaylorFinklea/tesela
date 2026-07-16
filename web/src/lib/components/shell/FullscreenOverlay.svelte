@@ -19,6 +19,7 @@
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import SettingsOverlay from "$lib/components/shell/SettingsOverlay.svelte";
+  import ReleaseNotesOverlay from "$lib/components/shell/ReleaseNotesOverlay.svelte";
   // Uses app role tokens from app.css; Graphite bridges those roles in
   // graphite/tokens.css so the fixed overlay inherits the active chrome.
   import {
@@ -100,6 +101,10 @@
     <div class="overlay-body">
       <pre class="keymap-pre">{keymapText}</pre>
     </div>
+  </div>
+{:else if open && kind === "release-notes"}
+  <div class="overlay">
+    <ReleaseNotesOverlay />
   </div>
 {/if}
 

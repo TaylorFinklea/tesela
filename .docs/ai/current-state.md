@@ -1,11 +1,11 @@
 # Current State
-Branch: main (`tesela-8h0` changelog design approved; implementation not started)
+Branch: `feat/tesela-8h0-changelog`
 
 ## Plan
-- [?] Taylor review `phases/2026-07-15-changelog-screen-spec.md`; Verify: named human approval
+- None.
 
 ## Blockers
-- Written-spec approval before implementation planning.
+- None.
 
 ## Open questions
 - None.

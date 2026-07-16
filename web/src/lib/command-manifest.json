@@ -1021,6 +1021,30 @@
     "description": null
   },
   {
+    "id": "whats-new",
+    "verb": "whats-new",
+    "label": "What’s New",
+    "glyph": "✦",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "release",
+      "notes",
+      "changes",
+      "changelog",
+      "update",
+      "new"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "new-note",
     "verb": "new",
     "label": "New note…",
