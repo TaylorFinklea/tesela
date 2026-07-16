@@ -7,7 +7,7 @@
 //! module is the glue: cursor persistence, the per-tick function,
 //! and the JSON status response the web settings page reads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -122,6 +122,8 @@ pub struct RelayState {
 /// for snapshot catch-up, log loudly, and move the cursor past so one
 /// poisoned envelope can't stall every later stream forever (audit A4).
 pub const MAX_APPLY_RETRIES: u32 = 5;
+
+type SnapshotBatchBySeq = BTreeMap<i64, Vec<(Vec<u8>, Vec<u8>)>>;
 
 impl RelayState {
     fn path(mosaic_root: &Path) -> PathBuf {
@@ -552,10 +554,27 @@ pub async fn tick(
 
     // ─── Targeted snapshot catch-up ──────────────────────────────────
     // Heal notes whose inbound apply failed or landed PENDING (and notes a
-    // partially-failed bootstrap queued): authoritatively re-import each
-    // from the relay's deposited snapshot (idempotent). Healed notes leave
-    // the queue and join the fan-out set; notes without a deposited
-    // snapshot stay queued for a later tick.
+    // partially-failed bootstrap queued). First re-read the exact retained op
+    // recorded in `catchup_since_seq` WITHOUT moving/acking the normal cursor;
+    // a transient apply failure can then heal even when no snapshot exists.
+    // Remaining notes fall back to authoritative snapshots (causal gaps,
+    // permanent poison, or bootstrap rows whose raw ops were already GC'd).
+    if !state.catchup_notes.is_empty() {
+        let raw = catchup_from_retained_ops(engine, &handle.client, &state.catchup_since_seq).await;
+        if !raw.healed.is_empty() {
+            applied_total += raw.healed.len() as u32;
+            state.catchup_notes.retain(|h| !raw.healed.contains(h));
+            for h in &raw.healed {
+                state.catchup_since_seq.remove(h);
+                if let Some(id) = parse_hex_note_id(h) {
+                    if !applied_note_ids.contains(&id) {
+                        applied_note_ids.push(id);
+                    }
+                }
+            }
+            applied_updates.extend(raw.applied_updates);
+        }
+    }
     if !state.catchup_notes.is_empty() {
         let healed = catchup_from_snapshots(engine, &handle.client, &state.catchup_notes).await;
         if !healed.is_empty() {
@@ -607,9 +626,10 @@ pub async fn tick(
     // others, and uncommitted batches re-produce next tick.
     let batches =
         tesela_sync::pack_loro_relay_batches(updates, tesela_sync::MAX_RELAY_PLAINTEXT_BYTES);
-    // Note ids successfully broadcast this tick — their heal-snapshots are
-    // deposited right after the loop (past-day convergence, 2026-06-28).
-    let mut broadcast_note_ids: Vec<[u8; 16]> = Vec::new();
+    // Note ids successfully broadcast this tick + the relay sequence that
+    // proves each update's recency. Their heal-snapshots are deposited right
+    // after the loop (past-day convergence, 2026-06-28).
+    let mut broadcast_note_seqs: HashMap<[u8; 16], i64> = HashMap::new();
     for (payload, committed) in batches {
         let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
             Ok(c) => c,
@@ -625,10 +645,10 @@ pub async fn tick(
             ciphertext,
         };
         match handle.client.put_envelope(envelope).await {
-            Ok((_seq, _ts)) => {
+            Ok((seq, _ts)) => {
                 engine.commit_broadcast_cursors(&committed).await;
                 for (nid, _vv) in &committed {
-                    broadcast_note_ids.push(*nid);
+                    broadcast_note_seqs.insert(*nid, seq);
                 }
                 sent_total += 1;
                 state.last_put_at = Some(now_secs_i64());
@@ -661,7 +681,7 @@ pub async fn tick(
     // deadlock). Additive — never touches the merge/apply path; best-effort.
     //
     // NO CURSOR REPAIR HERE (tesela-c7s F1, round 2). Every id in
-    // `broadcast_note_ids` was just PUT as a broadcast op and its cursor
+    // `broadcast_note_seqs` was just PUT as a broadcast op and its cursor
     // advanced by `commit_broadcast_cursors` above — for a note that was
     // stranded (stale-ahead / undecodable cursor), `produce_relay_updates`
     // already shipped a full-snapshot FALLBACK as that broadcast op (so peers
@@ -676,12 +696,15 @@ pub async fn tick(
     // sites that can land a note's content WITHOUT a prior broadcast+commit —
     // `deposit_snapshots` below (server) and `RelayTicker.depositSnapshotsIfDue`
     // (iOS) — where a stranded cursor is NOT otherwise re-anchored.
-    if !broadcast_note_ids.is_empty() {
-        let mut heal: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        // (note_id, content hash) pairs to record AFTER a successful deposit,
-        // so a failed deposit re-tries next tick instead of recording the hash.
-        let mut deposited_hashes: Vec<([u8; 16], u64)> = Vec::new();
-        for id in &broadcast_note_ids {
+    if !broadcast_note_seqs.is_empty() {
+        // Group snapshots by the relay seq of the successfully broadcast
+        // envelope that carried them. The PUT stays GC-inert (`covers_seq=0`)
+        // but each row keeps that positive recency sequence, so the relay's
+        // stale-write guard can reject an older peer without blocking this
+        // fresh heal deposit.
+        let mut heal_by_seq = SnapshotBatchBySeq::new();
+        let mut hashes_by_seq: BTreeMap<i64, Vec<([u8; 16], u64)>> = BTreeMap::new();
+        for (id, seq) in &broadcast_note_seqs {
             if not_genuine_this_tick.contains(id) {
                 continue;
             }
@@ -697,19 +720,22 @@ pub async fn tick(
                 if state.deposit_hashes.get(id) == Some(&h) {
                     continue;
                 }
-                deposited_hashes.push((*id, h));
-                heal.push((id.to_vec(), bytes));
+                hashes_by_seq.entry(*seq).or_default().push((*id, h));
+                heal_by_seq
+                    .entry(*seq)
+                    .or_default()
+                    .push((id.to_vec(), bytes));
             }
         }
-        if !heal.is_empty() {
+        for (snapshot_seq, heal) in heal_by_seq {
             match handle
                 .client
-                .put_snapshots_chunked(0, heal, deposit_chunk_budget_bytes())
+                .put_snapshots_chunked_at_seq(snapshot_seq, 0, heal, deposit_chunk_budget_bytes())
                 .await
             {
                 Ok(_) => {
                     // Record only on success — a failed deposit must re-try.
-                    for (id, h) in deposited_hashes {
+                    for (id, h) in hashes_by_seq.remove(&snapshot_seq).unwrap_or_default() {
                         state.deposit_hashes.insert(id, h);
                     }
                 }
@@ -1105,6 +1131,86 @@ pub(crate) async fn catchup_from_snapshots(
     healed
 }
 
+/// Result of re-reading exact raw envelopes retained for terminal apply
+/// failures. The caller folds the exact bytes back into the live-WS fan-out;
+/// the helper itself deliberately never touches cursor or ACK state.
+#[derive(Default)]
+struct RetainedOpCatchup {
+    healed: Vec<String>,
+    applied_updates: Vec<tesela_sync::LoroDocUpdate>,
+}
+
+/// Retry the exact note+seq updates protected by `catchup_since_seq` directly
+/// from the relay's durable op log. This makes the recorded "recovery path of
+/// last resort" reachable when a snapshot is absent or too large to deposit.
+/// `i64::MAX` bootstrap entries are skipped because their raw ops were already
+/// compacted before the client queued them. A replay that remains pending or
+/// fails stays queued for the snapshot fallback and a later tick.
+async fn catchup_from_retained_ops(
+    engine: &dyn tesela_sync::SyncEngine,
+    client: &RelayClient,
+    catchup_since_seq: &HashMap<String, i64>,
+) -> RetainedOpCatchup {
+    let targets: HashMap<[u8; 16], i64> = catchup_since_seq
+        .iter()
+        .filter_map(|(hex_id, seq)| {
+            if *seq <= 0 || *seq == i64::MAX {
+                return None;
+            }
+            parse_hex_note_id(hex_id).map(|id| (id, *seq))
+        })
+        .collect();
+    let Some(earliest) = targets.values().copied().min() else {
+        return RetainedOpCatchup::default();
+    };
+    let batch = match client.poll(earliest.saturating_sub(1)).await {
+        Ok(batch) => batch,
+        Err(e) => {
+            tracing::warn!("relay retained-op catch-up poll: {e}");
+            return RetainedOpCatchup::default();
+        }
+    };
+
+    let mut outcome = RetainedOpCatchup::default();
+    for (seq, env) in batch.rows {
+        let updates = match tesela_sync::decode_loro_relay_payload(&env.ciphertext) {
+            Ok(Some(updates)) => updates,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!("relay retained-op catch-up decode seq={seq}: {e}");
+                continue;
+            }
+        };
+        let pairs: Vec<([u8; 16], Vec<u8>)> = updates
+            .into_iter()
+            .filter(|u| targets.get(&u.doc) == Some(&seq))
+            .map(|u| (u.doc, u.update_bytes))
+            .collect();
+        if pairs.is_empty() {
+            continue;
+        }
+        let report = engine.apply_relay_updates(&pairs).await;
+        for (doc, bytes) in pairs {
+            let clean = report.applied.contains(&doc)
+                && !report.pending.contains(&doc)
+                && !report.failed.iter().any(|(failed, _)| failed == &doc);
+            if !clean {
+                continue;
+            }
+            let hex_id = hex::encode(doc);
+            if !outcome.healed.contains(&hex_id) {
+                tracing::info!("relay retained-op catch-up healed note {hex_id} from seq {seq}");
+                outcome.healed.push(hex_id);
+            }
+            outcome.applied_updates.push(tesela_sync::LoroDocUpdate {
+                doc,
+                update_bytes: bytes,
+            });
+        }
+    }
+    outcome
+}
+
 /// Hash a note's exported snapshot bytes for the per-note heal-deposit
 /// throttle. Only stability WITHIN a process run matters (the map is
 /// `#[serde(skip)]`), so the std hasher is sufficient — it distinguishes
@@ -1184,11 +1290,15 @@ mod tests {
     use super::*;
     use rand::RngCore;
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use tesela_relay::{router, AppState as RelayAppState};
     use tesela_sync::crypto::keys::GroupKey;
     use tesela_sync::device::DeviceId;
     use tesela_sync::group::GroupId;
-    use tesela_sync::{Hlc, LoroEngine, OpPayload, SyncEngine};
+    use tesela_sync::{
+        ContentHash, Hlc, LocalCursor, LoroEngine, OpPayload, PeerCursor, RelayApplyReport,
+        SyncEngine, SyncResult,
+    };
 
     async fn spawn_relay() -> (reqwest::Url, tempfile::TempDir, tokio::task::JoinHandle<()>) {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -1423,6 +1533,20 @@ mod tests {
             .find(|(id, _, _)| id == &NID_B.to_vec())
             .map(|(_, _, p)| p.clone())
             .expect("B deposited in the first pass");
+        let baseline_a_seq = snaps_1
+            .iter()
+            .find(|(id, _, _)| id == &NID_A.to_vec())
+            .map(|(_, seq, _)| *seq)
+            .expect("A snapshot has a recency sequence");
+        let baseline_b_seq = snaps_1
+            .iter()
+            .find(|(id, _, _)| id == &NID_B.to_vec())
+            .map(|(_, seq, _)| *seq)
+            .expect("B snapshot has a recency sequence");
+        assert!(
+            baseline_a_seq > 0 && baseline_b_seq > 0,
+            "broadcast heal rows carry the successful outbound relay seq"
+        );
 
         // Edit ONLY note A. Preserve the materialized bid, as real clients do;
         // a changed unstamped whole-note rewrite is intentionally ambiguous
@@ -1467,6 +1591,15 @@ mod tests {
             .find(|(id, _, _)| id == &NID_A.to_vec())
             .map(|(_, _, p)| p.clone())
             .expect("A re-deposited after its edit");
+        let a_seq_2 = snaps_2
+            .iter()
+            .find(|(id, _, _)| id == &NID_A.to_vec())
+            .map(|(_, seq, _)| *seq)
+            .unwrap();
+        assert!(
+            a_seq_2 > baseline_a_seq,
+            "A's changed snapshot advances from seq {baseline_a_seq} to {a_seq_2}"
+        );
         assert_ne!(
             a_payload,
             snaps_1
@@ -1486,6 +1619,15 @@ mod tests {
             b_payload_2, baseline_b_payload,
             "unchanged B was never re-sealed/re-sent — byte-identical AEAD ciphertext \
              proves the periodic deposit skipped it (a re-upload would randomize the nonce)"
+        );
+        let b_seq_2 = snaps_2
+            .iter()
+            .find(|(id, _, _)| id == &NID_B.to_vec())
+            .map(|(_, seq, _)| *seq)
+            .unwrap();
+        assert_eq!(
+            b_seq_2, baseline_b_seq,
+            "unchanged B keeps its original row sequence"
         );
     }
 
@@ -1607,6 +1749,118 @@ mod tests {
         };
         let (seq, _ts) = client.put_envelope(env).await.expect("put envelope");
         seq
+    }
+
+    /// Test-only engine that makes the normal inbound path fail exactly its
+    /// bounded retry budget, then delegates to a real LoroEngine. A reachable
+    /// retained-op recovery path therefore heals on its first replay; a
+    /// snapshot-only implementation stays permanently queued because this
+    /// fixture deliberately deposits no snapshot.
+    struct FailThenApplyEngine {
+        inner: LoroEngine,
+        failures_remaining: AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl SyncEngine for FailThenApplyEngine {
+        fn device(&self) -> DeviceId {
+            self.inner.device()
+        }
+
+        async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
+            self.inner.record_local(payload).await
+        }
+
+        async fn local_cursor(&self) -> SyncResult<LocalCursor> {
+            self.inner.local_cursor().await
+        }
+
+        async fn peer_cursor(&self, peer: DeviceId) -> SyncResult<PeerCursor> {
+            self.inner.peer_cursor(peer).await
+        }
+
+        async fn ack_peer(&self, peer: DeviceId, ack: PeerCursor) -> SyncResult<()> {
+            self.inner.ack_peer(peer, ack).await
+        }
+
+        async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return RelayApplyReport {
+                    failed: updates
+                        .iter()
+                        .map(|(id, _)| (*id, "simulated transient apply failure".to_string()))
+                        .collect(),
+                    ..Default::default()
+                };
+            }
+            self.inner.apply_relay_updates(updates).await
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_op_replays_after_terminal_apply_failure_without_snapshot() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+        const NID: [u8; 16] = [0x3f; 16];
+
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb7; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        engine_b
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID,
+                display_alias: Some("retained-op".into()),
+                title: "retained-op".into(),
+                content: "- recovered from retained op\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let update = engine_b.export_doc_update(NID, None).await.unwrap();
+        let client_b = RelayClient::new(base_url.clone(), group, dev_b, key.clone());
+        client_b.register_or_recover().await.expect("b register");
+        let retained_seq = put_loro_envelope(&client_b, dev_b, group, &[(NID, update)]).await;
+        assert!(
+            client_b.fetch_snapshots().await.unwrap().1.is_empty(),
+            "fixture must leave snapshot fallback unavailable"
+        );
+
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa7; 16]);
+        let engine_a = FailThenApplyEngine {
+            inner: engine_in(&a_tmp, dev_a).await,
+            failures_remaining: AtomicU32::new(MAX_APPLY_RETRIES),
+        };
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+
+        for _ in 0..MAX_APPLY_RETRIES {
+            tick(&engine_a, &ident, &handle_a).await.unwrap();
+        }
+
+        let rendered = engine_a.inner.render_note(NID).await.unwrap_or_default();
+        assert!(
+            rendered.contains("recovered from retained op"),
+            "the first post-budget retained-op replay heals the note: {rendered:?}"
+        );
+        let state = handle_a.state.read().await;
+        assert!(state.inbound_cursor >= retained_seq);
+        assert!(!state.catchup_notes.contains(&hex::encode(NID)));
+        assert!(!state.catchup_since_seq.contains_key(&hex::encode(NID)));
     }
 
     /// A4: an envelope whose per-note apply FAILS must not be acked past.

@@ -21,10 +21,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use hmac::{Hmac, Mac};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
-use crate::crypto::aead::{envelope_aad, open as aead_open, seal as aead_seal};
+use crate::crypto::aead::{
+    envelope_aad, open as aead_open, seal as aead_seal,
+    seal_with_nonce_prefix as aead_seal_with_nonce_prefix,
+};
 use crate::crypto::keys::GroupKey;
 use crate::crypto::relay_auth::{
     body_hash_hex, canonical_request, compute_request_mac, derive_relay_auth_key, intent_msg,
@@ -394,7 +399,21 @@ impl RelayClient {
         covers_seq: i64,
         snapshots: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> SyncResult<u64> {
-        let entries = self.seal_snapshot_entries(&snapshots)?;
+        self.put_snapshots_at_seq(covers_seq, covers_seq, snapshots)
+            .await
+    }
+
+    /// Deposit snapshots whose per-entry recency is `snapshot_seq` while the
+    /// batch independently advances compaction only through `covers_seq`.
+    /// Keeping these values separate lets a non-final chunk use
+    /// `covers_seq = 0` without making its rows stale-at-zero.
+    pub async fn put_snapshots_at_seq(
+        &self,
+        snapshot_seq: i64,
+        covers_seq: i64,
+        snapshots: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> SyncResult<u64> {
+        let entries = self.seal_snapshot_entries(snapshot_seq, &snapshots)?;
         let wire: Vec<serde_json::Value> = entries.into_iter().map(|e| e.wire).collect();
         match self.send_snapshot_batch(covers_seq, &wire).await? {
             SnapshotSendStatus::Accepted(gc) => Ok(gc),
@@ -446,12 +465,25 @@ impl RelayClient {
         snapshots: Vec<(Vec<u8>, Vec<u8>)>,
         budget_bytes: usize,
     ) -> SyncResult<SnapshotDepositReport> {
+        self.put_snapshots_chunked_at_seq(covers_seq, covers_seq, snapshots, budget_bytes)
+            .await
+    }
+
+    /// Chunked snapshot deposit with independent per-entry recency and batch
+    /// compaction sequences. See [`Self::put_snapshots_at_seq`].
+    pub async fn put_snapshots_chunked_at_seq(
+        &self,
+        snapshot_seq: i64,
+        covers_seq: i64,
+        snapshots: Vec<(Vec<u8>, Vec<u8>)>,
+        budget_bytes: usize,
+    ) -> SyncResult<SnapshotDepositReport> {
         let mut report = SnapshotDepositReport::default();
         if snapshots.is_empty() {
             return Ok(report);
         }
         let mut queue: std::collections::VecDeque<SealedSnapshotEntry> =
-            self.seal_snapshot_entries(&snapshots)?.into();
+            self.seal_snapshot_entries(snapshot_seq, &snapshots)?.into();
         // Headroom for the `{"covers_seq":…,"snapshots":[…]}` wrapper.
         const ENVELOPE_OVERHEAD: usize = 64;
         let mut budget = budget_bytes.max(1);
@@ -520,26 +552,38 @@ impl RelayClient {
     /// JSON entry, with the serialized size pre-measured for chunk packing.
     fn seal_snapshot_entries(
         &self,
+        snapshot_seq: i64,
         snapshots: &[(Vec<u8>, Vec<u8>)],
     ) -> SyncResult<Vec<SealedSnapshotEntry>> {
-        // Snapshots are sealed under a GROUP-only AAD (not the per-device
-        // envelope AAD): unlike `/ops`, the `/snapshots` GET response does
-        // not echo a depositing-device field, so the opener can't
-        // reconstruct a per-device AAD. Binding only the group id lets any
-        // group member open any member's deposited snapshot, while still
-        // authenticating the ciphertext to this group's key.
-        let aad = snapshot_aad(self.group_id.as_bytes());
         let mut entries = Vec::with_capacity(snapshots.len());
         for (stream_id, plaintext) in snapshots {
-            let sealed = aead_seal(&self.group_key, plaintext, &aad)?;
+            // Preserve the legacy OuterPayload + group-only AEAD so old
+            // clients can still read rows written by a new client. The nonce
+            // marker makes the appended routing record mandatory for new
+            // clients, preventing a relay from stripping it as a downgrade.
+            let sealed = aead_seal_with_nonce_prefix(
+                &self.group_key,
+                plaintext,
+                &snapshot_aad(self.group_id.as_bytes()),
+                SNAPSHOT_V2_NONCE_PREFIX,
+            )?;
             let outer = OuterPayload {
                 nonce: sealed.nonce,
                 ciphertext: sealed.ciphertext,
             };
-            let outer_bytes = postcard::to_allocvec(&outer)
+            let mut outer_bytes = postcard::to_allocvec(&outer)
                 .map_err(|e| SyncError::Other(format!("postcard serialize outer: {e}")))?;
+            append_snapshot_route_record(
+                &mut outer_bytes,
+                &self.group_key,
+                self.group_id.as_bytes(),
+                stream_id,
+                snapshot_seq,
+                &outer,
+            )?;
             let wire = serde_json::json!({
                 "stream_id_b64": base64_std(stream_id),
+                "snapshot_seq": snapshot_seq,
                 "payload_b64": base64_std(&outer_bytes),
             });
             // Exact serialized footprint of this entry in the request body
@@ -566,6 +610,7 @@ impl RelayClient {
         entries: &[serde_json::Value],
     ) -> SyncResult<SnapshotSendStatus> {
         let body = serde_json::json!({
+            "snapshot_seq_version": 1,
             "covers_seq": covers_seq,
             "snapshots": entries,
         });
@@ -656,9 +701,6 @@ impl RelayClient {
             .json()
             .await
             .map_err(net_err("fetch_snapshots response body"))?;
-        // Snapshots are sealed under the GROUP-only AAD by `put_snapshots`
-        // (the GET response carries no depositing-device field), so any
-        // group member opens them with the same group-bound AAD.
         let b64 = base64::engine::general_purpose::STANDARD;
         let mut out = Vec::with_capacity(wire.snapshots.len());
         for entry in wire.snapshots {
@@ -668,10 +710,13 @@ impl RelayClient {
             let outer_bytes = b64
                 .decode(&entry.payload_b64)
                 .map_err(|e| SyncError::Other(format!("payload base64: {e}")))?;
-            let outer: OuterPayload = postcard::from_bytes(&outer_bytes)
-                .map_err(|e| SyncError::Other(format!("postcard outer: {e}")))?;
-            let aad = snapshot_aad(self.group_id.as_bytes());
-            let plaintext = aead_open(&self.group_key, &outer.nonce, &outer.ciphertext, &aad)?;
+            let plaintext = open_snapshot_payload(
+                &self.group_key,
+                self.group_id.as_bytes(),
+                &stream_id,
+                entry.snapshot_seq,
+                &outer_bytes,
+            )?;
             out.push((stream_id, entry.snapshot_seq, plaintext));
         }
         Ok((wire.compaction_seq, out))
@@ -993,7 +1038,18 @@ fn base64_std(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// AAD for AEAD-sealed full-note snapshots pushed via `put_snapshots`.
+type HmacSha256 = Hmac<Sha256>;
+
+/// A v2 marker inside the AEAD nonce. Eight fixed bytes leave 128 random bits,
+/// while making an authenticated routing suffix mandatory for new clients.
+const SNAPSHOT_V2_NONCE_PREFIX: &[u8; 8] = b"TSNAPV2\0";
+const SNAPSHOT_V2_ROUTE_MAGIC: &[u8; 4] = b"TSR2";
+const SNAPSHOT_V2_ROUTE_LEN: usize = 4 + 8 + 32;
+const SNAPSHOT_V2_ROUTE_DOMAIN: &[u8] = b"tesela-snapshot-route-v2\0";
+
+/// Group-only AAD for AEAD-sealed full-note snapshots. V2 deposits retain it
+/// so previous clients can decrypt their legacy-compatible `OuterPayload`;
+/// new clients additionally verify the appended routing record.
 ///
 /// Distinct from [`envelope_aad`]: snapshots bind the GROUP id only (no
 /// depositing-device field), because the `/snapshots` GET response does
@@ -1006,6 +1062,99 @@ fn snapshot_aad(group_id: &[u8; 16]) -> [u8; 32] {
     out[..16].copy_from_slice(b"tesela-snap-v1\0\0");
     out[16..].copy_from_slice(group_id);
     out
+}
+
+fn snapshot_route_mac(
+    group_key: &GroupKey,
+    group_id: &[u8; 16],
+    stream_id: &[u8],
+    snapshot_seq: i64,
+    outer: &OuterPayload,
+) -> SyncResult<HmacSha256> {
+    let mut mac = HmacSha256::new_from_slice(group_key.as_bytes())
+        .map_err(|e| SyncError::Crypto(format!("snapshot route key: {e}")))?;
+    mac.update(SNAPSHOT_V2_ROUTE_DOMAIN);
+    mac.update(group_id);
+    mac.update(&(stream_id.len() as u64).to_be_bytes());
+    mac.update(stream_id);
+    mac.update(&snapshot_seq.to_be_bytes());
+    mac.update(&outer.nonce);
+    mac.update(&(outer.ciphertext.len() as u64).to_be_bytes());
+    mac.update(&outer.ciphertext);
+    Ok(mac)
+}
+
+fn append_snapshot_route_record(
+    payload: &mut Vec<u8>,
+    group_key: &GroupKey,
+    group_id: &[u8; 16],
+    stream_id: &[u8],
+    snapshot_seq: i64,
+    outer: &OuterPayload,
+) -> SyncResult<()> {
+    let tag = snapshot_route_mac(group_key, group_id, stream_id, snapshot_seq, outer)?
+        .finalize()
+        .into_bytes();
+    payload.reserve(SNAPSHOT_V2_ROUTE_LEN);
+    payload.extend_from_slice(SNAPSHOT_V2_ROUTE_MAGIC);
+    payload.extend_from_slice(&snapshot_seq.to_be_bytes());
+    payload.extend_from_slice(&tag);
+    Ok(())
+}
+
+/// Open one snapshot row with authenticated routing. A v2 nonce marker makes
+/// its appended route record mandatory, so stripping that record cannot turn
+/// it into a valid legacy row. Unmarked rows retain the explicit migration
+/// path for snapshots deposited by previous clients.
+fn open_snapshot_payload(
+    group_key: &GroupKey,
+    group_id: &[u8; 16],
+    stream_id: &[u8],
+    relay_snapshot_seq: i64,
+    payload: &[u8],
+) -> SyncResult<Vec<u8>> {
+    let (outer, remainder): (OuterPayload, &[u8]) = postcard::take_from_bytes(payload)
+        .map_err(|e| SyncError::Other(format!("postcard outer: {e}")))?;
+    if outer.nonce.starts_with(SNAPSHOT_V2_NONCE_PREFIX) {
+        if remainder.len() != SNAPSHOT_V2_ROUTE_LEN
+            || &remainder[..SNAPSHOT_V2_ROUTE_MAGIC.len()] != SNAPSHOT_V2_ROUTE_MAGIC
+        {
+            return Err(SyncError::Crypto(
+                "snapshot routing record missing or malformed".into(),
+            ));
+        }
+        let mut seq_bytes = [0u8; 8];
+        seq_bytes.copy_from_slice(&remainder[4..12]);
+        let authenticated_snapshot_seq = i64::from_be_bytes(seq_bytes);
+        snapshot_route_mac(
+            group_key,
+            group_id,
+            stream_id,
+            authenticated_snapshot_seq,
+            &outer,
+        )?
+        .verify_slice(&remainder[12..])
+        .map_err(|_| SyncError::Crypto("snapshot routing authentication failed".into()))?;
+        if relay_snapshot_seq != authenticated_snapshot_seq {
+            tracing::debug!(
+                relay_snapshot_seq,
+                authenticated_snapshot_seq,
+                "relay snapshot sequence differs from authenticated writer sequence"
+            );
+        }
+    } else if !remainder.is_empty() {
+        return Err(SyncError::Crypto(
+            "legacy snapshot has unexpected trailing bytes".into(),
+        ));
+    } else {
+        tracing::debug!("opening legacy snapshot without authenticated routing");
+    }
+    aead_open(
+        group_key,
+        &outer.nonce,
+        &outer.ciphertext,
+        &snapshot_aad(group_id),
+    )
 }
 
 fn now_secs_i64() -> i64 {
@@ -1043,5 +1192,127 @@ mod tests {
         let device_id = DeviceId::from_bytes([0xb2; 16]);
         let group_key = GroupKey::from_bytes([0xc3; 32]);
         let _client = RelayClient::new(url, group_id, device_id, group_key);
+    }
+
+    #[test]
+    fn snapshot_v2_binds_stream_and_remains_legacy_readable() {
+        let url = Url::parse("https://relay.example.com").unwrap();
+        let group_id = GroupId::from_bytes([0xa1; 16]);
+        let device_id = DeviceId::from_bytes([0xb2; 16]);
+        let group_key = GroupKey::from_bytes([0xc3; 32]);
+        let client = RelayClient::new(url, group_id, device_id, group_key);
+        let stream_id = b"note-a".to_vec();
+        let plaintext = b"authenticated snapshot routing".to_vec();
+        let entry = client
+            .seal_snapshot_entries(41, &[(stream_id.clone(), plaintext.clone())])
+            .unwrap()
+            .pop()
+            .unwrap();
+        let encoded = entry.wire["payload_b64"].as_str().unwrap();
+        let payload = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+
+        // The legacy client path still parses the OuterPayload at byte zero,
+        // ignores the authenticated routing suffix, and opens with v1 AAD.
+        let legacy_outer: OuterPayload = postcard::from_bytes(&payload).unwrap();
+        assert!(legacy_outer.nonce.starts_with(SNAPSHOT_V2_NONCE_PREFIX));
+        assert_eq!(
+            aead_open(
+                &client.group_key,
+                &legacy_outer.nonce,
+                &legacy_outer.ciphertext,
+                &snapshot_aad(client.group_id.as_bytes()),
+            )
+            .unwrap(),
+            plaintext
+        );
+        assert_eq!(
+            open_snapshot_payload(
+                &client.group_key,
+                client.group_id.as_bytes(),
+                &stream_id,
+                41,
+                &payload,
+            )
+            .unwrap(),
+            plaintext
+        );
+        assert!(
+            open_snapshot_payload(
+                &client.group_key,
+                client.group_id.as_bytes(),
+                b"note-b",
+                41,
+                &payload,
+            )
+            .is_err(),
+            "a relay-swapped stream id must fail authentication"
+        );
+        assert_eq!(
+            open_snapshot_payload(
+                &client.group_key,
+                client.group_id.as_bytes(),
+                &stream_id,
+                0,
+                &payload,
+            )
+            .unwrap(),
+            plaintext,
+            "a pre-upgrade relay may store its batch covers_seq instead of the authenticated row seq"
+        );
+
+        let (_, route_suffix): (OuterPayload, &[u8]) = postcard::take_from_bytes(&payload).unwrap();
+        let stripped_len = payload.len() - route_suffix.len();
+        assert!(
+            open_snapshot_payload(
+                &client.group_key,
+                client.group_id.as_bytes(),
+                &stream_id,
+                41,
+                &payload[..stripped_len],
+            )
+            .is_err(),
+            "the nonce marker must prevent stripping the routing record as a downgrade"
+        );
+
+        let mut tampered = payload.clone();
+        tampered[stripped_len + 4] ^= 0x01;
+        assert!(
+            open_snapshot_payload(
+                &client.group_key,
+                client.group_id.as_bytes(),
+                &stream_id,
+                41,
+                &tampered,
+            )
+            .is_err(),
+            "the authenticated writer sequence must reject suffix tampering"
+        );
+    }
+
+    #[test]
+    fn legacy_snapshot_payload_remains_readable() {
+        let group_id = GroupId::from_bytes([0xd1; 16]);
+        let group_key = GroupKey::from_bytes([0xe2; 32]);
+        let plaintext = b"legacy snapshot";
+        let sealed = aead_seal(&group_key, plaintext, &snapshot_aad(group_id.as_bytes())).unwrap();
+        let payload = postcard::to_allocvec(&OuterPayload {
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext,
+        })
+        .unwrap();
+
+        assert_eq!(
+            open_snapshot_payload(
+                &group_key,
+                group_id.as_bytes(),
+                b"legacy-stream",
+                7,
+                &payload
+            )
+            .unwrap(),
+            plaintext
+        );
     }
 }

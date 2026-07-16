@@ -499,22 +499,23 @@ impl Store {
         &self,
         group_id: &[u8; 16],
         covers_seq: i64,
-        snapshots: &[(Vec<u8>, Vec<u8>)],
+        snapshots: &[(Vec<u8>, i64, Vec<u8>)],
         now: i64,
     ) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
-        for (stream_id, payload) in snapshots {
+        for (stream_id, snapshot_seq, payload) in snapshots {
             sqlx::query(
                 "INSERT INTO relay_snapshots(group_id, stream_id, snapshot_seq, payload, created_at) \
                  VALUES (?, ?, ?, ?, ?) \
                  ON CONFLICT(group_id, stream_id) DO UPDATE SET \
                    snapshot_seq = excluded.snapshot_seq, \
                    payload = excluded.payload, \
-                   created_at = excluded.created_at",
+                   created_at = excluded.created_at \
+                 WHERE excluded.snapshot_seq >= relay_snapshots.snapshot_seq",
             )
             .bind(&group_id[..])
             .bind(&stream_id[..])
-            .bind(covers_seq)
+            .bind(snapshot_seq)
             .bind(&payload[..])
             .bind(now)
             .execute(&mut *tx)

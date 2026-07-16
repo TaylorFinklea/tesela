@@ -374,16 +374,17 @@ export class GroupDO implements DurableObject {
    *  are effectively atomic. Mirrors Rust `store::deposit_snapshot_batch`. */
   depositSnapshotBatch(
     coversSeq: number,
-    snapshots: Array<{ stream_id: Uint8Array; payload: Uint8Array }>,
+    snapshots: Array<{ stream_id: Uint8Array; snapshot_seq: number; payload: Uint8Array }>,
   ): number {
     const now = Math.floor(Date.now() / 1000);
     for (const s of snapshots) {
       this.state.storage.sql.exec(
         "INSERT INTO snapshots (stream_id, snapshot_seq, payload, created_at) VALUES (?, ?, ?, ?) " +
           "ON CONFLICT (stream_id) DO UPDATE SET " +
-          "snapshot_seq = excluded.snapshot_seq, payload = excluded.payload, created_at = excluded.created_at",
+          "snapshot_seq = excluded.snapshot_seq, payload = excluded.payload, created_at = excluded.created_at " +
+          "WHERE excluded.snapshot_seq >= snapshots.snapshot_seq",
         s.stream_id.buffer,
-        coversSeq,
+        s.snapshot_seq,
         s.payload.buffer,
         now,
       );

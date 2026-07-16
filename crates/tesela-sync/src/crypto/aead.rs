@@ -36,9 +36,28 @@ pub struct SealedPayload {
 /// Seal `plaintext` under `key`, binding `aad`. Returns the nonce + the
 /// sealed bytes (ciphertext || tag).
 pub fn seal(key: &GroupKey, plaintext: &[u8], aad: &[u8]) -> SyncResult<SealedPayload> {
+    seal_with_nonce_prefix(key, plaintext, aad, &[])
+}
+
+/// Seal with a fixed nonce prefix and randomize every remaining byte.
+///
+/// Snapshot envelopes use this to mark a routing-authenticated payload while
+/// retaining enough random nonce material for safe XChaCha20-Poly1305 use.
+pub(crate) fn seal_with_nonce_prefix(
+    key: &GroupKey,
+    plaintext: &[u8],
+    aad: &[u8],
+    prefix: &[u8],
+) -> SyncResult<SealedPayload> {
+    if prefix.len() > 24 {
+        return Err(SyncError::Crypto(
+            "nonce prefix exceeds XChaCha20-Poly1305 nonce length".into(),
+        ));
+    }
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
     let mut nonce_bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    nonce_bytes[..prefix.len()].copy_from_slice(prefix);
+    rand::thread_rng().fill_bytes(&mut nonce_bytes[prefix.len()..]);
     let nonce = XNonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(
@@ -127,6 +146,18 @@ mod tests {
         let s2 = seal(&key, b"x", b"a").unwrap();
         assert_ne!(s1.nonce, s2.nonce, "nonce reuse is catastrophic for AEAD");
         assert_ne!(s1.ciphertext, s2.ciphertext);
+    }
+
+    #[test]
+    fn seal_with_nonce_prefix_preserves_marker_and_randomizes_suffix() {
+        let key = fixture_key();
+        let prefix = b"snapshot";
+        let s1 = seal_with_nonce_prefix(&key, b"x", b"a", prefix).unwrap();
+        let s2 = seal_with_nonce_prefix(&key, b"x", b"a", prefix).unwrap();
+        assert!(s1.nonce.starts_with(prefix));
+        assert!(s2.nonce.starts_with(prefix));
+        assert_ne!(s1.nonce, s2.nonce, "random nonce suffix must not repeat");
+        assert_eq!(open(&key, &s1.nonce, &s1.ciphertext, b"a").unwrap(), b"x");
     }
 
     #[test]

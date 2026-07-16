@@ -799,3 +799,41 @@ Markdown and indexing while preserving empty structural parents. Text, tags,
 properties, task state, or a child make the block meaningful and visible.
 Same-block concurrent editing remains unchanged. Full design and evidence:
 `phases/2026-07-14-local-only-empty-blocks-spec.md` (`tesela-ju7`).
+
+### 2026-07-15 — Relay row recency, authenticated routing, and recovery cursors are separate durability layers
+
+Snapshot-row recency is no longer inferred from the batch compaction watermark.
+Each upgraded writer sends an explicit per-entry `snapshot_seq` and declares
+`snapshot_seq_version=1`, including on empty checkpoint batches. Rust and
+Cloudflare relay UPSERTs accept only a nondecreasing row sequence. Batch
+`covers_seq` remains solely the group watermark/GC claim. This lets non-final
+chunks stay GC-inert at `covers_seq=0` while carrying the real recency of every
+row. Unmarked legacy deposits remain accepted and interpret a missing row seq
+as the old batch value, but are GC-inert: an old chunk rejected against a newer
+row can never be followed by an empty/final legacy checkpoint that deletes its
+only healing op. Equal-sequence replacement stays idempotent.
+
+Snapshot routing integrity uses a mixed-version envelope, not a flag-day AEAD
+change. The legacy `OuterPayload` remains at byte zero and retains its
+group-only AEAD so an old client can decrypt a new row. Upgraded writers mark
+the nonce and append a domain-separated HMAC record over group, length-prefixed
+stream id, writer sequence, nonce, and ciphertext. An upgraded reader requires
+and verifies that record whenever the nonce is marked; a relay cannot swap the
+stream, alter the writer sequence, or strip the suffix into a legacy downgrade.
+Unmarked legacy rows remain an explicit weaker read path during rollout, and a
+relay-reported row sequence may differ from the authenticated writer sequence
+for compatibility with an old relay that stored the batch watermark.
+
+Terminal inbound recovery now treats the retained raw op and a deposited
+snapshot as ordered fallbacks. The client polls from one before the earliest
+protected sequence, selects only the exact queued note+sequence pairs, and
+reapplies them idempotently without moving or acknowledging the normal inbound
+cursor. Only cleanly applied notes leave the queue; pending, failed, compacted,
+and bootstrap-only targets continue to authoritative snapshot import.
+
+A new AAD layout was rejected because it would make new-writer/old-reader and
+old-writer/new-reader fleets mutually unreadable. Snapshot-only recovery was
+rejected because oversized or absent snapshots are exactly where the retained
+op is the last durable copy. Holding the global cursor forever was rejected
+because one poisoned note must not stall every unrelated stream. Full evidence:
+`phases/2026-07-15-relay-durability-train-report.md`.

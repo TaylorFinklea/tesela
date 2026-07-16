@@ -313,10 +313,12 @@ export async function handlePostAck(self: GroupDO, req: Request): Promise<Respon
 
 interface SnapshotEntry {
   stream_id_b64: string;
+  snapshot_seq?: number;
   payload_b64: string;
 }
 
 interface PutSnapshotBody {
+  snapshot_seq_version?: number;
   covers_seq: number;
   snapshots: SnapshotEntry[];
 }
@@ -331,14 +333,26 @@ export async function handlePutSnapshot(self: GroupDO, req: Request): Promise<Re
 
   const body = JSON.parse(new TextDecoder().decode(raw)) as PutSnapshotBody;
   if (!Array.isArray(body.snapshots)) return json({ error: "snapshots must be an array" }, 400);
+  if (body.snapshot_seq_version !== undefined && body.snapshot_seq_version !== 1) {
+    return json({ error: "unsupported snapshot_seq_version" }, 400);
+  }
+  if (body.snapshot_seq_version === 1 && body.snapshots.some((s) => s.snapshot_seq === undefined)) {
+    return json({ error: "snapshot_seq required for snapshot_seq_version 1" }, 400);
+  }
   // stream_id + payload are OPAQUE to the relay — decode b64 to bytes
   // for storage, never interpret.
   const decoded = body.snapshots.map((s) => ({
     stream_id: fromB64(s.stream_id_b64),
+    snapshot_seq: s.snapshot_seq ?? body.covers_seq,
     payload: fromB64(s.payload_b64),
   }));
 
-  const gc = self.depositSnapshotBatch(body.covers_seq, decoded);
+  // An unmarked pre-upgrade chunker cannot prove that every row in its
+  // logical batch survived the new sequence guard. Keep its request accepted
+  // but GC-inert so an empty/final legacy checkpoint cannot delete the only
+  // op capable of healing a rejected non-final row.
+  const effectiveCoversSeq = body.snapshot_seq_version === 1 ? body.covers_seq : 0;
+  const gc = self.depositSnapshotBatch(effectiveCoversSeq, decoded);
   return json({ ok: true, gc });
 }
 

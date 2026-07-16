@@ -609,8 +609,9 @@ async fn test_snapshot_deposit_compacts_oplog() {
     let snap_payload = b"opaque-encrypted-snapshot-A";
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 2,
-        "snapshots": [{ "stream_id_b64": b64(stream_id), "payload_b64": b64(snap_payload) }],
+        "snapshots": [{ "stream_id_b64": b64(stream_id), "snapshot_seq": 2, "payload_b64": b64(snap_payload) }],
     });
     let body_bytes = serde_json::to_vec(&snap_body).unwrap();
     let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
@@ -716,8 +717,9 @@ async fn deposit_compact_put_delivers() {
     // compaction_seq=3 (MAX(seq) over relay_ops now drops to 0).
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 3,
-        "snapshots": [{ "stream_id_b64": b64(b"note-stream-key-A"), "payload_b64": b64(b"opaque-snapshot") }],
+        "snapshots": [{ "stream_id_b64": b64(b"note-stream-key-A"), "snapshot_seq": 3, "payload_b64": b64(b"opaque-snapshot") }],
     });
     let body_bytes = serde_json::to_vec(&snap_body).unwrap();
     let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
@@ -810,8 +812,9 @@ async fn test_snapshot_covers_seq_zero_is_inert() {
     let snap_payload = b"opaque-encrypted-snapshot-Z";
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 0,
-        "snapshots": [{ "stream_id_b64": b64(stream_id), "payload_b64": b64(snap_payload) }],
+        "snapshots": [{ "stream_id_b64": b64(stream_id), "snapshot_seq": 2, "payload_b64": b64(snap_payload) }],
     });
     let body_bytes = serde_json::to_vec(&snap_body).unwrap();
     let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
@@ -874,6 +877,213 @@ async fn test_snapshot_covers_seq_zero_is_inert() {
 }
 
 #[tokio::test]
+async fn test_snapshot_upsert_rejects_late_stale_entry_without_blocking_inert_chunk() {
+    // Per-entry snapshot_seq is distinct from the batch compaction watermark:
+    // a non-final chunk uses covers_seq=0 but still carries the sequence its
+    // row will cover when the final chunk commits. A later stale depositor may
+    // advance neither the row nor the already-higher group watermark.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now_secs()))
+        .send()
+        .await
+        .unwrap();
+
+    let stream_id = b"interleaved-snapshot-stream";
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    for body in [
+        json!({
+            "snapshot_seq_version": 1,
+            "covers_seq": 10,
+            "snapshots": [{
+                "stream_id_b64": b64(stream_id),
+                "snapshot_seq": 10,
+                "payload_b64": b64(b"fresh-at-10"),
+            }],
+        }),
+        json!({
+            "snapshot_seq_version": 1,
+            "covers_seq": 0,
+            "snapshots": [{
+                "stream_id_b64": b64(stream_id),
+                "snapshot_seq": 12,
+                "payload_b64": b64(b"newest-in-non-final-chunk"),
+            }],
+        }),
+        json!({
+            "snapshot_seq_version": 1,
+            "covers_seq": 5,
+            "snapshots": [{
+                "stream_id_b64": b64(stream_id),
+                "snapshot_seq": 5,
+                "payload_b64": b64(b"late-stale-at-5"),
+            }],
+        }),
+    ] {
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+        let response = client
+            .put(format!("{}{}", relay.base_url, snap_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "deposit failed: {}",
+            response.status()
+        );
+    }
+
+    let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));
+    let headers = auth_headers(&group, &device, "GET", &snaps_path, "", &[]);
+    let body: serde_json::Value = client
+        .get(format!("{}{}", relay.base_url, snaps_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["compaction_seq"].as_i64(), Some(10));
+    let snaps = body["snapshots"].as_array().expect("snapshots array");
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0]["snapshot_seq"].as_i64(), Some(12));
+    assert_eq!(
+        snaps[0]["payload_b64"],
+        b64(b"newest-in-non-final-chunk"),
+        "a late stale depositor must not regress the retained payload"
+    );
+}
+
+#[tokio::test]
+async fn test_legacy_snapshot_request_is_gc_inert_during_sequence_migration() {
+    // A pre-upgrade chunker cannot prove the recency of every row in its
+    // logical batch. If one non-final row loses the new seq guard, allowing a
+    // later legacy checkpoint to advance the watermark would GC the only op
+    // capable of healing that rejected row. Legacy requests remain accepted,
+    // but only an explicit sequence-semantics marker may authorize GC.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now_secs()))
+        .send()
+        .await
+        .unwrap();
+
+    let ops_path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    let put_body = json!({ "from_device": device, "payload_b64": b64(b"must-survive") });
+    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+    client
+        .put(format!("{}{}", relay.base_url, ops_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+
+    let stream_id = b"migration-guard-stream";
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    for body in [
+        json!({
+            "snapshot_seq_version": 1,
+            "covers_seq": 0,
+            "snapshots": [{
+                "stream_id_b64": b64(stream_id),
+                "snapshot_seq": 10,
+                "payload_b64": b64(b"fresh-v2"),
+            }],
+        }),
+        json!({
+            "covers_seq": 0,
+            "snapshots": [{
+                "stream_id_b64": b64(stream_id),
+                "payload_b64": b64(b"legacy-stale"),
+            }],
+        }),
+        json!({
+            "covers_seq": 1,
+            "snapshots": [],
+        }),
+    ] {
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+        let response = client
+            .put(format!("{}{}", relay.base_url, snap_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+    }
+
+    let headers = auth_headers(&group, &device, "GET", &ops_path, "since=0", &[]);
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{}{}?since=0", relay.base_url, ops_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "legacy checkpoint must not GC the healing op");
+
+    let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));
+    let headers = auth_headers(&group, &device, "GET", &snaps_path, "", &[]);
+    let body: serde_json::Value = client
+        .get(format!("{}{}", relay.base_url, snaps_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["compaction_seq"].as_i64(), Some(0));
+    assert_eq!(body["snapshots"][0]["snapshot_seq"].as_i64(), Some(10));
+    assert_eq!(body["snapshots"][0]["payload_b64"], b64(b"fresh-v2"));
+
+    let invalid = json!({
+        "snapshot_seq_version": 1,
+        "covers_seq": 1,
+        "snapshots": [{
+            "stream_id_b64": b64(b"missing-explicit-seq"),
+            "payload_b64": b64(b"payload"),
+        }],
+    });
+    let body_bytes = serde_json::to_vec(&invalid).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let response = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+}
+
+#[tokio::test]
 async fn test_snapshots_roundtrip() {
     // Deposit two snapshots with distinct stream_ids; GET /snapshots
     // returns both with byte-identical payloads.
@@ -900,10 +1110,11 @@ async fn test_snapshots_roundtrip() {
 
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 0,
         "snapshots": [
-            { "stream_id_b64": b64(stream_a), "payload_b64": b64(&payload_a) },
-            { "stream_id_b64": b64(stream_b), "payload_b64": b64(&payload_b) },
+            { "stream_id_b64": b64(stream_a), "snapshot_seq": 0, "payload_b64": b64(&payload_a) },
+            { "stream_id_b64": b64(stream_b), "snapshot_seq": 0, "payload_b64": b64(&payload_b) },
         ],
     });
     let body_bytes = serde_json::to_vec(&snap_body).unwrap();
@@ -968,8 +1179,9 @@ async fn test_snapshot_requires_auth() {
 
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 0,
-        "snapshots": [{ "stream_id_b64": b64(b"s"), "payload_b64": b64(b"p") }],
+        "snapshots": [{ "stream_id_b64": b64(b"s"), "snapshot_seq": 0, "payload_b64": b64(b"p") }],
     });
 
     // No MAC headers → 401.
@@ -1053,8 +1265,9 @@ async fn test_seq_allocates_above_compaction_watermark() {
     // is now empty and the watermark sits at 3.
     let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
     let snap_body = json!({
+        "snapshot_seq_version": 1,
         "covers_seq": 3,
-        "snapshots": [{ "stream_id_b64": b64(b"stream-A"), "payload_b64": b64(b"snap-A") }],
+        "snapshots": [{ "stream_id_b64": b64(b"stream-A"), "snapshot_seq": 3, "payload_b64": b64(b"snap-A") }],
     });
     let body_bytes = serde_json::to_vec(&snap_body).unwrap();
     let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);

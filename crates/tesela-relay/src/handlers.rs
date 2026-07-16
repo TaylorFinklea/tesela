@@ -391,6 +391,13 @@ pub struct SnapshotEntry {
     /// interprets it — it's the client's per-note identifier and is
     /// only ever compared / stored as bytes.
     pub stream_id_b64: String,
+    /// Relay sequence covered by this individual snapshot row. New clients
+    /// send it explicitly so non-final chunk uploads can keep the batch
+    /// `covers_seq = 0` (no watermark/GC) without downgrading the row to seq
+    /// zero. Absent for legacy clients; those retain the old behavior where
+    /// each row inherits the batch `covers_seq`.
+    #[serde(default)]
+    pub snapshot_seq: Option<i64>,
     /// Opaque AEAD-sealed full snapshot, base64-encoded. The relay
     /// stores the ciphertext verbatim; only group-key holders can open
     /// it.
@@ -399,6 +406,12 @@ pub struct SnapshotEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct PutSnapshotRequest {
+    /// Declares that this client understands independent per-entry snapshot
+    /// recency. Version 1 is required before a request may advance the
+    /// compaction watermark; unmarked legacy requests remain accepted but
+    /// GC-inert so a rejected legacy chunk cannot lose its healing op.
+    #[serde(default)]
+    pub snapshot_seq_version: Option<u8>,
     /// The relay-seq this snapshot batch covers. After deposit, ops
     /// with `seq <= covers_seq` are GC'd from the durable log because
     /// the snapshot supersedes them.
@@ -415,6 +428,9 @@ pub struct PutSnapshotRequest {
 /// stream), advances the group's compaction watermark to `covers_seq`,
 /// and GCs `relay_ops` rows with `seq <= covers_seq`. The relay stays
 /// zero-knowledge — `stream_id` and `payload` are opaque bytes.
+/// `snapshot_seq_version = 1` plus a sequence on every entry is required to
+/// authorize watermark movement; unmarked legacy requests remain accepted but
+/// are GC-inert during the mixed-fleet migration.
 ///
 /// Responds `{ "ok": true, "gc": <rows_deleted> }`.
 pub async fn put_snapshot(
@@ -425,23 +441,42 @@ pub async fn put_snapshot(
     let Some(group_id) = parse_group_id(&group_id_hex) else {
         return (StatusCode::BAD_REQUEST, "invalid group_id hex").into_response();
     };
+    let effective_covers_seq = match req.snapshot_seq_version {
+        Some(1) => req.covers_seq,
+        None => 0,
+        Some(_) => {
+            return (StatusCode::BAD_REQUEST, "unsupported snapshot_seq_version")
+                .into_response();
+        }
+    };
     let b64 = base64::engine::general_purpose::STANDARD;
-    let mut decoded: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(req.snapshots.len());
+    let mut decoded: Vec<(Vec<u8>, i64, Vec<u8>)> = Vec::with_capacity(req.snapshots.len());
     for entry in &req.snapshots {
+        if req.snapshot_seq_version == Some(1) && entry.snapshot_seq.is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "snapshot_seq required for snapshot_seq_version 1",
+            )
+                .into_response();
+        }
         let Ok(stream_id) = b64.decode(&entry.stream_id_b64) else {
             return (StatusCode::BAD_REQUEST, "stream_id_b64 not base64").into_response();
         };
         let Ok(payload) = b64.decode(&entry.payload_b64) else {
             return (StatusCode::BAD_REQUEST, "payload_b64 not base64").into_response();
         };
-        decoded.push((stream_id, payload));
+        decoded.push((
+            stream_id,
+            entry.snapshot_seq.unwrap_or(req.covers_seq),
+            payload,
+        ));
     }
 
     let now = wall_clock_secs_f64() as i64;
     match state
         .inner
         .store
-        .deposit_snapshot_batch(&group_id, req.covers_seq, &decoded, now)
+        .deposit_snapshot_batch(&group_id, effective_covers_seq, &decoded, now)
         .await
     {
         Ok(gc) => (
