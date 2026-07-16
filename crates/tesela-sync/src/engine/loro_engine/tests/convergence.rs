@@ -129,6 +129,103 @@ async fn two_authoritative_engines_converge_through_wire_codec() {
 }
 
 #[tokio::test]
+async fn relayed_note_delete_remains_absent_after_both_peers_restart() {
+    let tmp_a = tempfile::tempdir().unwrap();
+    let tmp_b = tempfile::tempdir().unwrap();
+    let snap_a = tmp_a.path().join("loro");
+    let snap_b = tmp_b.path().join("loro");
+    let notes_a = tmp_a.path().join("notes");
+    let notes_b = tmp_b.path().join("notes");
+    let dev_a = DeviceId::from_bytes([0xd1; 16]);
+    let dev_b = DeviceId::from_bytes([0xd2; 16]);
+    let note = blake3_note_id("relay-delete");
+
+    let a = LoroEngine::with_dirs(
+        dev_a,
+        Arc::new(Hlc::new(dev_a)),
+        snap_a.clone(),
+        Some(notes_a.clone()),
+    )
+    .await
+    .unwrap();
+    let b = LoroEngine::with_dirs(
+        dev_b,
+        Arc::new(Hlc::new(dev_b)),
+        snap_b.clone(),
+        Some(notes_b.clone()),
+    )
+    .await
+    .unwrap();
+
+    a.record_local(OpPayload::NoteUpsert {
+        note_id: note,
+        display_alias: Some("relay-delete".into()),
+        title: "Relay delete".into(),
+        content:
+            "- delete me <!-- bid:d1d1d1d1-d1d1-d1d1-d1d1-d1d1d1d1d1d1 -->\n".into(),
+        created_at_millis: 1,
+    })
+    .await
+    .unwrap();
+
+    let initial = a.produce_relay_updates().await;
+    assert_eq!(initial.len(), 1, "initial note must be relay-exportable");
+    let initial_pairs: Vec<([u8; 16], Vec<u8>)> = initial
+        .iter()
+        .map(|(id, bytes, _)| (*id, bytes.clone()))
+        .collect();
+    assert_eq!(b.apply_relay_updates(&initial_pairs).await.applied_count(), 1);
+    let initial_commit: Vec<([u8; 16], Vec<u8>)> = initial
+        .into_iter()
+        .map(|(id, _, vv)| (id, vv))
+        .collect();
+    a.commit_broadcast_cursors(&initial_commit).await;
+    assert!(notes_a.join("relay-delete.md").exists());
+    assert!(notes_b.join("relay-delete.md").exists());
+
+    a.record_local(OpPayload::NoteDelete {
+        note_id: note,
+        display_alias: Some("relay-delete".into()),
+    })
+    .await
+    .unwrap();
+
+    let deletion = a.produce_relay_updates().await;
+    assert_eq!(
+        deletion.len(),
+        1,
+        "NoteDelete must remain exportable until the relay confirms it"
+    );
+    assert_eq!(deletion[0].0, note);
+    let deletion_pairs = vec![(note, deletion[0].1.clone())];
+    assert_eq!(
+        b.apply_relay_updates(&deletion_pairs).await.applied_count(),
+        1,
+        "the paired peer must apply the note tombstone"
+    );
+    let deletion_commit = vec![(note, deletion[0].2.clone())];
+    a.commit_broadcast_cursors(&deletion_commit).await;
+
+    assert!(a.render_note(note).await.is_none());
+    assert!(b.render_note(note).await.is_none());
+    assert!(!notes_a.join("relay-delete.md").exists());
+    assert!(!notes_b.join("relay-delete.md").exists());
+
+    drop(a);
+    drop(b);
+    let reopened_a =
+        LoroEngine::with_dirs(dev_a, Arc::new(Hlc::new(dev_a)), snap_a, Some(notes_a))
+            .await
+            .unwrap();
+    let reopened_b =
+        LoroEngine::with_dirs(dev_b, Arc::new(Hlc::new(dev_b)), snap_b, Some(notes_b))
+            .await
+            .unwrap();
+    assert!(reopened_a.render_note(note).await.is_none());
+    assert!(reopened_b.render_note(note).await.is_none());
+}
+
+#[tokio::test]
 async fn broadcast_cursors_persist_across_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let snap = tmp.path().join("loro");

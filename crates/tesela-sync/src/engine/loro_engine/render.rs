@@ -24,6 +24,9 @@ impl LoroEngine {
             return None;
         }
         let doc = self.lazy_load_doc(note_id).await?;
+        if note_doc_is_deleted(&doc) {
+            return None;
+        }
         Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
             &doc, None,
         )))
@@ -47,6 +50,9 @@ impl LoroEngine {
             return None;
         }
         let doc = self.lazy_load_doc(note_id).await?;
+        if note_doc_is_deleted(&doc) {
+            return None;
+        }
         Some(doc_full_markdown(&doc))
     }
 
@@ -104,6 +110,22 @@ impl LoroEngine {
         let Some(dir) = self.inner.materialize_dir.as_ref() else {
             return Ok(());
         };
+        let Some(doc) = self.lazy_load_doc(note_id).await else {
+            return Err(SyncError::Storage(format!(
+                "cannot materialize {}",
+                hex_id(&note_id)
+            )));
+        };
+        if note_doc_is_deleted(&doc) {
+            let Some(slug) = self.slug_for_note(note_id).await else {
+                return Err(SyncError::Storage(format!(
+                    "cannot delete materialized {} — no slug",
+                    hex_id(&note_id)
+                )));
+            };
+            self.remove_materialized(&slug).await;
+            return Ok(());
+        }
         let Some(full) = self.render_note_full(note_id).await else {
             return Err(SyncError::Storage(format!(
                 "cannot render {}",

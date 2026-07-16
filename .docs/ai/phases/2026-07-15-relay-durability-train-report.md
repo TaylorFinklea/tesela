@@ -1,6 +1,6 @@
 # Relay durability train report
 
-**Beads:** `tesela-gqd` · `tesela-fdd` · `tesela-zip` · **Date:** 2026-07-15 · **Verdict:** implementation, shared relay conformance, installed desktop QA, and native iOS Simulator QA pass. Cleanup exposed a separate NoteDelete delivery bug, filed as `tesela-vuw5` and left open.
+**Beads:** `tesela-gqd` · `tesela-fdd` · `tesela-zip` · `tesela-vuw5` · **Date:** 2026-07-15 · **Verdict:** implementation, shared relay conformance, installed desktop QA, native iOS Simulator QA, and cross-device NoteDelete durability pass.
 
 ## Delivered
 
@@ -90,15 +90,28 @@ Simulator UI for Search, block authoring, repaired-note inspection, and relaunch
 Simulator automation sometimes backgrounded the app; unified logs showed normal
 `appDidSuspend` events and no crash report, fatal error, or abort.
 
-## Discovered follow-up
+## Resolved follow-up (`tesela-vuw5`)
 
-Deleting the disposable note returned desktop HTTP 204, stayed 404 after the
-canonical desktop restart, but did not advance relay `last_put_at`. The paired
-iOS simulator retained the complete note after foreground polling and relaunch.
-This is a separate outbound NoteDelete/tombstone production gap, filed P1 as
-`tesela-vuw5` with `tier_floor=senior`, `complexity=M`, and executable Rust
-verification. The desktop copy is cleaned up; the stale simulator-only copy is
-left as evidence until that bug is fixed.
+The original delete removed the note from both the resident-doc map and slug
+index before `produce_relay_updates` enumerated candidates, so the authoritative
+peer had nothing left to export. Note deletion now commits a sticky
+`root.deleted=true` value inside the per-note Loro document and retains its
+snapshot. Rendering, indexing, note counts, and Markdown materialization treat
+that tombstone as absent; the relay still has a durable delta to deliver.
+
+The regression `relayed_note_delete_remains_absent_after_both_peers_restart`
+proved RED at zero produced updates, then GREEN across two authoritative peers
+and both engine reopenings. Installed-product QA used the final desktop bundle
+and rebuilt iOS Simulator app: a fresh desktop note materialized on iOS;
+desktop DELETE returned 204; relay `last_put_at` advanced from `1784169961` to
+`1784170816` with `last_error: null`; iOS removed the file; desktop returned
+404 after canonical reinstall/relaunch; and iOS retained absence after
+terminate/relaunch. The stale simulator-only note from the original failure was
+then recovered and deleted through the repaired path, leaving no QA note behind.
+
+That recovery POST returned 500 after successfully materializing its remote
+snapshot, exposing a separate non-atomic create/bootstrap path. It is filed as
+`tesela-rp65`; the subsequent NoteDelete completed and relayed normally.
 
 ## Baseline-only quality gates
 

@@ -68,6 +68,18 @@ fn hex_id(id: &[u8; 16]) -> String {
     hex::encode(id)
 }
 
+/// Whether a per-note doc carries the durable note-level delete marker.
+/// The doc itself stays persisted/exportable so the marker can reach peers;
+/// note-shaped projections treat it as absent.
+fn note_doc_is_deleted(doc: &LoroDoc) -> bool {
+    matches!(
+        doc.get_map("root")
+            .get("deleted")
+            .and_then(|value| value.into_value().ok()),
+        Some(loro::LoroValue::Bool(true))
+    )
+}
+
 /// Best-effort list of the Loro PeerIDs whose ops a relay update frame
 /// carries, decoded from the frame's blob metadata (tesela-c7s item 2 — the
 /// "from_peer" a pending causal-gap ledger entry records). Returns empty on a
@@ -1047,6 +1059,11 @@ impl LoroEngine {
         if Self::is_views_doc(&note_id) {
             return;
         }
+        if note_doc_is_deleted(doc) {
+            self.unregister_note_under_ownership(note_id).await;
+            self.index_remove(note_id);
+            return;
+        }
         let tree = doc.get_tree("blocks");
         let ids: Vec<[u8; 16]> = live_block_ids(&tree).collect();
         self.replace_note_blocks_under_ownership(note_id, &ids)
@@ -1072,10 +1089,16 @@ impl LoroEngine {
         );
     }
 
-    /// Number of distinct notes the engine has seen. Test/diagnostic
-    /// hook — not part of the SyncEngine trait.
+    /// Number of live notes the engine currently projects. Durable tombstone
+    /// docs remain tracked for sync but do not count as notes.
     pub async fn note_count(&self) -> usize {
-        self.inner.docs.read().await.len()
+        self.inner
+            .docs
+            .read()
+            .await
+            .iter()
+            .filter(|(note_id, doc)| !Self::is_views_doc(note_id) && !note_doc_is_deleted(doc))
+            .count()
     }
 
     /// All note ids the engine has seen. Used by the divergence-check
@@ -3531,18 +3554,24 @@ impl LoroEngine {
                     .await;
                 Some(note_id)
             }
-            OpPayload::NoteDelete { note_id, .. } => {
-                // Drop the per-note doc entirely. SqliteEngine removes
-                // the on-disk file in its materialize step; the shadow
-                // needs to forget the doc so render_note returns None
-                // and the divergence check matches PrimaryMissing.
-                // The outer wrapper sees `save_snapshot(note_id)` find
-                // the doc missing and removes the .bin file too.
-                self.index_remove(*note_id);
-                {
-                    let mut docs = self.inner.docs.write().await;
-                    docs.remove(note_id);
+            OpPayload::NoteDelete {
+                note_id,
+                display_alias,
+            } => {
+                // Author deletion INSIDE the note's CRDT doc and retain that
+                // doc. Relay production and snapshot deposits are doc-based;
+                // dropping it here erased the only exportable evidence of the
+                // delete before the next tick (tesela-vuw5).
+                let doc = self.doc_for_note_mut(*note_id).await;
+                let root = doc.get_map("root");
+                if let Some(slug) = display_alias.as_deref() {
+                    root.insert("slug", slug)
+                        .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
                 }
+                root.insert("deleted", true)
+                    .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                doc.commit();
+                self.index_remove(*note_id);
                 self.unregister_note_under_ownership(*note_id).await;
                 Some(*note_id)
             }

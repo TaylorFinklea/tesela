@@ -1099,7 +1099,7 @@ async fn snapshot_dir_created_when_missing() {
 }
 
 #[tokio::test]
-async fn snapshot_deleted_on_note_delete() {
+async fn note_delete_retains_tombstone_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("loro");
     let hlc = Arc::new(Hlc::new(test_device()));
@@ -1128,7 +1128,21 @@ async fn snapshot_deleted_on_note_delete() {
         })
         .await
         .unwrap();
-    assert!(!path.exists(), "snapshot should be removed on NoteDelete");
+    assert!(
+        path.exists(),
+        "NoteDelete must retain its tombstone snapshot for relay and restart durability"
+    );
+    drop(engine);
+
+    let reopened = LoroEngine::with_snapshot_dir(
+        test_device(),
+        Arc::new(Hlc::new(test_device())),
+        dir,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.note_count().await, 0);
+    assert!(reopened.render_note(note_id).await.is_none());
 }
 
 #[tokio::test]
@@ -3132,7 +3146,7 @@ async fn note_upsert_overwrites_page_properties() {
 }
 
 #[tokio::test]
-async fn note_delete_drops_doc_from_shadow() {
+async fn note_delete_hides_doc_from_live_projection() {
     let hlc = Arc::new(Hlc::new(test_device()));
     let engine = LoroEngine::new(test_device(), hlc);
     let note_id = [60u8; 16];

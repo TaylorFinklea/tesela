@@ -41,6 +41,9 @@ fn join_list(items: &[String]) -> String {
 pub(super) fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> BlockIndex {
     let mut out = BlockIndex::new();
     for (note_id, doc) in docs.iter() {
+        if note_doc_is_deleted(doc) {
+            continue;
+        }
         let tree = doc.get_tree("blocks");
         for bid in live_block_ids(&tree) {
             out.entry(bid).or_default().insert(*note_id);
@@ -119,15 +122,17 @@ impl LoroEngine {
             .collect();
         let docs = self.inner.docs.read().await;
         let note_count = docs
-            .keys()
-            .filter(|note_id| !Self::is_views_doc(note_id))
+            .iter()
+            .filter(|(note_id, doc)| {
+                !Self::is_views_doc(note_id) && !note_doc_is_deleted(doc)
+            })
             .count();
         if existing.len() != note_count {
             return false;
         }
 
         for (note_id, doc) in docs.iter() {
-            if Self::is_views_doc(note_id) {
+            if Self::is_views_doc(note_id) || note_doc_is_deleted(doc) {
                 continue;
             }
             let key = hex_id(note_id);
@@ -220,6 +225,10 @@ impl LoroEngine {
         for (note_id, doc) in docs.iter() {
             // The views registry doc is not a note — never index it.
             if Self::is_views_doc(note_id) {
+                continue;
+            }
+            if note_doc_is_deleted(doc) {
+                let _ = notes_map.delete(&hex_id(note_id));
                 continue;
             }
             let root = doc.get_map("root");

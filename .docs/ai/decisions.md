@@ -857,3 +857,21 @@ was also rejected because it creates two content formats and inconsistent
 failure semantics for little size benefit. The selected latest-first screen
 keeps the post-update moment focused while leaving older releases one action
 away. Full contract: `phases/2026-07-15-changelog-screen-spec.md`.
+
+### 2026-07-15 — NoteDelete is a retained, sticky CRDT tombstone until a separate GC policy exists
+
+Deleting a note now commits `root.deleted=true` inside its per-note Loro
+document and retains that document and snapshot. Every live projection treats
+the tombstone as absence: rendering returns no note, materialization removes
+the Markdown file, the slug/block indexes omit it, and `note_count` excludes
+it. Retention keeps the delete exportable after the local file disappears and
+across process restart, so a paired peer receives the same removal instead of
+preserving or resurrecting stale content.
+
+The marker is deliberately sticky: ordinary `NoteUpsert` does not clear it.
+Explicit same-slug recreation, tombstone acknowledgement/retention, future
+eviction, and compaction remain the Lead-level `tesela-7p8` design rather than
+being guessed inside this delivery fix. Immediately destroying the document
+was rejected because relay production enumerates resident documents plus the
+live slug index; deleting both erased the only authoritative CRDT history
+before transport could observe it.
