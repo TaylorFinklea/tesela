@@ -1,5 +1,5 @@
 # Current State
-Branch: `feat/tesela-8h0-changelog`
+Branch: `main`
 
 ## Plan
 - None.

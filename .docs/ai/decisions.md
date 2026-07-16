@@ -875,3 +875,21 @@ being guessed inside this delivery fix. Immediately destroying the document
 was rejected because relay production enumerates resident documents plus the
 live slug index; deleting both erased the only authoritative CRDT history
 before transport could observe it.
+
+### 2026-07-16 — Empty creation of a relay-only slug is adoption, not authoring
+
+When `POST /notes` carries exactly empty content, the slug is absent locally,
+and an authoritative snapshot already exists on the relay, the server imports
+and returns that note before calling the filesystem create path. The request
+contains no user-authored block to merge, so synthesizing a local heading and
+replaying it after the import is not creation: it is an unsafe duplicate write
+against resident CRDT history. Non-empty content remains genuine authoring and
+keeps the existing bootstrap-then-merge behavior.
+
+Importing only after the filesystem write was rejected because it can replace
+the new file and then fail the response while recording the synthesized,
+unstamped heading, leaving the caller with HTTP 500 after the remote note has
+already materialized. Authoring before bootstrap was rejected because it mints
+a disjoint Loro lineage. A successfully imported tombstone remains absence and
+returns a conflict rather than silently recreating the deleted slug; explicit
+same-slug recreation stays in `tesela-7p8`.

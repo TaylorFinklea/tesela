@@ -20,7 +20,7 @@ use tesela_core::{
     note_tree::{parse_note, serialize_note},
     property::{parse_scalar, ValueType},
     stable_uuid_from_slug,
-    storage::markdown::parse_frontmatter,
+    storage::markdown::{parse_frontmatter, sanitize_filename},
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
@@ -313,6 +313,42 @@ pub async fn create_note(
     State(s): State<Arc<AppState>>,
     Json(req): Json<CreateNoteReq>,
 ) -> AppResult<Json<Note>> {
+    // Resolve relay existence before mutating the filesystem. A note that is
+    // absent locally but already deposited under this slug is an existing
+    // note, not a fresh create. Importing it after `store.create` made the
+    // bootstrap overwrite the new file, then the synthesized unstamped
+    // heading could fail `record_sync_create` against the imported history —
+    // returning HTTP 500 after the remote note had already materialized.
+    let slug = sanitize_filename(&req.title);
+    let note_id = NoteId::new(&slug);
+    let empty_create_preflight = req.content.is_empty() && s.store.get(&note_id).await?.is_none();
+    if empty_create_preflight && bootstrap_note_if_needed(&s, &slug).await {
+        let adopted = s.store.get(&note_id).await?.ok_or_else(|| {
+            AppError::Conflict(format!(
+                "Note '{}' exists on the relay but has no live materialized projection",
+                slug
+            ))
+        })?;
+        s.index.reindex(&adopted).await?;
+        {
+            use tesela_core::link::extract_wiki_links;
+            use tesela_core::traits::link_graph::LinkGraph;
+            let links = extract_wiki_links(&adopted.content);
+            if let Err(e) = s.index.update_links(&adopted.id, &links).await {
+                tracing::warn!(
+                    "Failed to update links on relay-adopted create for {:?}: {}",
+                    adopted.id,
+                    e
+                );
+            }
+        }
+        ensure_tag_pages(&s, &adopted).await;
+        let _ = s.ws_tx.send(WsEvent::NoteCreated {
+            note: adopted.clone(),
+        });
+        return Ok(Json(adopted));
+    }
+
     let tags: Vec<&str> = req
         .tags
         .as_deref()
@@ -338,15 +374,12 @@ pub async fn create_note(
         }
     }
     ensure_tag_pages(&s, &note).await;
-    // Bootstrap-before-author (convergence fix M1, 2026-06-29): the CREATE path
-    // authors via `record_sync_create`, which does NOT bootstrap internally — it
-    // record_local → doc_for_note_mut → mints a fresh empty doc with THIS
-    // device's peer. So a slug that already exists on the relay (created on
-    // another device) but isn't resident here would fork a DISJOINT Loro lineage
-    // → same-bid twins / garble on sync. Adopt the relay's authoritative
-    // snapshot as a shared base FIRST. No-op once resident / absent on the
-    // relay. Mirrors iOS `bootstrapNoteIfNeeded`.
-    bootstrap_note_if_needed(&s, note.id.as_str()).await;
+    if !empty_create_preflight {
+        // Non-empty content is genuine authoring intent. Preserve the existing
+        // convergence behavior: import the relay base, then merge this create's
+        // explicitly identified blocks onto it.
+        bootstrap_note_if_needed(&s, note.id.as_str()).await;
+    }
     record_sync_create(&s, &note).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
@@ -1994,14 +2027,14 @@ async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) -> anyhow::Resu
 /// 4. **Non-destructive.** `import_authoritative_snapshot` is a server-wins
 ///    re-base that MERGES; any local un-broadcast edits survive (a
 ///    non-resident note has none yet anyway).
-async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) {
+async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) -> bool {
     let Some(relay) = s.relay.as_ref() else {
-        return; // LAN-only / no relay configured — nothing to bootstrap from.
+        return false; // LAN-only / no relay configured — nothing to bootstrap from.
     };
     let note_id = stable_uuid_from_slug(slug);
     // Resident-gate: an already-held doc already carries its shared base.
     if s.sync_engine.doc_version(note_id).await.is_some() {
-        return;
+        return false;
     }
     // Best-effort fetch of the relay's deposited snapshots. Reads through the
     // `RelayClient` only — NOT `handle.state` — so it can never deadlock
@@ -2009,10 +2042,8 @@ async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) {
     let snaps = match relay.client.fetch_snapshots().await {
         Ok((_watermark, snaps)) => snaps,
         Err(e) => {
-            tracing::debug!(
-                "bootstrap: fetch_snapshots for {slug} failed ({e}); authoring fresh"
-            );
-            return;
+            tracing::debug!("bootstrap: fetch_snapshots for {slug} failed ({e}); authoring fresh");
+            return false;
         }
     };
     // Import THIS note's authoritative snapshot (stream_id == note_id) as the
@@ -2031,9 +2062,11 @@ async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) {
                 "bootstrap: import authoritative snapshot for {slug} failed ({e}); \
                  authoring fresh"
             );
+            return false;
         }
-        return;
+        return true;
     }
+    false
 }
 
 pub async fn get_backlinks(
@@ -2851,15 +2884,7 @@ mod tests {
             );
         }
 
-        /// Same convergence fix (M1) on the CREATE path. `create_note` authors
-        /// via `record_sync_create`, which does NOT bootstrap internally. The
-        /// relay holds slug `relay-note`'s authoritative snapshot (alpha); the
-        /// server's engine does NOT hold the doc. Creating that slug locally
-        /// must first pull alpha off the relay as a shared base so the merged
-        /// note carries BOTH alpha (relay) and gamma (this create) — not a
-        /// disjoint clobber that drops alpha.
-        #[tokio::test]
-        async fn create_note_bootstraps_relay_snapshot_before_authoring() {
+        async fn create_relay_only_note(content: String) -> (Note, String, String, String) {
             let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
             let (group, key) = fresh_group();
 
@@ -2868,7 +2893,6 @@ mod tests {
             let slug = "relay-note";
             let note_id = stable_uuid_from_slug(slug);
             let alpha_bid = "01010101-0101-0101-0101-010101010101";
-            let gamma_bid = "03030303-0303-0303-0303-030303030303";
 
             // ── Peer authors content X and deposits its snapshot to the relay ──
             let peer_tmp = tempfile::tempdir().unwrap();
@@ -2967,25 +2991,24 @@ mod tests {
                 ),
             });
 
-            // ── Author content Y by CREATING the note at slug `relay-note` ──
+            // ── Create the already-relayed slug with the product's empty body ──
             let res = create_note(
                 State(Arc::clone(&state)),
                 Json(CreateNoteReq {
                     title: slug.to_string(),
-                    content: format!("- gamma from desktop <!-- bid:{gamma_bid} -->\n"),
+                    content,
                     tags: None,
                 }),
             )
             .await;
             assert!(
                 res.is_ok(),
-                "create_note should succeed (got {:?})",
-                res.err().map(|e| e.into_response().status())
+                "create_note should succeed (got {:#?})",
+                res.as_ref().err()
             );
+            let created = res.expect("successful create returns the adopted note").0;
 
-            // The relay's alpha (X) was bootstrapped as the shared base, and the
-            // created gamma (Y) merged onto it — NOT a disjoint clobber that
-            // drops alpha. `render_note` is the CRDT truth.
+            // The relay's alpha is now the local CRDT and filesystem truth.
             let merged = engine
                 .render_note(note_id)
                 .await
@@ -2994,26 +3017,62 @@ mod tests {
                 merged.contains("alpha from relay"),
                 "bootstrapped relay base (X) must survive the create; render:\n{merged}"
             );
-            assert!(
-                merged.contains("gamma from desktop"),
-                "the created edit (Y) must be present; render:\n{merged}"
-            );
-            // Exactly one alpha + one gamma — no disjoint same-bid twins.
             assert_eq!(
                 merged.matches(&format!("bid:{alpha_bid}")).count(),
                 1,
                 "alpha must render exactly once (no twin); render:\n{merged}"
             );
-            assert_eq!(
-                merged.matches(&format!("bid:{gamma_bid}")).count(),
-                1,
-                "gamma must render exactly once (no twin); render:\n{merged}"
-            );
-            // The doc is now resident on the server (bootstrap imported it).
             assert!(
                 engine.doc_version(note_id).await.is_some(),
                 "the note must be resident after the bootstrap import"
             );
+            let on_disk = state
+                .store
+                .get(&NoteId::new(slug))
+                .await
+                .expect("read adopted note")
+                .expect("adopted note exists on disk");
+            assert!(on_disk.content.contains("alpha from relay"));
+
+            drop(state);
+            drop(engine);
+            let reopened = loro_engine_in(mosaic.path(), srv_dev).await;
+            let after_restart = reopened
+                .render_note(note_id)
+                .await
+                .expect("adopted note survives engine restart");
+            assert!(after_restart.contains("alpha from relay"));
+            (created, merged, on_disk.content, after_restart)
+        }
+
+        /// A relay-only slug is already an existing note, even when the local
+        /// filesystem and engine have not seen it yet. An empty-content create
+        /// must adopt and return that note instead of synthesizing an unstamped
+        /// heading after bootstrap and then failing with a partial HTTP 500.
+        #[tokio::test]
+        async fn empty_create_returns_relay_only_note_and_survives_restart() {
+            let (created, merged, on_disk, after_restart) =
+                create_relay_only_note(String::new()).await;
+            for projection in [&created.content, &merged, &on_disk, &after_restart] {
+                assert!(projection.contains("alpha from relay"));
+            }
+        }
+
+        /// Non-empty create content remains a genuine authoring request: it
+        /// must merge onto the imported relay base rather than being discarded
+        /// by the empty-create idempotency path.
+        #[tokio::test]
+        async fn nonempty_create_merges_onto_relay_only_note() {
+            let gamma_bid = "03030303-0303-0303-0303-030303030303";
+            let (created, merged, _on_disk, after_restart) =
+                create_relay_only_note(format!("- gamma from desktop <!-- bid:{gamma_bid} -->\n"))
+                    .await;
+            assert!(created.content.contains("gamma from desktop"));
+            for projection in [&merged, &after_restart] {
+                assert!(projection.contains("alpha from relay"));
+                assert!(projection.contains("gamma from desktop"));
+                assert_eq!(projection.matches(&format!("bid:{gamma_bid}")).count(), 1);
+            }
         }
 
         #[tokio::test]

@@ -110,8 +110,40 @@ terminate/relaunch. The stale simulator-only note from the original failure was
 then recovered and deleted through the repaired path, leaving no QA note behind.
 
 That recovery POST returned 500 after successfully materializing its remote
-snapshot, exposing a separate non-atomic create/bootstrap path. It is filed as
-`tesela-rp65`; the subsequent NoteDelete completed and relayed normally.
+snapshot, exposing a separate non-atomic create/bootstrap path. It was tracked
+as `tesela-rp65`; the subsequent NoteDelete completed and relayed normally.
+
+## Resolved follow-up (`tesela-rp65`)
+
+The failing cleanup request was the product's exact empty-content create for a
+slug that existed only in the relay. `create_note` first let `FsNoteStore`
+synthesize an unstamped heading, then imported the relay snapshot over that
+file, then attempted to record the stale synthesized note. Loro correctly
+rejected the changed unstamped blocks against resident history, but only after
+the import had materialized the remote note, producing HTTP 500 with a visible
+partial success.
+
+An empty create now probes and imports the relay snapshot before any local
+create, returns the adopted materialization, repairs its index/link/tag
+projections, and emits the normal created event. A successful tombstone import
+fails closed instead of recreating the slug. Non-empty content retains the
+prior bootstrap-and-merge behavior so real authoring is not discarded.
+
+The regression seeded a real relay snapshot while leaving the server engine,
+filesystem, and SQLite index unaware of the slug. Before the fix, the exact
+empty create reproduced the protocol-violation 500 after materialization.
+Afterward, the response, Loro render, Markdown file, and reopened engine all
+contained the relay content. A companion test proves non-empty content still
+merges with the relay base exactly once.
+
+Verification passed `TESELA_GROUP_KEY_FILE_STORE=1 cargo test -p
+tesela-server -p tesela-sync` (server 109/109; sync 300 passed and one
+intentional ignore), the full workspace test suite, `cargo build --workspace`,
+web check with zero errors, and all 996 web unit tests on the merged main base.
+Strict scoped server
+clippy remains blocked only by tracked `tesela-8wk` doc-continuation findings;
+the same gate passes with that named baseline allowance. Repository-wide
+rustfmt remains the tracked `tesela-bz5` normalization backlog.
 
 ## Baseline-only quality gates
 
