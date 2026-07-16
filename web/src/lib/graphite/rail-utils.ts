@@ -42,3 +42,28 @@ export function splitRailTasks<T extends RailTaskRow>(rows: readonly T[]) {
 export function railTaskLabel(row: Pick<RailTaskRow, "text">): string {
   return row.text.trim() || "(untitled task)";
 }
+
+export function railNavigationTargetIndex(
+  key: string,
+  currentIndex: number,
+  count: number,
+): number | null {
+  if (count <= 0 || currentIndex < 0 || currentIndex >= count) return null;
+
+  switch (key) {
+    case "j":
+    case "ArrowDown":
+      return (currentIndex + 1 + count) % count;
+    case "k":
+    case "ArrowUp":
+      return (currentIndex - 1 + count) % count;
+    case "g":
+    case "Home":
+      return 0;
+    case "G":
+    case "End":
+      return count - 1;
+    default:
+      return null;
+  }
+}

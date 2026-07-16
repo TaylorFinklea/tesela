@@ -66,3 +66,31 @@ test("manifest exposes Move block subtree on the free a m chord", () => {
   assert.deepEqual(entry.surfaces, ["leader", "palette"]);
   assert.equal(manifest.filter((item) => item.chord?.join(" ") === "a m").length, 1);
 });
+
+test("manifest exposes every rail action through named commands", () => {
+  const railCommands = [
+    ["rail-focus", ["r", "f"]],
+    ["rail-quick-capture", ["r", "c"]],
+    ["rail-add-widget", ["r", "a"]],
+  ];
+
+  for (const [id, chord] of railCommands) {
+    const entry = manifest.find((item) => item.id === id);
+    assert.ok(entry, `expected ${id} in the command manifest`);
+    assert.deepEqual(entry.chord, chord);
+    assert.ok(entry.surfaces.includes("leader"));
+  }
+
+  const jump = manifest.find((item) => item.id === "jump");
+  assert.ok(jump, "rail page rows reuse the named jump command");
+  assert.equal(jump.takes_arg, true);
+
+  const railFavorite = manifest.find((item) => item.id === "rail-toggle-favorite");
+  assert.ok(railFavorite, "rail favorite buttons have a named argument-taking command");
+  assert.equal(railFavorite.takes_arg, true);
+  assert.match(railFavorite.arg_prompt, /page/i);
+
+  const focusedFavorite = manifest.find((item) => item.id === "toggle-favorite");
+  assert.ok(focusedFavorite, "the existing focused-page favorite command remains available");
+  assert.equal(focusedFavorite.takes_arg, false);
+});

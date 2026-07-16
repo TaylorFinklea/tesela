@@ -36,6 +36,7 @@ import {
 } from "$lib/buffer/state.svelte";
 import { runScratchPrune } from "$lib/state/scratch-prune";
 import { toggleFavorite } from "$lib/stores/favorites.svelte";
+import { openColonMode } from "$lib/stores/colon-mode.svelte";
 import {
   asPageId,
   type DerivedBinding,
@@ -180,6 +181,20 @@ function toggleFocusedFavorite() {
   const buffer = getFocusedBuffer();
   if (!buffer || buffer.kind !== "page" || !buffer.pageId) return;
   toggleFavorite(buffer.pageId);
+}
+
+function toggleRailFavorite(pageId?: string) {
+  if (!pageId) {
+    console.warn("rail-favorite: pass a page id");
+    return;
+  }
+  toggleFavorite(pageId);
+}
+
+function openQuickCapture() {
+  openColonMode({
+    priorPaneId: getFocusedLeafId() as unknown as string | undefined,
+  });
 }
 
 async function createScratchAndJump() {
@@ -686,6 +701,47 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       run: (arg) => {
         if (arg) return createNoteAndJump(arg);
       },
+    },
+
+    {
+      id: "rail-focus",
+      verb: "rail-focus",
+      label: "Focus widget rail",
+      glyph: "▥",
+      category: "navigate",
+      chord: ["r", "f"],
+      keywords: ["rail", "sidebar", "widgets", "focus", "keyboard"],
+      run: () => document.dispatchEvent(new CustomEvent("tesela:focus-rail")),
+    },
+    {
+      id: "rail-quick-capture",
+      verb: "rail-capture",
+      label: "Quick capture",
+      glyph: "⚡",
+      category: "create",
+      chord: ["r", "c"],
+      keywords: ["rail", "quick", "capture", "thought", "inbox"],
+      run: () => openQuickCapture(),
+    },
+    {
+      id: "rail-toggle-favorite",
+      verb: "rail-favorite",
+      label: "Toggle a rail page favorite",
+      glyph: "★",
+      category: "navigate",
+      keywords: ["rail", "favorite", "star", "bookmark", "page"],
+      argPrompt: "page id",
+      run: (arg) => toggleRailFavorite(arg),
+    },
+    {
+      id: "rail-add-widget",
+      verb: "rail-add-widget",
+      label: "Add rail widget",
+      glyph: "+",
+      category: "navigate",
+      chord: ["r", "a"],
+      keywords: ["rail", "sidebar", "widget", "add", "customize"],
+      run: () => toast("Widget customization is coming soon"),
     },
 
     {

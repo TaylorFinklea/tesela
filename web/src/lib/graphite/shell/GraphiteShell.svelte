@@ -218,13 +218,16 @@
         }
       }
 
-      // Space opens the leader chord menu when NOT in a text entry.
+      // Space opens the leader chord menu when NOT in a text entry. Rail
+      // buttons keep native Space activation after keyboard focus enters the
+      // rail through its own leader command.
       if (
         !mod &&
         !e.altKey &&
         !e.ctrlKey &&
         e.key === ' ' &&
-        !isTextEntry(e.target)
+        !isTextEntry(e.target) &&
+        !(e.target as HTMLElement | null)?.closest?.('[data-rail-action]')
       ) {
         e.preventDefault();
         e.stopPropagation();

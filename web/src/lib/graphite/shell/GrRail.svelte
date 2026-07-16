@@ -15,17 +15,25 @@
    * The widget set is fixed for parity; configurability is the iterate phase.
    */
   import { createQuery } from '@tanstack/svelte-query';
+  import { onMount } from 'svelte';
   import GrWidget from '$lib/graphite/GrWidget.svelte';
   import GrRow from '$lib/graphite/GrRow.svelte';
   import GrIcon from '$lib/graphite/GrIcon.svelte';
   import { api } from '$lib/api-client';
   import type { AgendaRow as AgendaRowT } from '$lib/types/AgendaRow';
-  import { openPageInFocused, getFocusedLeafId } from '$lib/buffer/state.svelte';
-  import { asPageId } from '$lib/buffer/types';
-  import { openColonMode } from '$lib/stores/colon-mode.svelte';
-  import { getFavorites, isFavorite, toggleFavorite } from '$lib/stores/favorites.svelte';
+  import { commandRegistry } from '$lib/command-registry.svelte';
+  import { getFavorites, isFavorite } from '$lib/stores/favorites.svelte';
   import { getPinned, getRecent } from '$lib/state/shared.svelte';
-  import { agendaQueryKey, agendaRange, railTaskLabel, splitRailTasks } from '$lib/graphite/rail-utils';
+  import {
+    agendaQueryKey,
+    agendaRange,
+    railNavigationTargetIndex,
+    railTaskLabel,
+    splitRailTasks,
+  } from '$lib/graphite/rail-utils';
+
+  let rail: HTMLElement;
+  let previousFocus: HTMLElement | null = null;
 
   const favorites = $derived(getFavorites());
   const pinned = $derived(getPinned());
@@ -39,30 +47,94 @@
   const taskRows = $derived((tasksQuery.data ?? []) as AgendaRowT[]);
   const taskBuckets = $derived(splitRailTasks(taskRows));
 
-  function openPage(pageId: string) {
-    if (pageId) openPageInFocused(asPageId(pageId));
+  function railActions(): HTMLButtonElement[] {
+    return rail
+      ? Array.from(rail.querySelectorAll<HTMLButtonElement>('[data-rail-action]:not(:disabled)'))
+      : [];
   }
 
-  function toggleRowFavorite(event: MouseEvent, pageId: string) {
+  function runRailCommand(id: string, arg?: string, event?: Event) {
+    event?.stopPropagation();
+    const command = commandRegistry.get(id);
+    if (!command) {
+      console.warn(`graphite rail: command not registered: ${id}`);
+      return;
+    }
+    void command.run(arg);
+  }
+
+  function focusRail() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !rail?.contains(active)) {
+      previousFocus = active;
+    }
+    railActions()[0]?.focus();
+  }
+
+  function handleRailFocusIn(event: FocusEvent) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !rail.contains(target)) return;
+    const prior = event.relatedTarget;
+    if (prior instanceof HTMLElement && !rail.contains(prior)) {
+      previousFocus = prior;
+    }
+  }
+
+  function handleRailKeydown(event: KeyboardEvent) {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLButtonElement) || !rail.contains(active)) return;
+    const actions = railActions();
+    const currentIndex = actions.indexOf(active);
+    if (currentIndex < 0) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = previousFocus;
+      previousFocus = null;
+      if (target?.isConnected) target.focus();
+      else active.blur();
+      return;
+    }
+
+    const nextIndex = railNavigationTargetIndex(event.key, currentIndex, actions.length);
+    if (nextIndex === null) return;
+    event.preventDefault();
     event.stopPropagation();
-    toggleFavorite(pageId);
+    actions[nextIndex]?.focus();
   }
 
-  function addWidget() {
-    // Configurable widgets are deferred to a later phase.
-    console.log('graphite: add widget (deferred)');
-  }
+  onMount(() => {
+    document.addEventListener('tesela:focus-rail', focusRail);
+    return () => document.removeEventListener('tesela:focus-rail', focusRail);
+  });
 </script>
 
-<div class="gr-rail">
-  <div class="gr-rail-scroll">
+<nav
+  class="gr-rail"
+  aria-label="Widget rail"
+  bind:this={rail}
+>
+  <div
+    class="gr-rail-scroll"
+    role="toolbar"
+    tabindex="-1"
+    aria-label="Widget rail actions"
+    aria-orientation="vertical"
+    onfocusin={handleRailFocusIn}
+    onkeydown={handleRailKeydown}
+  >
     <GrWidget title="Quick capture" icon="bolt">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="gr-capture" onclick={() => openColonMode({ priorPaneId: getFocusedLeafId() as unknown as string | undefined })}>
+      <button
+        type="button"
+        class="gr-capture"
+        data-rail-action=""
+        data-command-id="rail-quick-capture"
+        onclick={() => runRailCommand('rail-quick-capture')}
+      >
         <span class="pl">Capture a thought…</span>
-        <span class="pk">C</span>
-      </div>
+        <span class="pk">r c</span>
+      </button>
     </GrWidget>
 
     <GrWidget title="Favorites" icon="star">
@@ -74,7 +146,9 @@
             <GrRow
               icon="file-text"
               label={id}
-              onclick={() => openPage(id)}
+              data-rail-action=""
+              data-command-id="jump"
+              onclick={() => runRailCommand('jump', id)}
               aria-label={`Open favorite page ${id}`}
             />
             <button
@@ -83,7 +157,9 @@
               aria-pressed="true"
               aria-label={`Remove ${id} from favorites`}
               title="Remove from favorites"
-              onclick={(event) => toggleRowFavorite(event, id)}
+              data-rail-action=""
+              data-command-id="rail-toggle-favorite"
+              onclick={(event) => runRailCommand('rail-toggle-favorite', id, event)}
             >
               <GrIcon name="star" size={13} />
             </button>
@@ -101,7 +177,9 @@
             <GrRow
               icon="file-text"
               label={id}
-              onclick={() => openPage(id)}
+              data-rail-action=""
+              data-command-id="jump"
+              onclick={() => runRailCommand('jump', id)}
               aria-label={`Open pinned page ${id}`}
             />
             <button
@@ -111,7 +189,9 @@
               aria-pressed={isFavorite(id)}
               aria-label={isFavorite(id) ? `Remove ${id} from favorites` : `Add ${id} to favorites`}
               title={isFavorite(id) ? "Remove from favorites" : "Add to favorites"}
-              onclick={(event) => toggleRowFavorite(event, id)}
+              data-rail-action=""
+              data-command-id="rail-toggle-favorite"
+              onclick={(event) => runRailCommand('rail-toggle-favorite', id, event)}
             >
               <GrIcon name="star" size={13} />
             </button>
@@ -129,7 +209,9 @@
             <GrRow
               icon="circle-dot"
               label={id}
-              onclick={() => openPage(id)}
+              data-rail-action=""
+              data-command-id="jump"
+              onclick={() => runRailCommand('jump', id)}
               aria-label={`Open recent page ${id}`}
             />
             <button
@@ -139,7 +221,9 @@
               aria-pressed={isFavorite(id)}
               aria-label={isFavorite(id) ? `Remove ${id} from favorites` : `Add ${id} to favorites`}
               title={isFavorite(id) ? "Remove from favorites" : "Add to favorites"}
-              onclick={(event) => toggleRowFavorite(event, id)}
+              data-rail-action=""
+              data-command-id="rail-toggle-favorite"
+              onclick={(event) => runRailCommand('rail-toggle-favorite', id, event)}
             >
               <GrIcon name="star" size={13} />
             </button>
@@ -161,7 +245,9 @@
               icon="circle-dot"
               label={railTaskLabel(row)}
               meta={row.occurrence_date}
-              onclick={() => openPage(row.source_note_id)}
+              data-rail-action=""
+              data-command-id="jump"
+              onclick={() => runRailCommand('jump', row.source_note_id)}
               aria-label={`Open task ${railTaskLabel(row)}`}
             />
           {/each}
@@ -173,7 +259,9 @@
               icon="circle-dot"
               label={railTaskLabel(row)}
               meta={row.occurrence_date}
-              onclick={() => openPage(row.source_note_id)}
+              data-rail-action=""
+              data-command-id="jump"
+              onclick={() => runRailCommand('jump', row.source_note_id)}
               aria-label={`Open task ${railTaskLabel(row)}`}
             />
           {/each}
@@ -181,13 +269,17 @@
       {/if}
     </GrWidget>
 
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="gr-addw" onclick={addWidget}>
+    <button
+      type="button"
+      class="gr-addw"
+      data-rail-action=""
+      data-command-id="rail-add-widget"
+      onclick={() => runRailCommand('rail-add-widget')}
+    >
       <GrIcon name="plus" size={14} /> Add widget
-    </div>
+    </button>
   </div>
-</div>
+</nav>
 
 <style>
   .gr-rail {
@@ -208,6 +300,7 @@
     gap: 8px;
   }
   .gr-capture {
+    width: calc(100% - 8px);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -218,6 +311,8 @@
     border: 1px solid var(--line);
     color: var(--subtle);
     font-size: 12.5px;
+    font-family: inherit;
+    text-align: left;
     cursor: pointer;
   }
   .gr-capture .pl {
@@ -279,12 +374,18 @@
     padding: 9px;
     border-radius: 8px;
     border: 1px dashed var(--line-2);
+    background: transparent;
     color: var(--subtle);
     font-size: 12px;
+    font-family: inherit;
     cursor: pointer;
   }
   .gr-addw:hover {
     color: var(--fg2);
     border-color: var(--line-3);
+  }
+  .gr-rail :global([data-rail-action]:focus-visible) {
+    outline: 2px solid var(--coral);
+    outline-offset: 1px;
   }
 </style>

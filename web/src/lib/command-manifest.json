@@ -1071,6 +1071,110 @@
     "description": null
   },
   {
+    "id": "rail-focus",
+    "verb": "rail-focus",
+    "label": "Focus widget rail",
+    "glyph": "▥",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "f"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "sidebar",
+      "widgets",
+      "focus",
+      "keyboard"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "rail-quick-capture",
+    "verb": "rail-capture",
+    "label": "Quick capture",
+    "glyph": "⚡",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "c"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "quick",
+      "capture",
+      "thought",
+      "inbox"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "rail-toggle-favorite",
+    "verb": "rail-favorite",
+    "label": "Toggle a rail page favorite",
+    "glyph": "★",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "favorite",
+      "star",
+      "bookmark",
+      "page"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "page id",
+    "description": null
+  },
+  {
+    "id": "rail-add-widget",
+    "verb": "rail-add-widget",
+    "label": "Add rail widget",
+    "glyph": "+",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "a"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "sidebar",
+      "widget",
+      "add",
+      "customize"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
     "id": "toggle-favorite",
     "verb": "favorite",
     "label": "Toggle Favorite",

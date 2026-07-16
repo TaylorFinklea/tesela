@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { agendaQueryKey, agendaRange, splitRailTasks, railTaskLabel } = await import(
-  "../../src/lib/graphite/rail-utils.ts"
-);
+const railUtils = await import("../../src/lib/graphite/rail-utils.ts");
+const { agendaQueryKey, agendaRange, splitRailTasks, railTaskLabel } = railUtils;
 
 test("agendaRange matches the Agenda lookback and forward window", () => {
   const range = agendaRange(new Date(2026, 6, 10, 12), 60);
@@ -36,4 +35,26 @@ test("splitRailTasks keeps open tasks and separates doing from next", () => {
 test("railTaskLabel gives empty task rows a useful fallback", () => {
   assert.equal(railTaskLabel({ text: "Call Taylor" }), "Call Taylor");
   assert.equal(railTaskLabel({ text: "" }), "(untitled task)");
+});
+
+test("rail keyboard traversal supports arrows, vim keys, and boundaries", () => {
+  assert.equal(
+    typeof railUtils.railNavigationTargetIndex,
+    "function",
+    "railNavigationTargetIndex must define the rail's shared keyboard contract",
+  );
+
+  const navigate = railUtils.railNavigationTargetIndex;
+  assert.equal(navigate("j", 0, 3), 1);
+  assert.equal(navigate("ArrowDown", 2, 3), 0);
+  assert.equal(navigate("k", 0, 3), 2);
+  assert.equal(navigate("ArrowUp", 2, 3), 1);
+  assert.equal(navigate("Home", 2, 3), 0);
+  assert.equal(navigate("g", 2, 3), 0);
+  assert.equal(navigate("End", 0, 3), 2);
+  assert.equal(navigate("G", 0, 3), 2);
+  assert.equal(navigate("x", 1, 3), null);
+  assert.equal(navigate("j", 0, 0), null);
+  assert.equal(navigate("j", -1, 3), null);
+  assert.equal(navigate("k", 3, 3), null);
 });
