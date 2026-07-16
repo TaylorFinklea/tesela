@@ -47,6 +47,13 @@ final class GrCommandTests: XCTestCase {
         XCTAssertFalse(ids.contains("inbox"), "Views should be the primary visible command id")
     }
 
+    func testWhatsNewCommandIsManifestBackedAndExecutable() {
+        let command = GrCommand.palette(from: manifest).first { $0.id == "whats-new" }
+        XCTAssertNotNil(command)
+        XCTAssertEqual(command?.label, "What’s New")
+        XCTAssertTrue(GrCommand.executableIds.contains("whats-new"))
+    }
+
     func testViewsCommandIsNotLabeledInbox() {
         let views = GrCommand.palette(from: manifest).first { $0.id == "views" }
         XCTAssertEqual(views?.label, "Open Views")

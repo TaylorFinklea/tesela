@@ -25,6 +25,7 @@ struct GrCommand: Identifiable, Equatable, Hashable {
         "daily", "agenda", "views",
         "settings-general", "settings-devices", "settings-sync",
         "settings-mosaic", "settings-data",
+        "whats-new",
     ]
 
     /// Build the palette's offering: every manifest entry visible on the

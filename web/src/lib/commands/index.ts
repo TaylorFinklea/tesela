@@ -47,6 +47,7 @@ import {
 } from "$lib/buffer/tree";
 import {
   openKeymapOverlay,
+  openReleaseNotesOverlay,
   openSettingsOverlay,
   type SettingsSlug,
 } from "$lib/stores/fullscreen-overlay.svelte";
@@ -664,6 +665,15 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       keywords: ["settings", "preferences", "config", slug, label.toLowerCase()],
       run: () => openSettingsOverlay(slug),
     })),
+    {
+      id: "whats-new",
+      verb: "whats-new",
+      label: "What’s New",
+      glyph: "✦",
+      category: "navigate",
+      keywords: ["release", "notes", "changes", "changelog", "update", "new"],
+      run: () => openReleaseNotesOverlay(),
+    },
     {
       id: "new-note",
       verb: "new",

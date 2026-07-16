@@ -31,7 +31,6 @@
 #   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (win if set)
 #   DESKTOP_UPDATER_TARGET   (default darwin-aarch64; darwin-x86_64 on Intel)
 #   DESKTOP_GH_REPO          (default TaylorFinklea/tesela)
-#   DESKTOP_RELEASE_NOTES    (freeform notes string embedded in latest.json)
 #
 # Run:
 #   scripts/desktop-release.sh                 # build/sign/zip/notarize/staple/zip/manifest
@@ -83,6 +82,10 @@ GH_REPO="${DESKTOP_GH_REPO:-TaylorFinklea/tesela}"
 UPDATER_TAR_PATH="${APP_BUNDLE}.tar.gz"
 UPDATER_SIG_PATH="${UPDATER_TAR_PATH}.sig"
 MANIFEST_PATH="$DIST_DIR/latest.json"
+RELEASE_NOTES_MD_PATH="$DIST_DIR/release-notes.md"
+RELEASE_NOTES_PLAIN_PATH="$DIST_DIR/release-notes.txt"
+DESKTOP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+DESKTOP_RELEASE_ID="$(node -p "require('./release-notes/releases.json').current.desktop")"
 
 SKIP_NOTARIZE=false
 for arg in "$@"; do
@@ -101,6 +104,15 @@ done
 
 warn() {
   echo "WARNING: $*" >&2
+}
+
+prepare_release_notes() {
+  echo "==> validate and render desktop release notes"
+  mkdir -p "$DIST_DIR"
+  node scripts/changelog.mjs validate --platform desktop --version "$DESKTOP_VERSION"
+  node scripts/changelog.mjs render --release "$DESKTOP_RELEASE_ID" --format markdown > "$RELEASE_NOTES_MD_PATH"
+  node scripts/changelog.mjs render --release "$DESKTOP_RELEASE_ID" --format plain > "$RELEASE_NOTES_PLAIN_PATH"
+  echo "    wrote $RELEASE_NOTES_MD_PATH and $RELEASE_NOTES_PLAIN_PATH"
 }
 
 zip_app() {
@@ -137,37 +149,27 @@ emit_updater_manifest() {
   mkdir -p "$DIST_DIR"
   local tar_dest="$DIST_DIR/$(basename "$UPDATER_TAR_PATH")"
   cp -f "$UPDATER_TAR_PATH" "$tar_dest"
-  local sig
-  sig="$(cat "$UPDATER_SIG_PATH")"
-  local version
-  version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$REPO_ROOT/src-tauri/tauri.conf.json" | head -1)"
-  if [[ -z "$version" ]]; then
-    warn "could not read version from src-tauri/tauri.conf.json; skipping manifest"
-    return 0
-  fi
   local pub_date
   pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local asset_name
   asset_name="$(basename "$tar_dest")"
-  local download_url="https://github.com/${GH_REPO}/releases/download/v${version}/${asset_name}"
-  cat >"$MANIFEST_PATH" <<JSON
-{
-  "version": "${version}",
-  "notes": "${DESKTOP_RELEASE_NOTES:-See the GitHub release notes.}",
-  "pub_date": "${pub_date}",
-  "platforms": {
-    "${UPDATER_TARGET}": {
-      "signature": "${sig}",
-      "url": "${download_url}"
-    }
-  }
-}
-JSON
-  echo "    wrote $MANIFEST_PATH (target=$UPDATER_TARGET, version=$version)"
+  local download_url="https://github.com/${GH_REPO}/releases/download/v${DESKTOP_VERSION}/${asset_name}"
+  node scripts/changelog.mjs updater-manifest \
+    --version "$DESKTOP_VERSION" \
+    --notes-file "$RELEASE_NOTES_PLAIN_PATH" \
+    --pub-date "$pub_date" \
+    --target "$UPDATER_TARGET" \
+    --signature-file "$UPDATER_SIG_PATH" \
+    --url "$download_url" > "$MANIFEST_PATH"
+  echo "    wrote $MANIFEST_PATH (target=$UPDATER_TARGET, version=$DESKTOP_VERSION)"
   echo "    publish (creates/updates the GitHub release + attaches assets):"
-  echo "      gh release create v${version} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --title v${version} --generate-notes"
-  echo "      # or, if v${version} already exists: gh release upload v${version} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --clobber"
+  echo "      gh release create v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --title v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\""
+  echo "      # or, if v${DESKTOP_VERSION} already exists:"
+  echo "      gh release edit v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\""
+  echo "      gh release upload v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --clobber"
 }
+
+prepare_release_notes
 
 echo "=== Tesela Desktop Release ==="
 echo "    product:      $PRODUCT_NAME"

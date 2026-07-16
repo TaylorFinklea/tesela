@@ -114,6 +114,9 @@ jobs:
       - name: Command manifest freshness check
         run: pnpm --dir web check:manifest
 
+      - name: Release notes catalog and bundle drift check
+        run: pnpm --dir web check:changelog
+
       # Blocking: 16 of the 17 node:test unit suites (190 tests).
       # cm-decorations.test.mjs is excluded — cm-decorations.ts uses
       # extensionless bundler-style imports (./code-highlight) that node's

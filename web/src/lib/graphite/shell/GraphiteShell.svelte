@@ -41,7 +41,15 @@
   import { openLeader } from '$lib/leader/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
   import { getVimMode } from '$lib/stores/pane-state.svelte';
-  import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
+  import {
+    openReleaseNotesOverlay,
+    openSettingsOverlay,
+  } from '$lib/stores/fullscreen-overlay.svelte';
+  import {
+    ReleaseNotesSeenState,
+    loadBundledReleaseNotes,
+    resolveReleasePlatform,
+  } from '$lib/release-notes';
   import { getFocusedBlock } from '$lib/stores/current-block.svelte';
   import { isEditorFocused } from '$lib/stores/focused-editor.svelte';
   import { resolveShortcut, type CommandContext } from '$lib/command-registry.svelte';
@@ -142,6 +150,17 @@
   }
 
   onMount(() => {
+    const releaseCatalog = loadBundledReleaseNotes();
+    if (releaseCatalog) {
+      const releasePlatform = resolveReleasePlatform();
+      const releaseSeen = new ReleaseNotesSeenState(
+        releaseCatalog,
+        releasePlatform,
+        localStorage,
+      );
+      if (releaseSeen.shouldAutoPresent()) openReleaseNotesOverlay();
+    }
+
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey;
 

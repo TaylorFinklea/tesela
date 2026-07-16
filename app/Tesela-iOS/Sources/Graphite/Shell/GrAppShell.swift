@@ -47,6 +47,7 @@ struct GrAppShell: View {
     /// `MosaicRegistry`. Was DEFERRED here until the Graphite Settings
     /// page (task #156) gave it a home.
     @StateObject private var mosaicRegistry = MosaicRegistry()
+    @StateObject private var releaseNotes = ReleaseNotesPresenter()
 
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
@@ -69,8 +70,9 @@ struct GrAppShell: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if onboardingComplete {
-            shell
+        Group {
+            if onboardingComplete {
+                shell
                 // Force the Graphite theme regardless of the user's saved
                 // appearance — this is the Graphite shell. (Cutover folds it
                 // back into the appearance controller.)
@@ -307,16 +309,23 @@ struct GrAppShell: View {
                 guard let text = transcript.text(ifCurrent: voiceCaptureScope) else { return }
                 composer.append(text)
             }
-        } else {
-            OnboardingView(
-                onboardingComplete: $onboardingComplete,
-                backend: backend,
-                mosaic: mosaic,
-                registry: mosaicRegistry
-            )
-            .environment(\.theme, .graphite)
-            .preferredColorScheme(.dark)
+            } else {
+                OnboardingView(
+                    onboardingComplete: $onboardingComplete,
+                    backend: backend,
+                    mosaic: mosaic,
+                    registry: mosaicRegistry
+                )
+                .environment(\.theme, .graphite)
+                .preferredColorScheme(.dark)
+            }
         }
+        .releaseNotesPresentation(
+            presenter: releaseNotes,
+            onboardingComplete: onboardingComplete
+        )
+        .environment(\.theme, .graphite)
+        .preferredColorScheme(.dark)
     }
 
     /// Identity of the current backend (mode + server URL + relay group). Drives
@@ -796,6 +805,11 @@ struct GrAppShell: View {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))
                 showSettings = true
+            }
+        case "whats-new":
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                releaseNotes.presentCurrent()
             }
         default: break
         }

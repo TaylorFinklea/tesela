@@ -6,6 +6,20 @@
   import { commandRegistry, effectiveShortcut, effectiveChord, checkRebind } from "$lib/command-registry.svelte";
   import { eventToShortcutGlyph } from "$lib/shortcut-glyph";
   import * as keybindings from "$lib/stores/keybindings.svelte";
+  import {
+    currentRelease,
+    loadBundledReleaseNotes,
+    releaseDateLabel,
+    releaseVersionLabel,
+    resolveReleasePlatform,
+  } from "$lib/release-notes";
+  import { openReleaseNotesOverlay } from "$lib/stores/fullscreen-overlay.svelte";
+
+  const releaseCatalog = loadBundledReleaseNotes();
+  const releasePlatform = resolveReleasePlatform();
+  const latestRelease = releaseCatalog
+    ? currentRelease(releaseCatalog, releasePlatform)
+    : null;
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -295,4 +309,26 @@
       >Reset all to defaults</button>
     </div>
   {/if}
+</section>
+
+<section data-release-notes-entry>
+  <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">About</h2>
+  <div class="flex items-center gap-4 rounded-lg border border-border/40 bg-muted/15 px-3 py-3">
+    <div class="min-w-0 flex-1">
+      <p class="text-[13px] text-foreground/90">Tesela</p>
+      <p class="text-[10.5px] text-muted-foreground/45 font-mono mt-0.5">
+        {#if latestRelease}
+          {releaseVersionLabel(latestRelease, releasePlatform)} · {releaseDateLabel(latestRelease)}
+        {:else}
+          Release notes unavailable
+        {/if}
+      </p>
+    </div>
+    <button
+      type="button"
+      data-release-notes-entry-button
+      class="shrink-0 text-[11px] px-3 py-1.5 rounded-md border border-primary/25 text-primary hover:bg-primary/8 transition-colors"
+      onclick={openReleaseNotesOverlay}
+    >What’s New</button>
+  </div>
 </section>

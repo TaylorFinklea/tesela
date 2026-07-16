@@ -38,6 +38,7 @@ struct GrSettingsView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openReleaseNotes) private var openReleaseNotes
 
     // ── Backend draft state (mirrors BackendSettingsView) ───────────────
     @State private var pickerMode: BackendSettings.Mode
@@ -756,10 +757,39 @@ struct GrSettingsView: View {
     // ── About ───────────────────────────────────────────────────────────
 
     private var aboutSection: some View {
-        Text("Tesela for iPhone · v0.4.1 · tesela-core 0.9.2")
-            .font(.system(size: 10.5, design: .monospaced))
-            .foregroundStyle(theme.fgFaint)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 6)
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("About")
+            card {
+                Button {
+                    dismiss()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(350))
+                        openReleaseNotes()
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(theme.accentPrimary)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("What’s New")
+                                .font(.system(size: 13.5, weight: .medium))
+                                .foregroundStyle(theme.fgDefault)
+                            Text(ReleaseNotesAppVersion.displayName())
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(theme.fgFaint)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(theme.fgFaint)
+                    }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("graphite-settings-whats-new")
+            }
+        }
     }
 }

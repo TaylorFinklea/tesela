@@ -474,6 +474,10 @@ async fn check_and_install_update(app: AppHandle, user_initiated: bool) {
     }
 }
 
+fn desktop_initialization_script() -> &'static str {
+    "window.__TESELA_API_BASE__ = ''; window.__TESELA_PLATFORM__ = 'desktop';"
+}
+
 fn build_main_window(app: &mut tauri::App, url: &str) -> tauri::Result<()> {
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
@@ -497,8 +501,9 @@ fn build_main_window(app: &mut tauri::App, url: &str) -> tauri::Result<()> {
     .title("Tesela")
     .inner_size(1280.0, 860.0)
     .min_inner_size(900.0, 600.0)
-    // Tells the UI to use same-origin (server serves API + UI on one origin).
-    .initialization_script("window.__TESELA_API_BASE__ = '';")
+    // Same-origin API plus an explicit runtime identity for platform-specific
+    // release history and seen-state storage.
+    .initialization_script(desktop_initialization_script())
     .disable_drag_drop_handler()
     .build()?;
     Ok(())
@@ -606,5 +611,13 @@ mod tests {
             window_builder.contains(".disable_drag_drop_handler()"),
             "Tauri's native file-drop handler consumes HTML drag events on macOS"
         );
+    }
+
+    #[test]
+    fn main_window_identifies_the_desktop_release_notes_platform() {
+        let script = desktop_initialization_script();
+
+        assert!(script.contains("window.__TESELA_API_BASE__ = '';"));
+        assert!(script.contains("window.__TESELA_PLATFORM__ = 'desktop';"));
     }
 }
