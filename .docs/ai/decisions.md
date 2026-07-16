@@ -837,3 +837,23 @@ rejected because oversized or absent snapshots are exactly where the retained
 op is the last durable copy. Holding the global cursor forever was rejected
 because one poisoned note must not stall every unrelated stream. Full evidence:
 `phases/2026-07-15-relay-durability-train-report.md`.
+
+### 2026-07-15 — Changelog content is curated, bundled, and advanced per platform
+
+Tesela ships one structured release-notes manifest with stable release IDs and
+separate current pointers for web, desktop, and iOS. Each platform bundles the
+same canonical content, opens its current entry once after the usable shell
+appears, and keeps a latest-first history available from Settings and the
+shared command registry. Release tooling validates the selected entry against
+the desktop version or iOS marketing/build pair before publishing; runtime
+parsing remains fail-soft.
+
+Separate pointers are required because Tesela's three client surfaces do not
+share a version number or release cadence. A GitHub-only source was rejected:
+it is network-dependent, the existing generated commit subjects are not
+user-facing copy, and it makes an update explanation least reliable precisely
+when the app is offline or recovering. A bundled-latest/GitHub-history hybrid
+was also rejected because it creates two content formats and inconsistent
+failure semantics for little size benefit. The selected latest-first screen
+keeps the post-update moment focused while leaving older releases one action
+away. Full contract: `phases/2026-07-15-changelog-screen-spec.md`.
