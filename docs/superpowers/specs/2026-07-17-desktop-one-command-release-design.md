@@ -89,3 +89,21 @@ path could not be verified.
   `scripts/check-release-notes-drift.sh` green.
 - Real release run passes its own stage-4 verify.
 - Human: installed 0.1.2 auto-updates to 0.1.3.
+
+## Implementation addendum (what shipped differently)
+
+- The isolated launch needed more than `TESELA_MOSAIC`: `ServeConfig::resolve`
+  requires a `.tesela/` marker inside the mosaic dir, and
+  tauri-plugin-single-instance keys on a fixed per-identifier socket
+  (`/tmp/app_tesela_desktop_si.sock`), so a verify launch silently hands off
+  to a running installed app and exits. Stage 8 therefore creates the marker,
+  gracefully quits a running installed app first, and the cleanup trap
+  relaunches it on every exit path — which doubles as the update rehearsal
+  (the relaunched app's updater installs the just-published version).
+- Added `--verify-only` (re-run stage 8 against the published release without
+  rebuilding; needs the local `.sig` from the publishing run).
+- `--dry-run` runs the monotonic version check leniently (warns instead of
+  aborting when the configured version is already live) so it stays green as a
+  post-release verify command; publishing keeps the hard abort.
+- v0.1.3 shipped with this pipeline: published, verified, and the installed
+  0.1.2 app auto-updated to 0.1.3 (rehearsal confirmed 2026-07-17).

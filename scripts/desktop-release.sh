@@ -71,19 +71,22 @@ DESKTOP_RELEASE_ID="$(node -p "require('./release-notes/releases.json').current.
 SKIP_NOTARIZE=false
 DRY_RUN=false
 NO_PUBLISH=false
+VERIFY_ONLY=false
 for arg in "$@"; do
   case "$arg" in
     --skip-notarize) SKIP_NOTARIZE=true ;;
     --dry-run) DRY_RUN=true ;;
     --no-publish) NO_PUBLISH=true ;;
+    --verify-only) VERIFY_ONLY=true ;;
     --help|-h)
-      echo "Usage: scripts/desktop-release.sh [--dry-run] [--no-publish] [--skip-notarize]"
+      echo "Usage: scripts/desktop-release.sh [--dry-run] [--no-publish] [--verify-only] [--skip-notarize]"
       echo ""
       echo "  Build/sign/notarize/staple the Tauri macOS app, publish it to GitHub"
       echo "  Releases, and verify the published artifacts end to end."
       echo "  Full release: bws-project run -- scripts/desktop-release.sh"
       echo "  --dry-run        Validate notes/version/tooling and print the plan; no build, secrets, or publish."
       echo "  --no-publish     Stop after latest.json and print the gh publish commands."
+      echo "  --verify-only    Re-run only stage 8 against the already-published release (needs the local .sig)."
       echo "  --skip-notarize  Do not require build/signing/notary inputs; skip notarytool/stapler; never publishes."
       exit 0
       ;;
@@ -114,11 +117,21 @@ restore_release_keychain_search_list() {
 
 VERIFY_TMP_DIR=""
 VERIFY_APP_PID=""
+RELAUNCH_INSTALLED_APP=false
+INSTALLED_APP_PATH="/Applications/$PRODUCT_NAME.app"
+INSTALLED_APP_BINARY="$INSTALLED_APP_PATH/Contents/MacOS/tesela-desktop"
 
 cleanup_release_credentials() {
   restore_release_keychain_search_list || true
   if [[ -n "$VERIFY_APP_PID" ]]; then
     kill -9 "$VERIFY_APP_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ "$RELAUNCH_INSTALLED_APP" == true ]]; then
+    # Runs on success AND failure exits so a failed verify never leaves the
+    # operator's app quit. The relaunched app's updater then picks up the
+    # just-published version — the install/update rehearsal.
+    open "$INSTALLED_APP_PATH" >/dev/null 2>&1 || true
+    RELAUNCH_INSTALLED_APP=false
   fi
   if [[ -n "$VERIFY_TMP_DIR" ]]; then
     rm -rf "$VERIFY_TMP_DIR"
@@ -282,6 +295,7 @@ emit_updater_manifest() {
 # lesson: republishing fixed artifacts under an already-live version is
 # invisible to every installed app. Fail closed before publishing.
 assert_version_advances() {
+  local lenient="${1:-}"
   local live_manifest live_version newest
   live_manifest="$(curl -fsSL --max-time 30 \
     "https://github.com/${GH_REPO}/releases/latest/download/latest.json" 2>/dev/null || true)"
@@ -294,6 +308,10 @@ assert_version_advances() {
     | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)"
   if [[ -z "$live_version" ]]; then
     warn "live latest.json is unparseable; skipping the monotonic version check"
+    return 0
+  fi
+  if [[ "$live_version" == "$DESKTOP_VERSION" && "$lenient" == "--lenient" ]]; then
+    warn "v$DESKTOP_VERSION is already the live updater version — bump src-tauri/tauri.conf.json before the next release"
     return 0
   fi
   if [[ "$live_version" == "$DESKTOP_VERSION" ]]; then
@@ -370,9 +388,32 @@ verify_published_release() {
   # it off the primary mosaic's single-writer flock (the installed app may be
   # running); the embedded server binds an ephemeral loopback port, so
   # discover it from the child process (pattern: install-desktop.sh).
+  # tauri-plugin-single-instance keys on a fixed per-identifier socket
+  # (/tmp/app_tesela_desktop_si.sock), so a verify launch silently hands off
+  # to a running installed app and exits. Quit it for the check; the cleanup
+  # trap relaunches it on every exit path, and that relaunch doubles as the
+  # update rehearsal against the just-published version.
+  local i
+  if pgrep -f "$INSTALLED_APP_BINARY" >/dev/null 2>&1; then
+    echo "    quitting the running installed $PRODUCT_NAME for the isolated launch (relaunched afterwards)"
+    osascript -e "tell application \"$PRODUCT_NAME\" to quit" >/dev/null 2>&1 || true
+    for i in $(seq 1 45); do
+      pgrep -f "$INSTALLED_APP_BINARY" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    if pgrep -f "$INSTALLED_APP_BINARY" >/dev/null 2>&1; then
+      echo "installed $PRODUCT_NAME did not quit within 45s; cannot run the isolated launch check" >&2
+      verify_failed
+    fi
+    RELAUNCH_INSTALLED_APP=true
+  fi
+
   echo "    launching downloaded app against a throwaway mosaic"
   local mosaic="$VERIFY_TMP_DIR/mosaic"
-  mkdir -p "$mosaic"
+  # ServeConfig::resolve only requires the .tesela/ marker to accept an
+  # explicit mosaic path (tesela-server/src/lib.rs); the server creates the
+  # rest on first open.
+  mkdir -p "$mosaic/.tesela"
   TESELA_MOSAIC="$mosaic" "$app/Contents/MacOS/tesela-desktop" \
     >"$VERIFY_TMP_DIR/app.log" 2>&1 &
   VERIFY_APP_PID=$!
@@ -461,7 +502,7 @@ run_dry_run() {
   fi
   echo "    gh (authenticated) and cargo tauri ok"
   echo "==> live updater version check"
-  assert_version_advances
+  assert_version_advances --lenient
   echo "==> plan"
   echo "    1 build → 2 codesign → 3 zip → 4 notarize → 5 staple → 6 latest.json → 7 publish v$DESKTOP_VERSION (--latest) → 8 verify published"
   echo "==> dry run ok — full release: bws-project run -- scripts/desktop-release.sh"
@@ -471,6 +512,16 @@ prepare_release_notes
 
 if [[ "$DRY_RUN" == true ]]; then
   run_dry_run
+  exit 0
+fi
+
+if [[ "$VERIFY_ONLY" == true ]]; then
+  if [[ ! -f "$UPDATER_SIG_PATH" ]]; then
+    echo "--verify-only needs the local updater signature at $UPDATER_SIG_PATH (from the publishing run)" >&2
+    exit 1
+  fi
+  verify_published_release
+  echo "==> done — v$DESKTOP_VERSION verified against the published release"
   exit 0
 fi
 
