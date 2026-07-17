@@ -92,8 +92,11 @@
       event.stopPropagation();
       const target = previousFocus;
       previousFocus = null;
-      if (target?.isConnected) target.focus();
-      else active.blur();
+      requestAnimationFrame(() => {
+        if (document.activeElement !== active) return;
+        if (target?.isConnected) target.focus();
+        else active.blur();
+      });
       return;
     }
 

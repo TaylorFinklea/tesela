@@ -93,3 +93,107 @@ test("leader enters the rail, traversal wraps, Escape returns, and Enter invokes
   await page.keyboard.press("Escape");
   await expect(settings).toBeFocused();
 });
+
+test("Escape restores a Daily editor after the keydown completes", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeFocus = HTMLElement.prototype.focus;
+    let dispatchingEscape = false;
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      dispatchingEscape = true;
+      requestAnimationFrame(() => {
+        dispatchingEscape = false;
+      });
+    }, true);
+
+    HTMLElement.prototype.focus = function focus(options?: FocusOptions) {
+      if (dispatchingEscape && this.classList.contains("cm-content")) return;
+      nativeFocus.call(this, options);
+    };
+  });
+
+  await page.goto("/g");
+  const releaseDone = page.getByRole("button", { name: "Done", exact: true });
+  await expect(releaseDone).toBeVisible();
+  await releaseDone.click();
+
+  const dailyEditor = page.locator(".cm-content").first();
+  await dailyEditor.click();
+  await page.keyboard.press("Escape");
+  await expect(dailyEditor).toBeFocused();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.keyboard.press("Space");
+    await page.keyboard.press("r");
+    await page.keyboard.press("f");
+
+    const actions = page.locator(".gr-rail [data-rail-action]");
+    await expect(actions.first()).toBeFocused();
+    await page.keyboard.press("End");
+    await expect(actions.last()).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dailyEditor).toBeFocused();
+  }
+
+  await page.keyboard.press("Space");
+  await expect(page.locator(".gr-leader")).toBeVisible();
+  await expect(page.getByText("Widget customization is coming soon")).toHaveCount(0);
+});
+
+test("deferred Escape restoration does not steal a newer focus target", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeFocus = HTMLElement.prototype.focus;
+    let dispatchingEscape = false;
+
+    document.addEventListener("keydown", (event) => {
+      const active = document.activeElement;
+      if (
+        event.key !== "Escape"
+        || !(active instanceof HTMLElement)
+        || !active.closest("[data-rail-action]")
+      ) return;
+
+      dispatchingEscape = true;
+      requestAnimationFrame(() => {
+        dispatchingEscape = false;
+      });
+    }, true);
+
+    HTMLElement.prototype.focus = function focus(options?: FocusOptions) {
+      if (dispatchingEscape && this.classList.contains("cm-content")) return;
+      nativeFocus.call(this, options);
+    };
+  });
+
+  await page.goto("/g");
+  const releaseDone = page.getByRole("button", { name: "Done", exact: true });
+  await expect(releaseDone).toBeVisible();
+  await releaseDone.click();
+
+  const dailyEditor = page.locator(".cm-content").first();
+  await dailyEditor.click();
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Space");
+  await page.keyboard.press("r");
+  await page.keyboard.press("f");
+  const actions = page.locator(".gr-rail [data-rail-action]");
+  await page.keyboard.press("End");
+  await expect(actions.last()).toBeFocused();
+
+  await page.evaluate(() => {
+    const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+    let injectNewFocus = true;
+    window.requestAnimationFrame = (callback) => nativeRequestAnimationFrame((time) => {
+      if (injectNewFocus) {
+        injectNewFocus = false;
+        document.querySelector<HTMLElement>('button[aria-label="Settings"]')?.focus();
+      }
+      callback(time);
+    });
+  });
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeFocused();
+});
