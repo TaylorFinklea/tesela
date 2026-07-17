@@ -921,3 +921,12 @@ value-by-value round-trip check. The Developer ID Application identity follows
 the same rule as an encrypted PKCS#12 in Bitwarden, imported into a disposable
 keychain for `codesign`; a long-lived local signing identity and the prior
 Keychain updater fallback are both superseded.
+
+On this macOS installation, `security find-identity` sees the imported identity
+but `codesign --keychain <disposable>` fails to resolve it. The release path
+therefore snapshots the user keychain search list, prepends the disposable
+keychain only for the signing call, and restores the original list immediately;
+the exit trap repeats restoration on failure. The clean-source `d0ddac68` build
+was accepted by Apple notarization (`2e0fb2e1-6a84-49dc-aae4-3f0ebd61f225`),
+published as `v0.1.2`, and manually installed without re-signing so its
+Developer ID signature and stapled ticket remain the shipped identity.

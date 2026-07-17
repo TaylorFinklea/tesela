@@ -28,10 +28,12 @@
 - Simulator relaunch: Today visible; current sheet did not reopen.
 - Web Chromium E2E: manual Settings replay, newest-first older detail/back, Done, command replay, Esc, and automatic suppression.
 - Desktop debug app bundle built at `target/debug/bundle/macos/Tesela.app`; Info.plist `0.1.2`.
+- Desktop release `v0.1.2`: clean-source `d0ddac68`; Apple-notarized and stapled; installed unchanged in `/Applications/Tesela.app`; embedded server health passed.
+- Desktop updater: installed binary contains the replacement trust root; published `latest.json` is byte-identical to the local manifest; final tar signature verifies against that key.
 
 ## Residual Human Gate
 
-- Installed desktop UI replay: not run because `/Applications/Tesela.app` was already active and Tauri single-instance redirected the disposable build. Preserve the daily-driver process; verify Settings/command/desktop label after installing the new bundle.
+- Natural 0.1.1 → 0.1.2 launch completed with the daily-driver preferences preserved. Taylor: confirm the visible What's New sheet, click Done, then replay from Settings > About and the command palette. Automated window inspection could not read the screen because the Sky Computer Use native pipe failed to start.
 
 ## Expected Existing Noise
 
