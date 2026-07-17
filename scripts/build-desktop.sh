@@ -11,6 +11,8 @@
 set -euo pipefail
 
 REPO="/Users/tfinklea/git/tesela"
+APP_BUNDLE="$REPO/target/release/bundle/macos/Tesela.app"
+source "$REPO/scripts/lib/desktop-bundle.sh"
 
 echo "==> 1/3  building web frontend (web/build)…"
 ( cd "$REPO/web" && npm run build )
@@ -38,6 +40,7 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" || -z "${TAURI_SIGNING_PRIVATE_KEY_PAS
   TAURI_CONFIG_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
 ( cd "$REPO" && cargo tauri build --bundles app "${TAURI_CONFIG_ARGS[@]}" )
+assert_desktop_web_bundle "$APP_BUNDLE"
 
 echo "==> 3/3  installing + relaunching…"
 bash "$REPO/scripts/install-desktop.sh"

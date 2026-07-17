@@ -17,6 +17,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": {
+      "../web/build": "web"
+    },
     "macOS": {
       "minimumSystemVersion": "12.0"
     },

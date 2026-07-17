@@ -22,7 +22,7 @@
 // (same guarantee the old 30s SIGTERM grace gave the child).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,6 +43,7 @@ struct EmbedHandle {
 }
 
 /// Workspace root = parent of this crate's dir (`src-tauri/`).
+#[cfg(debug_assertions)]
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -137,23 +138,75 @@ fn desktop_config_value(
     from_file(&desktop_config()).filter(|v| !v.trim().is_empty())
 }
 
-/// The built static `/g` bundle the embedded server serves. `TESELA_STATIC_DIR`
-/// overrides; otherwise `web/build`.
-fn static_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("TESELA_STATIC_DIR") {
-        return PathBuf::from(p);
+/// The built static `/g` bundle the embedded server serves. Installed apps use
+/// their packaged `Resources/web` tree, making the UI independent of the source
+/// checkout that produced the executable. `TESELA_STATIC_DIR` remains an
+/// explicit override, and unbundled Cargo development falls back to web/build.
+fn static_dir(resource_dir: &Path) -> std::io::Result<PathBuf> {
+    let explicit = std::env::var_os("TESELA_STATIC_DIR").map(PathBuf::from);
+    #[cfg(debug_assertions)]
+    {
+        let development = workspace_root().join("web").join("build");
+        resolve_static_dir(explicit, resource_dir, Some(&development))
     }
-    workspace_root().join("web").join("build")
+    #[cfg(not(debug_assertions))]
+    {
+        resolve_static_dir(explicit, resource_dir, None)
+    }
+}
+
+fn resolve_static_dir(
+    explicit: Option<PathBuf>,
+    resource_dir: &Path,
+    development_dir: Option<&Path>,
+) -> std::io::Result<PathBuf> {
+    if let Some(explicit) = explicit {
+        return require_static_dir(explicit);
+    }
+
+    let bundled = resource_dir.join("web");
+    if bundled.join("index.html").is_file() {
+        return Ok(bundled);
+    }
+    if let Some(development_dir) = development_dir {
+        if development_dir.join("index.html").is_file() {
+            return Ok(development_dir.to_path_buf());
+        }
+    }
+
+    let development_expectation = development_dir
+        .map(|development_dir| format!(" or {}", development_dir.join("index.html").display()));
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "Tesela web UI is missing: expected {}{}",
+            bundled.join("index.html").display(),
+            development_expectation.as_deref().unwrap_or_default()
+        ),
+    ))
+}
+
+fn require_static_dir(path: PathBuf) -> std::io::Result<PathBuf> {
+    if path.join("index.html").is_file() {
+        return Ok(path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "Tesela web UI is missing: expected {}",
+            path.join("index.html").display()
+        ),
+    ))
 }
 
 /// Set the process env the in-process `serve` reads, mirroring what the old
 /// `spawn_server` set on the child — minus the parent-death watchdog vars (no
 /// child to orphan) and plus `TESELA_EMBEDDED` (lets the server disable the
 /// `/server/restart` re-exec, which would relaunch THIS binary, not a server).
-fn set_embed_env(config: &ServeConfig) {
+fn set_embed_env(config: &ServeConfig, static_dir: &Path) {
     // Ephemeral loopback port; the real one comes back via `on_bound`.
     std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
-    std::env::set_var("TESELA_STATIC_DIR", static_dir());
+    std::env::set_var("TESELA_STATIC_DIR", static_dir);
     // Loopback node — never mDNS-advertise, never LAN-peer-write.
     std::env::set_var("TESELA_DISABLE_MDNS", "1");
     std::env::set_var("TESELA_DISABLE_PEER_SYNC", "1");
@@ -190,7 +243,6 @@ fn main() {
         None => {
             let config = ServeConfig::resolve(resolve_mosaic())
                 .expect("resolve mosaic for embedded Tesela desktop");
-            set_embed_env(&config);
             Mode::Embedded(config)
         }
     };
@@ -237,7 +289,12 @@ fn run(mode: Mode) {
         .setup(move |app| {
             let url = match mode {
                 Mode::Remote(url) => url,
-                Mode::Embedded(config) => start_embedded_server(app, &setup_handle, config)?,
+                Mode::Embedded(config) => {
+                    let resource_dir = app.path().resource_dir()?;
+                    let static_dir = static_dir(&resource_dir)?;
+                    set_embed_env(&config, &static_dir);
+                    start_embedded_server(app, &setup_handle, config)?
+                }
             };
             build_main_window(app, &url)?;
             build_tray(app)?;
@@ -543,6 +600,88 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create_static_bundle(root: &std::path::Path) -> PathBuf {
+        let static_dir = root.join("web");
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::write(static_dir.join("index.html"), "<!doctype html>").unwrap();
+        static_dir
+    }
+
+    #[test]
+    fn resolve_static_dir_prefers_the_bundled_web_ui() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resources = tmp.path().join("Resources");
+        let bundled = create_static_bundle(&resources);
+        let development = create_static_bundle(&tmp.path().join("source"));
+
+        assert_eq!(
+            resolve_static_dir(None, &resources, Some(&development)).unwrap(),
+            bundled
+        );
+    }
+
+    #[test]
+    fn resolve_static_dir_uses_the_source_tree_for_unbundled_development() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resources = tmp.path().join("missing-resources");
+        let development = create_static_bundle(&tmp.path().join("source"));
+
+        assert_eq!(
+            resolve_static_dir(None, &resources, Some(&development)).unwrap(),
+            development
+        );
+    }
+
+    #[test]
+    fn resolve_static_dir_rejects_an_explicit_directory_without_an_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let explicit = tmp.path().join("explicit");
+        std::fs::create_dir_all(&explicit).unwrap();
+        let bundled = create_static_bundle(&tmp.path().join("Resources"));
+
+        let error = resolve_static_dir(
+            Some(explicit.clone()),
+            &bundled,
+            Some(&tmp.path().join("source")),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains(&explicit.display().to_string()),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_static_dir_fails_when_no_web_ui_is_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resources = tmp.path().join("missing-resources");
+        let development = tmp.path().join("missing-source");
+
+        let error = resolve_static_dir(None, &resources, Some(&development)).unwrap_err();
+
+        assert!(
+            error.to_string().contains("index.html"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_static_dir_disables_source_fallback_for_packaged_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resources = tmp.path().join("missing-resources");
+        let development = create_static_bundle(&tmp.path().join("source"));
+
+        let error = resolve_static_dir(None, &resources, None).unwrap_err();
+
+        assert!(
+            !error
+                .to_string()
+                .contains(&development.display().to_string()),
+            "packaged releases must not consult the build checkout: {error}"
+        );
+    }
 
     #[test]
     fn paired_mosaic_relay_enables_embedded_relay_without_desktop_override() {

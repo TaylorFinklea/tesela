@@ -33,6 +33,7 @@ BIN_PATTERN='Tesela.app/Contents/MacOS/tesela-desktop'
 # every build, so the installer must fail closed instead of falling back.
 SIGNING_IDENTITY="${TESELA_DESKTOP_SIGNING_IDENTITY:-E120EDBF23788B8359F8FBB727015F43AD5E989B}"
 SIGNING_TEAM="${TESELA_DESKTOP_SIGNING_TEAM:-K7CBQW6MPG}"
+source "$REPO/scripts/lib/desktop-bundle.sh"
 
 restore_previous_install() {
   local status="${1:-1}"
@@ -50,6 +51,7 @@ if [ ! -d "$SRC" ]; then
   echo "  run: cargo tauri build --bundles app" >&2
   exit 1
 fi
+assert_desktop_web_bundle "$SRC"
 
 SIGNING_IDENTITIES="$(security find-identity -v -p codesigning)"
 if ! grep -Fq -- "$SIGNING_IDENTITY" <<<"$SIGNING_IDENTITIES"; then

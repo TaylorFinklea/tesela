@@ -40,6 +40,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/scripts/lib/desktop-bundle.sh"
 
 PRODUCT_NAME="${DESKTOP_PRODUCT_NAME:-Tesela}"
 BUNDLE_ID="${DESKTOP_BUNDLE_ID:-app.tesela.desktop}"
@@ -295,6 +296,8 @@ if [[ "$APP_AVAILABLE" != true ]]; then
   echo "==> done — plan validated; no distributable was produced"
   exit 0
 fi
+
+assert_desktop_web_bundle "$APP_BUNDLE"
 
 APP_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_BUNDLE/Contents/Info.plist")"
 if [[ "$APP_BUNDLE_VERSION" != "$DESKTOP_VERSION" ]]; then
