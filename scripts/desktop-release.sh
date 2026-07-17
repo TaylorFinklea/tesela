@@ -33,7 +33,9 @@
 #   DESKTOP_GH_REPO          (default TaylorFinklea/tesela)
 #
 # Run:
-#   bws-project run -- scripts/desktop-release.sh
+#   bws-project run -- scripts/desktop-release.sh   # full release: build→sign→notarize→staple→publish→verify
+#   scripts/desktop-release.sh --dry-run            # plan-only: validate notes/version/tooling; no build, no secrets
+#   scripts/desktop-release.sh --no-publish         # stop after latest.json; print the gh publish commands
 #   scripts/desktop-release.sh --skip-notarize # plan/build-if-present/sign-if-possible/zip, no notary
 #
 set -euo pipefail
@@ -67,15 +69,22 @@ DESKTOP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
 DESKTOP_RELEASE_ID="$(node -p "require('./release-notes/releases.json').current.desktop")"
 
 SKIP_NOTARIZE=false
+DRY_RUN=false
+NO_PUBLISH=false
 for arg in "$@"; do
   case "$arg" in
     --skip-notarize) SKIP_NOTARIZE=true ;;
+    --dry-run) DRY_RUN=true ;;
+    --no-publish) NO_PUBLISH=true ;;
     --help|-h)
-      echo "Usage: scripts/desktop-release.sh [--skip-notarize]"
+      echo "Usage: scripts/desktop-release.sh [--dry-run] [--no-publish] [--skip-notarize]"
       echo ""
-      echo "  Build/sign/zip/notarize/staple the Tauri macOS app into a ZIP."
+      echo "  Build/sign/notarize/staple the Tauri macOS app, publish it to GitHub"
+      echo "  Releases, and verify the published artifacts end to end."
       echo "  Full release: bws-project run -- scripts/desktop-release.sh"
-      echo "  --skip-notarize  Do not require build/signing/notary inputs; skip notarytool/stapler."
+      echo "  --dry-run        Validate notes/version/tooling and print the plan; no build, secrets, or publish."
+      echo "  --no-publish     Stop after latest.json and print the gh publish commands."
+      echo "  --skip-notarize  Do not require build/signing/notary inputs; skip notarytool/stapler; never publishes."
       exit 0
       ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
@@ -103,8 +112,17 @@ restore_release_keychain_search_list() {
   fi
 }
 
+VERIFY_TMP_DIR=""
+VERIFY_APP_PID=""
+
 cleanup_release_credentials() {
   restore_release_keychain_search_list || true
+  if [[ -n "$VERIFY_APP_PID" ]]; then
+    kill -9 "$VERIFY_APP_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$VERIFY_TMP_DIR" ]]; then
+    rm -rf "$VERIFY_TMP_DIR"
+  fi
   if [[ -n "$RELEASE_KEYCHAIN" ]]; then
     security delete-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1 || true
   fi
@@ -228,7 +246,7 @@ create_final_updater_artifact() {
 }
 
 emit_updater_manifest() {
-  echo "==> 6/6  updater manifest (latest.json)"
+  echo "==> 6/8  updater manifest (latest.json)"
   if [[ ! -f "$UPDATER_TAR_PATH" || ! -f "$UPDATER_SIG_PATH" ]]; then
     warn "no updater artifact at $UPDATER_TAR_PATH (and/or its .sig) — cargo tauri build only" \
          "writes these when TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] are set at build time; skipping manifest"
@@ -250,14 +268,212 @@ emit_updater_manifest() {
     --signature-file "$UPDATER_SIG_PATH" \
     --url "$download_url" > "$MANIFEST_PATH"
   echo "    wrote $MANIFEST_PATH (target=$UPDATER_TARGET, version=$DESKTOP_VERSION)"
-  echo "    publish (creates/updates the GitHub release + attaches assets):"
-  echo "      gh release create v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --title v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\""
-  echo "      # or, if v${DESKTOP_VERSION} already exists:"
-  echo "      gh release edit v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\""
-  echo "      gh release upload v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --clobber"
+  if [[ "$NO_PUBLISH" == true || "$SKIP_NOTARIZE" == true ]]; then
+    echo "    publish (creates/updates the GitHub release + attaches assets):"
+    echo "      gh release create v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --title v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\" --latest"
+    echo "      # or, if v${DESKTOP_VERSION} already exists:"
+    echo "      gh release edit v${DESKTOP_VERSION} --notes-file \"$RELEASE_NOTES_MD_PATH\" --latest"
+    echo "      gh release upload v${DESKTOP_VERSION} \"$ZIP_PATH\" \"$tar_dest\" \"$MANIFEST_PATH\" --clobber"
+  fi
+}
+
+# The updater endpoint is releases/LATEST/download/latest.json, and installed
+# clients only react to a version strictly greater than their own — the v0.1.2
+# lesson: republishing fixed artifacts under an already-live version is
+# invisible to every installed app. Fail closed before publishing.
+assert_version_advances() {
+  local live_manifest live_version newest
+  live_manifest="$(curl -fsSL --max-time 30 \
+    "https://github.com/${GH_REPO}/releases/latest/download/latest.json" 2>/dev/null || true)"
+  if [[ -z "$live_manifest" ]]; then
+    warn "could not fetch live latest.json (first desktop release, or 'latest' currently" \
+         "points at a non-desktop release); skipping the monotonic version check"
+    return 0
+  fi
+  live_version="$(printf '%s' "$live_manifest" \
+    | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)"
+  if [[ -z "$live_version" ]]; then
+    warn "live latest.json is unparseable; skipping the monotonic version check"
+    return 0
+  fi
+  if [[ "$live_version" == "$DESKTOP_VERSION" ]]; then
+    echo "v$DESKTOP_VERSION is already the live updater version — installed clients ignore re-publishes." >&2
+    echo "Bump src-tauri/tauri.conf.json (plus release-notes/releases.json), or roll the release back first:" >&2
+    echo "  gh release delete v${DESKTOP_VERSION} --repo ${GH_REPO} --cleanup-tag --yes" >&2
+    exit 1
+  fi
+  newest="$(printf '%s\n%s\n' "$live_version" "$DESKTOP_VERSION" | sort -V | tail -1)"
+  if [[ "$newest" != "$DESKTOP_VERSION" ]]; then
+    echo "release version $DESKTOP_VERSION is older than the live updater version $live_version — bump the version" >&2
+    exit 1
+  fi
+  echo "    live updater version $live_version → $DESKTOP_VERSION"
+}
+
+publish_release() {
+  echo "==> 7/8  publish GitHub release v$DESKTOP_VERSION"
+  assert_version_advances
+  local tar_dest="$DIST_DIR/$(basename "$UPDATER_TAR_PATH")"
+  local assets=("$ZIP_PATH" "$tar_dest" "$MANIFEST_PATH")
+  local a
+  for a in "${assets[@]}"; do
+    if [[ ! -f "$a" ]]; then
+      echo "missing release asset: $a" >&2
+      exit 1
+    fi
+  done
+  if gh release view "v$DESKTOP_VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
+    echo "    v$DESKTOP_VERSION already exists — refreshing notes + assets"
+    gh release edit "v$DESKTOP_VERSION" --repo "$GH_REPO" \
+      --title "v$DESKTOP_VERSION" --notes-file "$RELEASE_NOTES_MD_PATH" --latest
+    gh release upload "v$DESKTOP_VERSION" --repo "$GH_REPO" "${assets[@]}" --clobber
+  else
+    gh release create "v$DESKTOP_VERSION" --repo "$GH_REPO" "${assets[@]}" \
+      --title "v$DESKTOP_VERSION" --notes-file "$RELEASE_NOTES_MD_PATH" --latest
+  fi
+  echo "    published https://github.com/${GH_REPO}/releases/tag/v${DESKTOP_VERSION}"
+}
+
+verify_failed() {
+  echo "" >&2
+  echo "POST-PUBLISH VERIFY FAILED — v${DESKTOP_VERSION} is live but unverified." >&2
+  echo "Roll back with:" >&2
+  echo "  gh release delete v${DESKTOP_VERSION} --repo ${GH_REPO} --cleanup-tag --yes" >&2
+  exit 1
+}
+
+# Verify the artifacts a user (or the updater) actually downloads, not the
+# local build outputs: self-contained web bundle, Gatekeeper acceptance, a
+# serving /g from an isolated launch, and a live manifest that points at this
+# version with the signature we produced.
+verify_published_release() {
+  echo "==> 8/8  verify published release v$DESKTOP_VERSION"
+  VERIFY_TMP_DIR="$(mktemp -d /private/tmp/tesela-desktop-verify.XXXXXX)"
+  local zip_name
+  zip_name="$(basename "$ZIP_PATH")"
+  echo "    downloading published $zip_name"
+  gh release download "v$DESKTOP_VERSION" --repo "$GH_REPO" \
+    --pattern "$zip_name" --dir "$VERIFY_TMP_DIR" || verify_failed
+  ditto -x -k "$VERIFY_TMP_DIR/$zip_name" "$VERIFY_TMP_DIR/extract"
+  local app="$VERIFY_TMP_DIR/extract/$PRODUCT_NAME.app"
+  if [[ ! -d "$app" ]]; then
+    echo "downloaded zip did not contain $PRODUCT_NAME.app" >&2
+    verify_failed
+  fi
+  assert_desktop_web_bundle "$app" || verify_failed
+  codesign --verify --deep --strict "$app" || verify_failed
+  spctl -a -vv "$app" || verify_failed
+  xcrun stapler validate "$app" || verify_failed
+  echo "    downloaded app is self-contained, signed, notarized, and Gatekeeper-accepted"
+
+  # Launch the DOWNLOADED app against a throwaway mosaic. TESELA_MOSAIC keeps
+  # it off the primary mosaic's single-writer flock (the installed app may be
+  # running); the embedded server binds an ephemeral loopback port, so
+  # discover it from the child process (pattern: install-desktop.sh).
+  echo "    launching downloaded app against a throwaway mosaic"
+  local mosaic="$VERIFY_TMP_DIR/mosaic"
+  mkdir -p "$mosaic"
+  TESELA_MOSAIC="$mosaic" "$app/Contents/MacOS/tesela-desktop" \
+    >"$VERIFY_TMP_DIR/app.log" 2>&1 &
+  VERIFY_APP_PID=$!
+  local port="" p
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$VERIFY_APP_PID" 2>/dev/null; then
+      break
+    fi
+    for p in $(lsof -nP -a -p "$VERIFY_APP_PID" -iTCP -sTCP:LISTEN 2>/dev/null \
+        | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2 | sort -u); do
+      if curl -sS -m 4 "http://127.0.0.1:$p/health" 2>/dev/null | grep -q '"ok"'; then
+        port="$p"
+        break 2
+      fi
+    done
+    sleep 1
+  done
+  if [[ -z "$port" ]]; then
+    echo "downloaded app never served /health (log: $VERIFY_TMP_DIR/app.log)" >&2
+    tail -40 "$VERIFY_TMP_DIR/app.log" >&2 || true
+    verify_failed
+  fi
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "http://127.0.0.1:$port/g" || true)"
+  if [[ "$code" != "200" ]]; then
+    echo "downloaded app served /g with HTTP ${code:-<no response>} (expected 200)" >&2
+    verify_failed
+  fi
+  echo "    /g → HTTP 200 from the downloaded bundle (no source checkout involved)"
+  kill "$VERIFY_APP_PID" 2>/dev/null || true
+  for _ in $(seq 1 35); do
+    kill -0 "$VERIFY_APP_PID" 2>/dev/null || break
+    sleep 1
+  done
+  kill -9 "$VERIFY_APP_PID" 2>/dev/null || true
+  VERIFY_APP_PID=""
+
+  echo "    checking live updater manifest"
+  local live_manifest="" live_version="" live_sig="" want_sig
+  want_sig="$(cat "$UPDATER_SIG_PATH")"
+  for _ in $(seq 1 6); do
+    live_manifest="$(curl -fsSL --max-time 30 \
+      "https://github.com/${GH_REPO}/releases/latest/download/latest.json" 2>/dev/null || true)"
+    if [[ -n "$live_manifest" ]]; then
+      live_version="$(printf '%s' "$live_manifest" \
+        | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)"
+      if [[ "$live_version" == "$DESKTOP_VERSION" ]]; then
+        break
+      fi
+    fi
+    sleep 10
+  done
+  if [[ "$live_version" != "$DESKTOP_VERSION" ]]; then
+    echo "live latest.json reports version '${live_version:-<none>}', expected $DESKTOP_VERSION" >&2
+    verify_failed
+  fi
+  live_sig="$(printf '%s' "$live_manifest" \
+    | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).platforms['$UPDATER_TARGET'].signature" 2>/dev/null || true)"
+  if [[ "$live_sig" != "$want_sig" ]]; then
+    echo "live latest.json signature for $UPDATER_TARGET does not match $UPDATER_SIG_PATH" >&2
+    verify_failed
+  fi
+  echo "    live latest.json serves v$DESKTOP_VERSION with the expected signature"
+  rm -rf "$VERIFY_TMP_DIR"
+  VERIFY_TMP_DIR=""
+}
+
+run_dry_run() {
+  echo "=== Tesela Desktop Release (dry run) ==="
+  echo "    version:     $DESKTOP_VERSION"
+  echo "    release id:  $DESKTOP_RELEASE_ID"
+  echo "    updater tgt: $UPDATER_TARGET"
+  echo "    repo:        $GH_REPO"
+  echo "==> tooling"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh CLI is required to publish" >&2
+    exit 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "gh is not authenticated — run: gh auth login" >&2
+    exit 1
+  fi
+  if ! cargo tauri --version >/dev/null 2>&1; then
+    echo "cargo tauri CLI is required — run: cargo install tauri-cli" >&2
+    exit 1
+  fi
+  echo "    gh (authenticated) and cargo tauri ok"
+  echo "==> live updater version check"
+  assert_version_advances
+  echo "==> plan"
+  echo "    1 build → 2 codesign → 3 zip → 4 notarize → 5 staple → 6 latest.json → 7 publish v$DESKTOP_VERSION (--latest) → 8 verify published"
+  echo "==> dry run ok — full release: bws-project run -- scripts/desktop-release.sh"
 }
 
 prepare_release_notes
+
+if [[ "$DRY_RUN" == true ]]; then
+  run_dry_run
+  exit 0
+fi
+
 if [[ "$SKIP_NOTARIZE" != true ]]; then
   prepare_release_credentials
 fi
@@ -270,7 +486,7 @@ echo "    zip:          $ZIP_PATH"
 echo "    notarization: $([[ "$SKIP_NOTARIZE" == true ]] && echo skipped || echo enabled)"
 
 APP_AVAILABLE=false
-echo "==> 1/6  Tauri app bundle"
+echo "==> 1/8  Tauri app bundle"
 if [[ "$SKIP_NOTARIZE" == true ]]; then
   if [[ -d "$APP_BUNDLE" ]]; then
     echo "    using pre-built app bundle"
@@ -310,7 +526,7 @@ if [[ "$APP_BUNDLE_VERSION" != "$DESKTOP_VERSION" ]]; then
 fi
 
 SIGNED=false
-echo "==> 2/6  codesign hardened runtime"
+echo "==> 2/8  codesign hardened runtime"
 if [[ -z "$SIGN_IDENTITY" ]]; then
   warn "release identity is unavailable; leaving the pre-built signature unchanged"
   if codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
@@ -334,7 +550,7 @@ fi
 
 # notarytool submits a ZIP, so create it before submission. If stapling succeeds,
 # the ZIP is refreshed so the final distributable contains the stapled ticket.
-echo "==> 3/6  create distributable ZIP"
+echo "==> 3/8  create distributable ZIP"
 zip_app
 
 if [[ "$SKIP_NOTARIZE" == true ]]; then
@@ -349,14 +565,14 @@ if [[ "$SIGNED" != true ]]; then
   exit 1
 fi
 
-echo "==> 4/6  submit ZIP to Apple notary service"
+echo "==> 4/8  submit ZIP to Apple notary service"
 xcrun notarytool submit "$ZIP_PATH" \
   --wait \
   --key "$ASC_KEY_PATH" \
   --key-id "$ASC_KEY_ID" \
   --issuer "$ASC_ISSUER"
 
-echo "==> 5/6  staple ticket and refresh ZIP"
+echo "==> 5/8  staple ticket and refresh ZIP"
 xcrun stapler staple "$APP_BUNDLE"
 xcrun stapler validate "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
@@ -365,4 +581,13 @@ zip_app
 create_final_updater_artifact
 emit_updater_manifest
 
-echo "==> done — notarized desktop ZIP is at $ZIP_PATH"
+if [[ "$NO_PUBLISH" == true ]]; then
+  echo "==> --no-publish: GitHub release publish and verify skipped"
+  echo "==> done — notarized desktop ZIP is at $ZIP_PATH"
+  exit 0
+fi
+
+publish_release
+verify_published_release
+
+echo "==> done — v$DESKTOP_VERSION published and verified (installed apps update automatically)"

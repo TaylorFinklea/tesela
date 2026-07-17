@@ -2,10 +2,27 @@
   "schemaVersion": 1,
   "current": {
     "web": "2026-07-15.desktop-0.1.2",
-    "desktop": "2026-07-15.desktop-0.1.2",
+    "desktop": "2026-07-17.desktop-0.1.3",
     "ios": "2026-07-15.ios-1.1-80"
   },
   "releases": [
+    {
+      "id": "2026-07-17.desktop-0.1.3",
+      "publishedAt": "2026-07-17T20:24:00Z",
+      "title": "Sturdier install",
+      "summary": "The desktop app is now fully self-contained, ending blank windows after updates.",
+      "platforms": ["desktop"],
+      "versions": {
+        "desktop": "0.1.3"
+      },
+      "new": [],
+      "fixed": [
+        "Tesela now carries its entire interface inside the app bundle, so it no longer opens to a blank window when the files it was built from are cleaned up."
+      ],
+      "important": [
+        "If v0.1.2 shows a blank window, install this build fresh from the release page; working installs update automatically."
+      ]
+    },
     {
       "id": "2026-07-15.ios-1.1-80",
       "publishedAt": "2026-07-15T22:00:00Z",
