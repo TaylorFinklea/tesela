@@ -930,3 +930,19 @@ the exit trap repeats restoration on failure. The clean-source `d0ddac68` build
 was accepted by Apple notarization (`2e0fb2e1-6a84-49dc-aae4-3f0ebd61f225`),
 published as `v0.1.2`, and manually installed without re-signing so its
 Developer ID signature and stapled ticket remain the shipped identity.
+
+## 2026-07-17 — Desktop releases are one command with publish + verify (v0.1.3)
+
+`scripts/desktop-release.sh` now publishes to GitHub Releases by default and
+verifies the published artifacts (TestFlight-parity; spec + implementation
+addendum: `docs/superpowers/specs/2026-07-17-desktop-one-command-release-design.md`).
+Non-obvious calls: publish-then-verify was chosen over draft-first because
+drafts don't serve `releases/latest/download/` URLs, so the real updater
+endpoint could not be checked (failure prints the `gh release delete`
+rollback); a monotonic guard against the live `latest.json` hard-blocks
+republishing an already-live version (the v0.1.2 lesson — installed clients
+only react to a version bump), lenient in `--dry-run` so it stays green
+post-release; stage 8 quits a running installed app (single-instance socket
+swallows second launches) and the cleanup trap's relaunch doubles as the
+update rehearsal. Desktop releases pass `--latest` explicitly; tesela-egc6
+tracks giving CLI workflows `--latest=false`.

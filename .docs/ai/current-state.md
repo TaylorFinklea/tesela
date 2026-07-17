@@ -8,4 +8,4 @@ Branch: `main`
 - Automated window inspection unavailable: Sky Computer Use native pipe startup failed.
 
 ## Open questions
-- Taylor: approve desktop-release design (tesela-qkwd scope+): Approach A = publish+verify stages in desktop-release.sh (default publish, `--no-publish`, real `--dry-run`, `gh release --latest`), bump 0.1.3. Alternatives B (separate publish script) / C (CI) declined-pending.
+- None. (Desktop v0.1.3 shipped+verified 2026-07-17 via one-command pipeline; spec: docs/superpowers/specs/2026-07-17-desktop-one-command-release-design.md.)
