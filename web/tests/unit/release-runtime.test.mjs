@@ -68,3 +68,17 @@ test("desktop release inputs cannot bypass the Bitwarden namespaced entries", ()
     "ambient Tauri credentials must be discarded before the BWS mapping",
   );
 });
+
+test("desktop updater public key is a valid UTF-8 minisign public key box", () => {
+  const config = JSON.parse(
+    readFileSync(path.join(repo, "src-tauri/tauri.conf.json"), "utf8"),
+  );
+  const decoded = Buffer.from(config.plugins.updater.pubkey, "base64");
+  assert.equal(decoded.toString("base64"), config.plugins.updater.pubkey);
+  const publicKeyBox = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+  const lines = publicKeyBox.trimEnd().split("\n");
+
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^untrusted comment: minisign public key: [0-9A-F]{16}$/);
+  assert.match(lines[1], /^RW[A-Za-z0-9+/]{54}$/);
+});
