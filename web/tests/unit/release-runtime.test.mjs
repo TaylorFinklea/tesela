@@ -82,3 +82,21 @@ test("desktop updater public key is a valid UTF-8 minisign public key box", () =
   assert.match(lines[0], /^untrusted comment: minisign public key: [0-9A-F]{16}$/);
   assert.match(lines[1], /^RW[A-Za-z0-9+/]{54}$/);
 });
+
+test("desktop signing restores the keychain search list after using the disposable identity", () => {
+  const desktopRelease = readFileSync(
+    path.join(repo, "scripts/desktop-release.sh"),
+    "utf8",
+  );
+
+  assert.match(desktopRelease, /ORIGINAL_KEYCHAIN_SEARCH_LIST=\(\)/);
+  assert.match(
+    desktopRelease,
+    /security list-keychains -d user -s "\$RELEASE_KEYCHAIN" "\$\{ORIGINAL_KEYCHAIN_SEARCH_LIST\[@\]\}"/,
+  );
+  assert.match(desktopRelease, /restore_release_keychain_search_list \|\| true/);
+  assert.doesNotMatch(
+    desktopRelease,
+    /SIGN_ARGS\+=\(--keychain "\$RELEASE_KEYCHAIN"/,
+  );
+});

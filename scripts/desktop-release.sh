@@ -92,8 +92,18 @@ RELEASE_CREDENTIAL_DIR=""
 RELEASE_KEYCHAIN=""
 RELEASE_KEYCHAIN_PASSWORD=""
 SIGN_IDENTITY=""
+ORIGINAL_KEYCHAIN_SEARCH_LIST=()
+KEYCHAIN_SEARCH_LIST_CHANGED=false
+
+restore_release_keychain_search_list() {
+  if [[ "$KEYCHAIN_SEARCH_LIST_CHANGED" == true ]]; then
+    security list-keychains -d user -s "${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}" >/dev/null
+    KEYCHAIN_SEARCH_LIST_CHANGED=false
+  fi
+}
 
 cleanup_release_credentials() {
+  restore_release_keychain_search_list || true
   if [[ -n "$RELEASE_KEYCHAIN" ]]; then
     security delete-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1 || true
   fi
@@ -102,6 +112,22 @@ cleanup_release_credentials() {
   fi
 }
 trap cleanup_release_credentials EXIT
+
+activate_release_keychain_search_list() {
+  ORIGINAL_KEYCHAIN_SEARCH_LIST=()
+  local line
+  while IFS= read -r line; do
+    line="${line#*\"}"
+    line="${line%\"*}"
+    if [[ -n "$line" ]]; then
+      ORIGINAL_KEYCHAIN_SEARCH_LIST+=("$line")
+    fi
+  done < <(security list-keychains -d user)
+
+  security list-keychains -d user -s "$RELEASE_KEYCHAIN" "${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}"
+  KEYCHAIN_SEARCH_LIST_CHANGED=true
+  security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+}
 
 require_bws_secret() {
   local name="$1"
@@ -291,13 +317,15 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
     warn "existing signature does not verify; notarization will be skipped unless --skip-notarize was requested"
   fi
 else
+  activate_release_keychain_search_list
   SIGN_ARGS=(--force --options runtime --timestamp)
   if [[ -n "$SIGN_ENTITLEMENTS" ]]; then
     SIGN_ARGS+=(--entitlements "$SIGN_ENTITLEMENTS")
   fi
-  SIGN_ARGS+=(--keychain "$RELEASE_KEYCHAIN" --sign "$SIGN_IDENTITY" "$APP_BUNDLE")
+  SIGN_ARGS+=(--sign "$SIGN_IDENTITY" "$APP_BUNDLE")
   codesign "${SIGN_ARGS[@]}"
   codesign --verify --deep --strict "$APP_BUNDLE"
+  restore_release_keychain_search_list
   SIGNED=true
 fi
 
