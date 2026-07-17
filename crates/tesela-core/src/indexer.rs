@@ -203,38 +203,42 @@ impl Indexer {
             }
 
             let note_id = NoteId::new(note_id_str);
+            let is_create = matches!(event.kind, EventKind::Create(_));
+            let is_remove = matches!(event.kind, EventKind::Remove(_));
 
-            match event.kind {
-                EventKind::Create(_) | EventKind::Modify(_) => {
-                    let is_create = matches!(event.kind, EventKind::Create(_));
-                    match store.get(&note_id).await {
-                        Ok(Some(note)) => {
-                            if let Err(e) = index.reindex(&note).await {
-                                warn!("Failed to reindex {:?}: {}", note_id, e);
-                            }
-                            let links = extract_wiki_links(&note.content);
-                            if let Err(e) = graph.update_links(&note_id, &links).await {
-                                warn!("Failed to update links for {:?}: {}", note_id, e);
-                            }
-                            debug!("Reindexed {:?}", note_id);
-                            if let Some(tx) = notify_tx {
-                                let ne = if is_create {
-                                    NoteEvent::Created(note)
-                                } else {
-                                    NoteEvent::Updated(note)
-                                };
-                                let _ = tx.send(ne);
-                            }
-                        }
-                        Ok(None) => {
-                            debug!("Note not found in store after fs event: {:?}", note_id);
-                        }
-                        Err(e) => {
-                            warn!("Failed to read note {:?}: {}", note_id, e);
-                        }
+            if !matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
+                continue;
+            }
+
+            match store.get(&note_id).await {
+                Ok(Some(note)) => {
+                    let live_path = root.join(&note.path);
+                    if path != &live_path {
+                        debug!("Ignoring markdown event outside live note path: {:?}", path);
+                        continue;
+                    }
+
+                    if let Err(e) = index.reindex(&note).await {
+                        warn!("Failed to reindex {:?}: {}", note_id, e);
+                    }
+                    let links = extract_wiki_links(&note.content);
+                    if let Err(e) = graph.update_links(&note_id, &links).await {
+                        warn!("Failed to update links for {:?}: {}", note_id, e);
+                    }
+                    debug!("Reindexed {:?}", note_id);
+                    if let Some(tx) = notify_tx {
+                        let ne = if is_create {
+                            NoteEvent::Created(note)
+                        } else {
+                            NoteEvent::Updated(note)
+                        };
+                        let _ = tx.send(ne);
                     }
                 }
-                EventKind::Remove(_) => {
+                Ok(None) if is_remove => {
                     if let Err(e) = index.remove(&note_id).await {
                         warn!("Failed to remove {:?} from index: {}", note_id, e);
                     }
@@ -246,7 +250,12 @@ impl Indexer {
                         let _ = tx.send(NoteEvent::Deleted(note_id));
                     }
                 }
-                _ => {}
+                Ok(None) => {
+                    debug!("Note not found in store after fs event: {:?}", note_id);
+                }
+                Err(e) => {
+                    warn!("Failed to read note {:?}: {}", note_id, e);
+                }
             }
         }
     }
@@ -265,5 +274,194 @@ impl IndexerHandle {
     pub async fn stop(self) {
         let _ = self.shutdown.send(());
         let _ = self.handle.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StorageConfig;
+    use crate::db::SqliteIndex;
+    use crate::storage::filesystem::FsNoteStore;
+    use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
+
+    #[tokio::test]
+    async fn backup_copy_removal_does_not_evict_live_note_from_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let store = Arc::new(FsNoteStore::new(root.clone(), StorageConfig::default()));
+        let note = store
+            .create(
+                "Live Task",
+                "- Keep the task visible\n  tags:: Task\n  status:: todo\n  scheduled:: 2026-07-17",
+                &[],
+            )
+            .await
+            .unwrap();
+        let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
+        index.reindex(&note).await.unwrap();
+
+        assert_eq!(
+            index
+                .agenda_blocks("2026-07-01", "2026-07-31", false)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "fixture must begin with one indexed task"
+        );
+
+        let backup_note = root
+            .join(".tesela/backups/backup-20260717/notes")
+            .join(note.path.file_name().unwrap());
+        std::fs::create_dir_all(backup_note.parent().unwrap()).unwrap();
+        std::fs::copy(root.join(&note.path), &backup_note).unwrap();
+        std::fs::remove_file(&backup_note).unwrap();
+
+        let store_dyn: Arc<dyn NoteStore> = store;
+        let index_dyn: Arc<dyn SearchIndex> = index.clone();
+        let graph_dyn: Arc<dyn LinkGraph> = index.clone();
+        let event = Event::new(EventKind::Remove(RemoveKind::File)).add_path(backup_note);
+
+        Indexer::handle_event(&store_dyn, &index_dyn, &graph_dyn, &root, event, &None).await;
+
+        assert_eq!(
+            index
+                .agenda_blocks("2026-07-01", "2026-07-31", false)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "removing a backup copy must not evict the live task"
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_copy_creation_does_not_emit_live_note_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let store = Arc::new(FsNoteStore::new(root.clone(), StorageConfig::default()));
+        let note = store
+            .create("Live Note", "- Keep the note live", &[])
+            .await
+            .unwrap();
+        let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
+        index.reindex(&note).await.unwrap();
+
+        let backup_note = root
+            .join(".tesela/backups/backup-20260717/notes")
+            .join(note.path.file_name().unwrap());
+        std::fs::create_dir_all(backup_note.parent().unwrap()).unwrap();
+        std::fs::copy(root.join(&note.path), &backup_note).unwrap();
+
+        let store_dyn: Arc<dyn NoteStore> = store;
+        let index_dyn: Arc<dyn SearchIndex> = index.clone();
+        let graph_dyn: Arc<dyn LinkGraph> = index;
+        let (notify_tx, mut notify_rx) = broadcast::channel(4);
+        let notify = Some(notify_tx);
+        let event = Event::new(EventKind::Create(CreateKind::File)).add_path(backup_note);
+
+        Indexer::handle_event(&store_dyn, &index_dyn, &graph_dyn, &root, event, &notify).await;
+
+        assert!(
+            matches!(
+                notify_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "creating a backup copy must not emit a live-note event"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_note_removal_still_evicts_the_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let store = Arc::new(FsNoteStore::new(root.clone(), StorageConfig::default()));
+        let note = store
+            .create(
+                "Live Task",
+                "- Delete this task\n  tags:: Task\n  status:: todo\n  scheduled:: 2026-07-17",
+                &[],
+            )
+            .await
+            .unwrap();
+        let live_note_path = root.join(&note.path);
+        let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
+        index.reindex(&note).await.unwrap();
+        store.delete(&note.id).await.unwrap();
+
+        let store_dyn: Arc<dyn NoteStore> = store;
+        let index_dyn: Arc<dyn SearchIndex> = index.clone();
+        let graph_dyn: Arc<dyn LinkGraph> = index.clone();
+        let (notify_tx, mut notify_rx) = broadcast::channel(4);
+        let notify = Some(notify_tx);
+        let event = Event::new(EventKind::Remove(RemoveKind::File)).add_path(live_note_path);
+
+        Indexer::handle_event(&store_dyn, &index_dyn, &graph_dyn, &root, event, &notify).await;
+
+        assert!(
+            index
+                .agenda_blocks("2026-07-17", "2026-07-17", false)
+                .await
+                .unwrap()
+                .is_empty(),
+            "removing a live note must evict its task"
+        );
+        match notify_rx.try_recv() {
+            Ok(NoteEvent::Deleted(id)) => assert_eq!(id, note.id),
+            other => panic!("expected a live-note deletion event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_note_modification_still_reindexes_the_note() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let store = Arc::new(FsNoteStore::new(root.clone(), StorageConfig::default()));
+        let mut note = store
+            .create(
+                "Live Task",
+                "- Move this task\n  tags:: Task\n  status:: todo\n  scheduled:: 2026-07-17",
+                &[],
+            )
+            .await
+            .unwrap();
+        let live_note_path = root.join(&note.path);
+        let index = Arc::new(SqliteIndex::open_in_memory().await.unwrap());
+        index.reindex(&note).await.unwrap();
+        note.content = note.content.replace("2026-07-17", "2026-07-18");
+        store.update(&note).await.unwrap();
+
+        let store_dyn: Arc<dyn NoteStore> = store;
+        let index_dyn: Arc<dyn SearchIndex> = index.clone();
+        let graph_dyn: Arc<dyn LinkGraph> = index.clone();
+        let (notify_tx, mut notify_rx) = broadcast::channel(4);
+        let notify = Some(notify_tx);
+        let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(live_note_path);
+
+        Indexer::handle_event(&store_dyn, &index_dyn, &graph_dyn, &root, event, &notify).await;
+
+        assert!(
+            index
+                .agenda_blocks("2026-07-17", "2026-07-17", false)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the old task date must be removed"
+        );
+        assert_eq!(
+            index
+                .agenda_blocks("2026-07-18", "2026-07-18", false)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the updated task date must be indexed"
+        );
+        match notify_rx.try_recv() {
+            Ok(NoteEvent::Updated(updated)) => assert!(updated.content.contains("2026-07-18")),
+            other => panic!("expected a live-note update event, got {other:?}"),
+        }
     }
 }
