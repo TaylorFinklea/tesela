@@ -4768,9 +4768,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `agenda_blocks`) — the Agenda was empty in relay mode because
     /// this method was `.http`-gated (2026-06-10 product test).
     func fetchAgenda(from: String, to: String, includeDone: Bool) async -> [AgendaRow] {
+        (try? await fetchDashboardAgenda(from: from, to: to, includeDone: includeDone)) ?? []
+    }
+
+    /// Throwing agenda sibling for widget surfaces that must distinguish an
+    /// unreachable backend from a genuinely empty agenda.
+    func fetchDashboardAgenda(from: String, to: String, includeDone: Bool) async throws -> [AgendaRow] {
         let generation = backendGeneration
         let backend = currentBackend
-        guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
         switch backend {
         case .mock:
             return []
@@ -4778,15 +4786,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
             return localAgenda(from: from, to: to, includeDone: includeDone)
         case .http(let baseURL):
             let body = APIAgendaRequest(from: from, to: to, include_done: includeDone)
-            do {
-                let rows: [AgendaRow] = try await httpPostJSON(
-                    "/agenda", baseURL: baseURL, body: body
-                )
-                guard isCurrentBackend(generation: generation, backend: backend) else { return [] }
-                return rows
-            } catch {
-                return []
+            let rows: [AgendaRow] = try await httpPostJSON(
+                "/agenda", baseURL: baseURL, body: body
+            )
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
             }
+            return rows
         }
     }
 
@@ -5132,58 +5138,226 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// method was `.http`-gated (2026-06-10 product test). JQL-grammar
     /// clauses beyond that subset are skipped locally (match-all).
     func executeQuery(_ dsl: String) async -> QueryResult {
+        (try? await executeDashboardQuery(dsl: dsl, group: nil, sort: nil))
+            ?? QueryResult(groups: [])
+    }
+
+    /// Throwing query sibling used by Dashboard widgets. It carries every
+    /// declared projection dependency and preserves transport/evaluation
+    /// failures so the card can render an honest stale/error state.
+    func executeDashboardQuery(
+        dsl: String,
+        group: String?,
+        sort: String?
+    ) async throws -> QueryResult {
         let generation = backendGeneration
         let backend = currentBackend
         guard isCurrentBackend(generation: generation, backend: backend) else {
-            return QueryResult(groups: [])
+            throw CancellationError()
         }
         switch backend {
         case .mock:
             return QueryResult(groups: [])
         case .relay:
-            return localExecuteQuery(dsl)
+            return localExecuteQuery(dsl, group: group, sort: sort)
         case .http(let baseURL):
-            let body = APIExecuteQueryBody(dsl: dsl, group: nil, sort: nil)
-            do {
-                let result: QueryResult = try await httpPostJSON(
-                    "/search/query", baseURL: baseURL, body: body
-                )
-                guard isCurrentBackend(generation: generation, backend: backend) else {
-                    return QueryResult(groups: [])
-                }
-                return result
-            } catch {
-                return QueryResult(groups: [])
+            let body = APIExecuteQueryBody(dsl: dsl, group: group, sort: sort)
+            let result: QueryResult = try await httpPostJSON(
+                "/search/query", baseURL: baseURL, body: body
+            )
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
             }
+            return result
         }
     }
 
-    /// Local-sandbox mirror of `POST /search/query` for block-kind
-    /// queries. Page-kind queries (`kind:page`) aren't served locally —
-    /// no iOS surface issues them today. Group/sort follow the iOS
-    /// caller convention (both nil), which server-side yields a single
-    /// ungrouped bucket with an empty key (`apply_group(None)`).
-    private func localExecuteQuery(_ dsl: String) -> QueryResult {
+    /// Discover every Query note on the active backend. This is deliberately
+    /// independent of the older inbox-prefixed filter list: a Dashboard widget
+    /// may project any Query note, not only system Inbox filters.
+    func fetchDashboardQueryDefinitions() async throws -> [DashboardQueryDefinition] {
+        let generation = backendGeneration
+        let backend = currentBackend
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
+
+        let notes: [APINote]
+        switch backend {
+        case .mock:
+            notes = []
+        case .relay:
+            notes = loadAllLocalNotes()
+        case .http(let baseURL):
+            notes = try await httpGet("/notes?limit=5000", baseURL: baseURL)
+        }
+        guard isCurrentBackend(generation: generation, backend: backend) else {
+            throw CancellationError()
+        }
+
+        return notes
+            .filter { $0.metadata.note_type == "Query" }
+            .map { note in
+                let value: (String) -> String? = { key in
+                    if let string = note.metadata.custom[key] as? String,
+                       !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    return Self.dashboardBodyProperty(key, in: note.body)
+                }
+                return DashboardQueryDefinition(
+                    id: note.id,
+                    title: note.id == "inbox" && note.title == "Inbox" ? "Views" : note.title,
+                    dsl: value("query") ?? "",
+                    group: value("group"),
+                    sort: value("sort"),
+                    icon: DashboardWidgetIcon.normalized(value("icon")),
+                    revision: note.modified_at
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+
+    private static func dashboardBodyProperty(_ key: String, in body: String) -> String? {
+        let prefix = "\(key.lowercased())::"
+        for raw in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.lowercased().hasPrefix(prefix) else { continue }
+            let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    /// Local-sandbox mirror of `POST /search/query` for both block- and
+    /// page-kind queries, including declared group/sort projection options.
+    private func localExecuteQuery(_ dsl: String, group: String?, sort: String?) -> QueryResult {
         let parsed = LocalQueryEngine.parseSimpleDsl(dsl)
-        guard parsed.kind == .block else { return QueryResult(groups: []) }
         let allNotes = loadAllLocalNotes()
         // L5: build the property-type registry from Property pages so the
         // matcher compares typed values (number/date/checkbox) instead of
         // guessing from strings. Mirrors the web QueryBlock's buildRegistry.
         let propertyTypes = buildPropertyTypeRegistry(allNotes)
         var items: [QueryItem] = []
-        for note in allNotes {
-            let blocks = parseBlocks(from: note.body, noteId: note.id)
-            items += LocalQueryEngine.queryItems(
-                blocks: blocks,
-                noteId: note.id,
-                noteTitle: note.title,
-                pageNoteType: note.metadata.note_type,
-                dsl: parsed,
-                propertyTypes: propertyTypes
-            )
+        switch parsed.kind {
+        case .block:
+            for note in allNotes {
+                let blocks = parseBlocks(from: note.body, noteId: note.id)
+                items += LocalQueryEngine.queryItems(
+                    blocks: blocks,
+                    noteId: note.id,
+                    noteTitle: note.title,
+                    pageNoteType: note.metadata.note_type,
+                    dsl: parsed,
+                    propertyTypes: propertyTypes
+                )
+            }
+        case .page:
+            for note in allNotes {
+                var properties: [String: String] = [:]
+                for raw in extractFrontmatter(from: note.content)
+                    .split(separator: "\n", omittingEmptySubsequences: false) {
+                    guard let separator = raw.firstIndex(of: ":") else { continue }
+                    let rawKey = raw[..<separator].trimmingCharacters(in: .whitespaces)
+                    let rawValue = raw[raw.index(after: separator)...]
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    guard !rawKey.isEmpty, !rawValue.isEmpty else { continue }
+                    properties[rawKey == "type" ? "note_type" : rawKey] = rawValue
+                }
+                if let noteType = note.metadata.note_type {
+                    properties["note_type"] = noteType
+                }
+                let pseudo = Block(
+                    id: note.id,
+                    kind: .note,
+                    text: note.title,
+                    rawText: note.title,
+                    tags: note.metadata.tags,
+                    lineNumber: 0,
+                    noteId: note.id
+                )
+                let context = LocalQueryEngine.BlockContext(
+                    block: pseudo,
+                    blockId: note.id,
+                    ownTags: note.metadata.tags,
+                    inheritedTags: [],
+                    properties: properties,
+                    noteId: note.id,
+                    pageNoteType: nil
+                )
+                guard LocalQueryEngine.evalExpr(
+                    parsed.expr,
+                    ctx: context,
+                    propertyTypes: propertyTypes
+                ) else { continue }
+                items.append(QueryItem(
+                    block_id: nil,
+                    page_id: note.id,
+                    title: note.title,
+                    text: note.title,
+                    parent_breadcrumb: [],
+                    kind: .page,
+                    primary_tag: note.metadata.tags.first,
+                    properties: properties,
+                    page_note_type: note.metadata.note_type
+                ))
+            }
         }
-        return QueryResult(groups: [QueryGroup(key: "", items: items)])
+        return dashboardProjection(items, group: group, sort: parsed.sort ?? sort)
+    }
+
+    private func dashboardProjection(
+        _ input: [QueryItem],
+        group: String?,
+        sort: String?
+    ) -> QueryResult {
+        var items = input
+        let terms = (sort ?? "")
+            .split(separator: ",")
+            .compactMap { raw -> (field: String, descending: Bool)? in
+                let pieces = raw.split(whereSeparator: { $0.isWhitespace })
+                guard let first = pieces.first else { return nil }
+                return (String(first), pieces.dropFirst().first?.lowercased() == "desc")
+            }
+        if !terms.isEmpty {
+            items.sort { lhs, rhs in
+                for term in terms {
+                    let left = dashboardProjectionValue(lhs, field: term.field)
+                    let right = dashboardProjectionValue(rhs, field: term.field)
+                    if left == right { continue }
+                    if left == nil { return false }
+                    if right == nil { return true }
+                    let order = left!.compare(right!, options: [.caseInsensitive, .numeric])
+                    return term.descending ? order == .orderedDescending : order == .orderedAscending
+                }
+                return lhs.id < rhs.id
+            }
+        }
+
+        guard let group, !group.isEmpty else {
+            return QueryResult(groups: [QueryGroup(key: "", items: items)])
+        }
+        let grouped = Dictionary(grouping: items) {
+            dashboardProjectionValue($0, field: group) ?? ""
+        }
+        return QueryResult(groups: grouped.keys.sorted().map {
+            QueryGroup(key: $0, items: grouped[$0] ?? [])
+        })
+    }
+
+    private func dashboardProjectionValue(_ item: QueryItem, field: String) -> String? {
+        switch field.lowercased() {
+        case "title": return item.title
+        case "text": return item.text
+        case "page", "page_id": return item.page_id
+        case "tag", "primary_tag": return item.primary_tag
+        case "type", "note_type": return item.page_note_type
+        default:
+            return item.properties.first { $0.key.lowercased() == field.lowercased() }?.value
+        }
     }
 
     /// `lowercased property name → value_type` from the local Property pages,

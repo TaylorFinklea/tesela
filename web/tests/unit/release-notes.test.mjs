@@ -35,8 +35,8 @@ class MemoryStorage {
 
 test("parses the bundled schema-1 catalog", () => {
   const parsed = parseReleaseCatalog(catalog());
-  assert.equal(parsed.current.desktop, "2026-07-15.desktop-0.1.2");
-  assert.equal(loadBundledReleaseNotes()?.releases.length, 6);
+  assert.equal(parsed.current.desktop, "2026-07-17.desktop-0.1.3");
+  assert.equal(loadBundledReleaseNotes()?.releases.length, 7);
 });
 
 test("strict parsing rejects unsupported schema and safe loading fails soft", () => {
@@ -72,6 +72,7 @@ test("platform history starts at current and contains only applicable older rele
   assert.deepEqual(
     platformReleaseHistory(parsed, "desktop").map((release) => release.id),
     [
+      "2026-07-17.desktop-0.1.3",
       "2026-07-15.desktop-0.1.2",
       "2026-07-02.desktop-0.1.1",
       "2026-06-04.desktop-0.1.0",
@@ -92,13 +93,13 @@ test("seen-state decisions cover missing, unknown, older, current, and downgrade
   assert.equal(shouldPresentCurrent(parsed, "desktop", null), true);
   assert.equal(shouldPresentCurrent(parsed, "desktop", "unknown"), true);
   assert.equal(shouldPresentCurrent(parsed, "desktop", "2026-07-02.desktop-0.1.1"), true);
-  assert.equal(shouldPresentCurrent(parsed, "desktop", "2026-07-15.desktop-0.1.2"), false);
+  assert.equal(shouldPresentCurrent(parsed, "desktop", "2026-07-17.desktop-0.1.3"), false);
 
   const downgraded = catalog();
   downgraded.current.desktop = "2026-07-02.desktop-0.1.1";
   const parsedDowngrade = parseReleaseCatalog(downgraded);
   assert.equal(
-    shouldPresentCurrent(parsedDowngrade, "desktop", "2026-07-15.desktop-0.1.2"),
+    shouldPresentCurrent(parsedDowngrade, "desktop", "2026-07-17.desktop-0.1.3"),
     false,
   );
 });
@@ -126,7 +127,7 @@ test("rendering current persists the platform key", () => {
   state.markCurrentRendered();
   assert.equal(
     storage.getItem("tesela:releaseNotes:lastSeen:desktop"),
-    "2026-07-15.desktop-0.1.2",
+    "2026-07-17.desktop-0.1.3",
   );
   assert.equal(state.shouldAutoPresent(), false);
 });
@@ -169,7 +170,7 @@ test("manual browsing does not alter seen state until current detail renders", (
 
 test("version labels are platform-aware", () => {
   const parsed = parseReleaseCatalog(catalog());
-  assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "desktop")[0], "desktop"), "Tesela 0.1.2");
+  assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "desktop")[0], "desktop"), "Tesela 0.1.3");
   assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "ios")[0], "ios"), "Tesela 1.1 (80)");
   assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "web")[0], "web"), "Tesela Web");
 });

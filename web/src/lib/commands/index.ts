@@ -191,6 +191,19 @@ function toggleRailFavorite(pageId?: string) {
   toggleFavorite(pageId);
 }
 
+type RailWidgetAction =
+  | "open-picker"
+  | "add"
+  | "remove"
+  | "move-up"
+  | "move-down"
+  | "toggle"
+  | "refresh";
+
+function dispatchRailWidgetAction(action: RailWidgetAction, id?: string) {
+  document.dispatchEvent(new CustomEvent("tesela:rail-widget-action", { detail: { action, id } }));
+}
+
 function openQuickCapture() {
   openColonMode({
     priorPaneId: getFocusedLeafId() as unknown as string | undefined,
@@ -741,7 +754,67 @@ export function buildBuiltinCommands(): BuiltinCommand[] {
       category: "navigate",
       chord: ["r", "a"],
       keywords: ["rail", "sidebar", "widget", "add", "customize"],
-      run: () => toast("Widget customization is coming soon"),
+      run: () => dispatchRailWidgetAction("open-picker"),
+    },
+    {
+      id: "rail-add-widget-by-id",
+      verb: "rail-add-widget-id",
+      label: "Add a widget to the rail",
+      glyph: "+",
+      category: "navigate",
+      keywords: ["rail", "widget", "add", "query", "saved view"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("add", arg),
+    },
+    {
+      id: "rail-remove-widget",
+      verb: "rail-remove-widget",
+      label: "Remove a widget from the rail",
+      glyph: "×",
+      category: "navigate",
+      keywords: ["rail", "widget", "remove", "hide"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("remove", arg),
+    },
+    {
+      id: "rail-move-widget-up",
+      verb: "rail-widget-up",
+      label: "Move a rail widget up",
+      glyph: "↑",
+      category: "navigate",
+      keywords: ["rail", "widget", "move", "reorder", "up"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("move-up", arg),
+    },
+    {
+      id: "rail-move-widget-down",
+      verb: "rail-widget-down",
+      label: "Move a rail widget down",
+      glyph: "↓",
+      category: "navigate",
+      keywords: ["rail", "widget", "move", "reorder", "down"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("move-down", arg),
+    },
+    {
+      id: "rail-toggle-widget",
+      verb: "rail-toggle-widget",
+      label: "Collapse or expand a rail widget",
+      glyph: "⌄",
+      category: "navigate",
+      keywords: ["rail", "widget", "collapse", "expand"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("toggle", arg),
+    },
+    {
+      id: "rail-refresh-widget",
+      verb: "rail-refresh-widget",
+      label: "Refresh a rail widget",
+      glyph: "↻",
+      category: "navigate",
+      keywords: ["rail", "widget", "refresh", "retry"],
+      argPrompt: "widget id",
+      run: (arg) => arg && dispatchRailWidgetAction("refresh", arg),
     },
 
     {

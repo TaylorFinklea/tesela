@@ -120,7 +120,17 @@ struct GrLibraryView: View {
                 spacing: 12
             ) {
                 ForEach(ambients) { a in
-                    ambientCard(a)
+                    if a.title == "Dashboard" {
+                        NavigationLink {
+                            GrDashboardView(mosaic: mosaic, path: $navigationPath)
+                                .environment(\.theme, theme)
+                        } label: {
+                            ambientCard(a)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        ambientCard(a)
+                    }
                 }
             }
             pinnedWidget

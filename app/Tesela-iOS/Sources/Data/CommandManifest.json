@@ -1071,6 +1071,245 @@
     "description": null
   },
   {
+    "id": "rail-focus",
+    "verb": "rail-focus",
+    "label": "Focus widget rail",
+    "glyph": "▥",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "f"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "sidebar",
+      "widgets",
+      "focus",
+      "keyboard"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "rail-quick-capture",
+    "verb": "rail-capture",
+    "label": "Quick capture",
+    "glyph": "⚡",
+    "category": "create",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "c"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "quick",
+      "capture",
+      "thought",
+      "inbox"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "rail-toggle-favorite",
+    "verb": "rail-favorite",
+    "label": "Toggle a rail page favorite",
+    "glyph": "★",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "favorite",
+      "star",
+      "bookmark",
+      "page"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "page id",
+    "description": null
+  },
+  {
+    "id": "rail-add-widget",
+    "verb": "rail-add-widget",
+    "label": "Add rail widget",
+    "glyph": "+",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": [
+      "r",
+      "a"
+    ],
+    "surfaces": [
+      "colon",
+      "leader",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "sidebar",
+      "widget",
+      "add",
+      "customize"
+    ],
+    "takes_arg": false,
+    "arg_prompt": null,
+    "description": null
+  },
+  {
+    "id": "rail-add-widget-by-id",
+    "verb": "rail-add-widget-id",
+    "label": "Add a widget to the rail",
+    "glyph": "+",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "add",
+      "query",
+      "saved view"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
+    "id": "rail-remove-widget",
+    "verb": "rail-remove-widget",
+    "label": "Remove a widget from the rail",
+    "glyph": "×",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "remove",
+      "hide"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
+    "id": "rail-move-widget-up",
+    "verb": "rail-widget-up",
+    "label": "Move a rail widget up",
+    "glyph": "↑",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "move",
+      "reorder",
+      "up"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
+    "id": "rail-move-widget-down",
+    "verb": "rail-widget-down",
+    "label": "Move a rail widget down",
+    "glyph": "↓",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "move",
+      "reorder",
+      "down"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
+    "id": "rail-toggle-widget",
+    "verb": "rail-toggle-widget",
+    "label": "Collapse or expand a rail widget",
+    "glyph": "⌄",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "collapse",
+      "expand"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
+    "id": "rail-refresh-widget",
+    "verb": "rail-refresh-widget",
+    "label": "Refresh a rail widget",
+    "glyph": "↻",
+    "category": "navigate",
+    "shortcut": null,
+    "chord": null,
+    "surfaces": [
+      "colon",
+      "palette"
+    ],
+    "keywords": [
+      "rail",
+      "widget",
+      "refresh",
+      "retry"
+    ],
+    "takes_arg": true,
+    "arg_prompt": "widget id",
+    "description": null
+  },
+  {
     "id": "toggle-favorite",
     "verb": "favorite",
     "label": "Toggle Favorite",

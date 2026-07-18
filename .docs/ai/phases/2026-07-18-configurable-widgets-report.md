@@ -1,0 +1,37 @@
+# Configurable in-app widgets — tesela-tko report
+
+## Shipped
+
+- web/desktop Graphite rail now uses a versioned device-local ordered layout
+- stable ids: `builtin:*`, `query:<note-id>`, `view:<view-id>`
+- add/remove/move/collapse controls + picker + shared command ids; manifest regenerated for web + iOS
+- live arbitrary Query-note and saved-view projections; canonical definition revisions + note/view/WS invalidation
+- explicit loading/refreshing/error/empty/unavailable states; compact Agenda, Inbox, Sync Health
+- iOS Graphite + legacy Dashboard share one configurable collection; default Agenda/Inbox/Sync Health
+- iOS local Query execution now supports page results as well as blocks
+- missing sources remain removable unavailable placements instead of silently disappearing
+
+## Tests
+
+- web layout/revision/group flattening: 5 focused tests
+- iOS layout/stable-id/revision behavior: 5 focused tests
+- browser rail: 4/4 — keyboard/Escape + add/remove/reorder/collapse persistence across reload
+- full web unit: 1,012/1,012
+- `pnpm --dir web check`: 0 errors, 48 pre-existing warnings
+- command manifest freshness + web production build: pass
+- iOS app target build + focused `DashboardWidgetsTests`: pass on iPhone 17 simulator
+- direct simulator install/launch: pass; live Graphite shell rendered
+
+## Verification boundary
+
+- iOS semantic snapshot + simulator-browser bridges stalled; Dashboard click-through remains manual checklist coverage
+- repo-wide `cargo fmt --all -- --check` fails on existing untouched Rust drift; tracked by `tesela-bz5`
+- no Rust changed; `cargo build -p tesela-server` passed for the browser harness
+- build skill stopped the remaining repo-wide Rust matrix at the formatter failure
+- full unit initially exposed release tests pinned to desktop 0.1.2 while catalog/config were already 0.1.3; expectations aligned to shipped source
+
+## Manual QA
+
+- web/desktop: add a Query note + saved view; reorder, collapse, reload; confirm data/states and remove
+- iOS: Library → Dashboard; add a Query note + saved view; reorder, collapse, relaunch; confirm Agenda/Inbox/Sync Health
+- both: delete/restore a selected source; confirm unavailable state then live recovery

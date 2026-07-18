@@ -62,7 +62,7 @@ test("local builds remove stale signed updater artifacts when signing is disable
 });
 
 test("desktop release metadata is catalog-backed and version-aligned", () => {
-  assert.equal(tauriConfig.version, "0.1.2");
+  assert.equal(tauriConfig.version, "0.1.3");
   assert.match(releaseScript, /changelog\.mjs validate --platform desktop --version/);
   assert.match(releaseScript, /changelog\.mjs render --release/);
   assert.match(releaseScript, /--format markdown/);

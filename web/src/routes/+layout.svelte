@@ -97,6 +97,7 @@
         queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
         queryClient.invalidateQueries({ queryKey: ["agenda"] });
         queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+        queryClient.invalidateQueries({ queryKey: ["rail-projection"] });
       }
       // Targeted `["note", id]` refetches feed the page/editor buffer
       // directly. Own-echo ids were already filtered out upstream
@@ -138,6 +139,7 @@
         // Every mounted `["views"]` consumer (the GrInbox view switcher)
         // re-renders immediately; an edit on another device shows up live.
         queryClient.setQueryData(["views"], views);
+        queryClient.invalidateQueries({ queryKey: ["rail-projection"] });
       },
       onReconnected: () => {
         // Ship any Loro ops typed during the outage FIRST: the registry's
@@ -153,6 +155,7 @@
         queryClient.invalidateQueries({ queryKey: ["note"] });
         // A views_changed event may have fired during the gap too.
         queryClient.invalidateQueries({ queryKey: ["views"] });
+        queryClient.invalidateQueries({ queryKey: ["rail-projection"] });
         flushNoteRefreshNow();
       },
       onBinaryDelta: (updates) => {

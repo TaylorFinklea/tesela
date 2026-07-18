@@ -90,6 +90,19 @@ test("manifest exposes every rail action through named commands", () => {
   assert.equal(railFavorite.takes_arg, true);
   assert.match(railFavorite.arg_prompt, /page/i);
 
+  for (const id of [
+    "rail-add-widget-by-id",
+    "rail-remove-widget",
+    "rail-move-widget-up",
+    "rail-move-widget-down",
+    "rail-toggle-widget",
+    "rail-refresh-widget",
+  ]) {
+    const entry = manifest.find((item) => item.id === id);
+    assert.ok(entry, `expected ${id} in the command manifest`);
+    assert.equal(entry.takes_arg, true, `${id} must receive a stable widget id`);
+  }
+
   const focusedFavorite = manifest.find((item) => item.id === "toggle-favorite");
   assert.ok(focusedFavorite, "the existing focused-page favorite command remains available");
   assert.equal(focusedFavorite.takes_arg, false);

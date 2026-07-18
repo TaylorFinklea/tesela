@@ -260,38 +260,6 @@ struct InProgressAmbientView: View {
     }
 }
 
-struct DashboardAmbientView: View {
-    @ObservedObject var mosaic: MockMosaicService
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                ForEach(mosaic.pinned) { p in
-                    HStack {
-                        Icon(name: .pin, size: 16).foregroundStyle(theme.accentPrimary)
-                        Text(p.title)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(theme.fgDefault)
-                        Spacer()
-                    }
-                    .padding(14)
-                    .background(theme.bg2)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(theme.line, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-            }
-            .padding(16)
-        }
-        .background(theme.bg)
-        .navigationTitle("Dashboard")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 struct AIAmbientView: View {
     @Environment(\.theme) private var theme
 

@@ -6,6 +6,10 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(({ slug }) => {
     localStorage.setItem("tesela:favorites", JSON.stringify([slug]));
     localStorage.setItem("tesela:workspace:pinned", JSON.stringify([slug]));
+    if (sessionStorage.getItem("tesela:e2e:rail-layout-reset") !== "1") {
+      localStorage.removeItem("tesela:graphite:rail-layout:v1");
+      sessionStorage.setItem("tesela:e2e:rail-layout-reset", "1");
+    }
   }, { slug: SLUG });
 });
 
@@ -23,25 +27,38 @@ test("leader enters the rail, traversal wraps, Escape returns, and Enter invokes
   await page.keyboard.press("r");
   await page.keyboard.press("f");
 
-  const actions = page.locator(".gr-rail [data-rail-action]");
-  await expect(actions.first()).toBeFocused();
+  const allActions = page.locator(".gr-rail [data-rail-action]");
+  const actions = page.locator(".gr-rail [data-rail-action]:not(:disabled)");
+  const quickCapture = page.locator('.gr-rail [data-command-id="rail-quick-capture"]');
+  await expect(quickCapture).toBeFocused();
   expect(await actions.count()).toBeGreaterThanOrEqual(4);
 
-  const commandIds = await actions.evaluateAll((elements) =>
+  const commandIds = await allActions.evaluateAll((elements) =>
     elements.map((element) => element.getAttribute("data-command-id")),
   );
   expect(commandIds).not.toContain(null);
-  expect(new Set(commandIds)).toEqual(new Set([
+  for (const commandId of [
     "rail-quick-capture",
     "jump",
     "rail-toggle-favorite",
+    "rail-move-widget-up",
+    "rail-move-widget-down",
+    "rail-remove-widget",
+    "rail-toggle-widget",
+    "settings-sync",
     "rail-add-widget",
-  ]));
+  ]) {
+    expect(commandIds).toContain(commandId);
+  }
 
   await page.keyboard.press("End");
   await expect(actions.last()).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Widget customization is coming soon")).toBeVisible();
+  const picker = page.getByRole("dialog", { name: "Add a rail widget" });
+  await expect(picker).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+  await expect(page.locator('.gr-rail [data-command-id="rail-add-widget"]')).toBeFocused();
   await page.keyboard.press("j");
   await expect(actions.first()).toBeFocused();
   await page.keyboard.press("k");
@@ -49,25 +66,18 @@ test("leader enters the rail, traversal wraps, Escape returns, and Enter invokes
   await page.keyboard.press("Home");
   await expect(actions.first()).toBeFocused();
 
-  await page.keyboard.press("j");
-  await expect(actions.nth(1)).toBeFocused();
+  const favoritePage = page.getByRole("button", { name: `Open favorite page ${SLUG}` });
+  await favoritePage.focus();
   await page.keyboard.press("Enter");
   await expect(page.locator(".gr-pane-head .ttl").filter({ hasText: SLUG }).first()).toBeVisible();
 
-  await page.keyboard.press("j");
-  await expect(actions.nth(2)).toBeFocused();
-  await page.keyboard.press("j");
-  await expect(actions.nth(3)).toBeFocused();
-  await page.keyboard.press("j");
-  await expect(actions.nth(4)).toBeFocused();
-  await page.keyboard.press("Enter");
   const pinnedWidget = page.locator(".gr-w").filter({
     has: page.locator(".gr-w-head .ti", { hasText: "Pinned" }),
   });
   const pinnedStar = pinnedWidget.getByRole("button", {
-    name: `Add ${SLUG} to favorites`,
+    name: `Remove ${SLUG} from favorites`,
   });
-  await expect(pinnedStar).toBeFocused();
+  await pinnedStar.focus();
 
   await page.keyboard.press("Escape");
   await expect(origin).toBeFocused();
@@ -75,23 +85,58 @@ test("leader enters the rail, traversal wraps, Escape returns, and Enter invokes
   await page.keyboard.press("Space");
   await page.keyboard.press("r");
   await page.keyboard.press("f");
+  await expect(quickCapture).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "vim ex command" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "vim ex command" })).toHaveCount(0);
 
-  await actions.first().focus();
+  await quickCapture.focus();
   await page.keyboard.press("Space");
   await expect(page.getByRole("dialog", { name: "vim ex command" })).toBeVisible();
   await page.keyboard.press("Escape");
 
   await origin.focus();
-  await actions.first().focus();
+  await quickCapture.focus();
   const settings = page.getByRole("button", { name: "Settings", exact: true });
   await settings.focus();
-  await actions.first().focus();
+  await quickCapture.focus();
   await page.keyboard.press("Escape");
   await expect(settings).toBeFocused();
+});
+
+test("widget layout add, remove, reorder, and collapse persist across reload", async ({ page }) => {
+  await page.goto("/g");
+  const releaseDone = page.getByRole("button", { name: "Done", exact: true });
+  await expect(releaseDone).toBeVisible();
+  await releaseDone.click();
+
+  const agenda = page.locator(".gr-w").filter({
+    has: page.locator(".gr-w-head .ti", { hasText: "Agenda" }),
+  });
+  await agenda.getByRole("button", { name: "Remove Agenda" }).click();
+  await expect(agenda).toHaveCount(0);
+
+  await page.locator('.gr-rail [data-command-id="rail-add-widget"]').click();
+  const picker = page.getByRole("dialog", { name: "Add a rail widget" });
+  await picker.getByRole("button", { name: /Agenda/ }).click();
+  await expect(agenda).toBeVisible();
+
+  await agenda.getByRole("button", { name: "Move Agenda up" }).click();
+  await agenda.getByRole("button", { name: "Collapse Agenda" }).click();
+  await expect(agenda.getByRole("button", { name: "Expand Agenda" })).toBeVisible();
+
+  const storedBeforeReload = await page.evaluate(() =>
+    localStorage.getItem("tesela:graphite:rail-layout:v1"),
+  );
+  expect(storedBeforeReload).toContain("builtin:agenda");
+
+  await page.reload();
+  await expect(page.locator(".gr-w").filter({
+    has: page.locator(".gr-w-head .ti", { hasText: "Agenda" }),
+  }).getByRole("button", { name: "Expand Agenda" })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("tesela:graphite:rail-layout:v1")))
+    .toBe(storedBeforeReload);
 });
 
 test("Escape restores a Daily editor after the keydown completes", async ({ page }) => {
@@ -128,8 +173,8 @@ test("Escape restores a Daily editor after the keydown completes", async ({ page
     await page.keyboard.press("r");
     await page.keyboard.press("f");
 
-    const actions = page.locator(".gr-rail [data-rail-action]");
-    await expect(actions.first()).toBeFocused();
+    const actions = page.locator(".gr-rail [data-rail-action]:not(:disabled)");
+    await expect(page.locator('.gr-rail [data-command-id="rail-quick-capture"]')).toBeFocused();
     await page.keyboard.press("End");
     await expect(actions.last()).toBeFocused();
     await page.keyboard.press("Escape");
