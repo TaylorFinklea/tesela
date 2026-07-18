@@ -31,6 +31,8 @@
 #   TESELA_TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 #   DESKTOP_UPDATER_TARGET   (default darwin-aarch64; darwin-x86_64 on Intel)
 #   DESKTOP_GH_REPO          (default TaylorFinklea/tesela)
+#   DESKTOP_TAP_DIR          (default ~/git/homebrew-tap; local tap checkout whose
+#                            Casks/tesela.rb is bumped+pushed after verify)
 #
 # Run:
 #   bws-project run -- scripts/desktop-release.sh   # full release: build→sign→notarize→staple→publish→verify
@@ -117,6 +119,9 @@ restore_release_keychain_search_list() {
 
 VERIFY_TMP_DIR=""
 VERIFY_APP_PID=""
+PUBLISHED_ZIP_SHA256=""
+TAP_DIR="${DESKTOP_TAP_DIR:-$HOME/git/homebrew-tap}"
+CASK_PATH="$TAP_DIR/Casks/tesela.rb"
 RELAUNCH_INSTALLED_APP=false
 INSTALLED_APP_PATH="/Applications/$PRODUCT_NAME.app"
 INSTALLED_APP_BINARY="$INSTALLED_APP_PATH/Contents/MacOS/tesela-desktop"
@@ -259,7 +264,7 @@ create_final_updater_artifact() {
 }
 
 emit_updater_manifest() {
-  echo "==> 6/8  updater manifest (latest.json)"
+  echo "==> 6/9  updater manifest (latest.json)"
   if [[ ! -f "$UPDATER_TAR_PATH" || ! -f "$UPDATER_SIG_PATH" ]]; then
     warn "no updater artifact at $UPDATER_TAR_PATH (and/or its .sig) — cargo tauri build only" \
          "writes these when TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] are set at build time; skipping manifest"
@@ -329,7 +334,7 @@ assert_version_advances() {
 }
 
 publish_release() {
-  echo "==> 7/8  publish GitHub release v$DESKTOP_VERSION"
+  echo "==> 7/9  publish GitHub release v$DESKTOP_VERSION"
   assert_version_advances
   local tar_dest="$DIST_DIR/$(basename "$UPDATER_TAR_PATH")"
   local assets=("$ZIP_PATH" "$tar_dest" "$MANIFEST_PATH")
@@ -365,13 +370,16 @@ verify_failed() {
 # serving /g from an isolated launch, and a live manifest that points at this
 # version with the signature we produced.
 verify_published_release() {
-  echo "==> 8/8  verify published release v$DESKTOP_VERSION"
+  echo "==> 8/9  verify published release v$DESKTOP_VERSION"
   VERIFY_TMP_DIR="$(mktemp -d /private/tmp/tesela-desktop-verify.XXXXXX)"
   local zip_name
   zip_name="$(basename "$ZIP_PATH")"
   echo "    downloading published $zip_name"
   gh release download "v$DESKTOP_VERSION" --repo "$GH_REPO" \
     --pattern "$zip_name" --dir "$VERIFY_TMP_DIR" || verify_failed
+  # Hash the zip GitHub actually serves — this is what the Homebrew cask's
+  # sha256 must match, not the local build output.
+  PUBLISHED_ZIP_SHA256="$(shasum -a 256 "$VERIFY_TMP_DIR/$zip_name" | awk '{print $1}')"
   ditto -x -k "$VERIFY_TMP_DIR/$zip_name" "$VERIFY_TMP_DIR/extract"
   local app="$VERIFY_TMP_DIR/extract/$PRODUCT_NAME.app"
   if [[ ! -d "$app" ]]; then
@@ -481,6 +489,46 @@ verify_published_release() {
   VERIFY_TMP_DIR=""
 }
 
+# Bump the tap's cask to the just-verified release: version + sha256 of the
+# served zip, committed and pushed in the local tap checkout. Non-fatal — the
+# release is already live and verified — but loud, with the manual commands,
+# whenever the tap can't be updated cleanly.
+publish_cask() {
+  echo "==> 9/9  update Homebrew cask (tap: $TAP_DIR)"
+  local manual="    manual: edit $CASK_PATH (version $DESKTOP_VERSION, sha256 $PUBLISHED_ZIP_SHA256), commit, push"
+  if [[ -z "$PUBLISHED_ZIP_SHA256" ]]; then
+    warn "CASK NOT UPDATED — no sha256 captured from the verify download"
+    echo "$manual" >&2
+    return 0
+  fi
+  if [[ ! -d "$TAP_DIR/.git" || ! -f "$CASK_PATH" ]]; then
+    warn "CASK NOT UPDATED — tap checkout or $CASK_PATH missing (override with DESKTOP_TAP_DIR)"
+    echo "$manual" >&2
+    return 0
+  fi
+  if [[ -n "$(git -C "$TAP_DIR" status --porcelain)" ]]; then
+    warn "CASK NOT UPDATED — tap checkout is dirty; resolve it first"
+    echo "$manual" >&2
+    return 0
+  fi
+  /usr/bin/sed -i '' -E \
+    -e "s|^  version \".*\"$|  version \"$DESKTOP_VERSION\"|" \
+    -e "s|^  sha256 \".*\"$|  sha256 \"$PUBLISHED_ZIP_SHA256\"|" \
+    "$CASK_PATH"
+  if [[ -z "$(git -C "$TAP_DIR" status --porcelain)" ]]; then
+    echo "    cask already at v$DESKTOP_VERSION with the current sha256"
+    return 0
+  fi
+  git -C "$TAP_DIR" add "Casks/$(basename "$CASK_PATH")"
+  git -C "$TAP_DIR" commit --quiet -m "Brew cask update for tesela version v$DESKTOP_VERSION"
+  # The tap also receives bot pushes (harness-deck bumps); rebase before push.
+  if ! git -C "$TAP_DIR" pull --rebase --quiet || ! git -C "$TAP_DIR" push --quiet; then
+    warn "CASK COMMITTED BUT NOT PUSHED — push $TAP_DIR manually"
+    return 0
+  fi
+  echo "    cask v$DESKTOP_VERSION pushed — brew install --cask taylorfinklea/tap/tesela"
+}
+
 run_dry_run() {
   echo "=== Tesela Desktop Release (dry run) ==="
   echo "    version:     $DESKTOP_VERSION"
@@ -504,7 +552,7 @@ run_dry_run() {
   echo "==> live updater version check"
   assert_version_advances --lenient
   echo "==> plan"
-  echo "    1 build → 2 codesign → 3 zip → 4 notarize → 5 staple → 6 latest.json → 7 publish v$DESKTOP_VERSION (--latest) → 8 verify published"
+  echo "    1 build → 2 codesign → 3 zip → 4 notarize → 5 staple → 6 latest.json → 7 publish v$DESKTOP_VERSION (--latest) → 8 verify published → 9 brew cask bump"
   echo "==> dry run ok — full release: bws-project run -- scripts/desktop-release.sh"
 }
 
@@ -521,6 +569,7 @@ if [[ "$VERIFY_ONLY" == true ]]; then
     exit 1
   fi
   verify_published_release
+  publish_cask
   echo "==> done — v$DESKTOP_VERSION verified against the published release"
   exit 0
 fi
@@ -640,5 +689,6 @@ fi
 
 publish_release
 verify_published_release
+publish_cask
 
 echo "==> done — v$DESKTOP_VERSION published and verified (installed apps update automatically)"

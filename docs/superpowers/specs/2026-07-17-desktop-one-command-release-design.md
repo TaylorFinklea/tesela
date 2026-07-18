@@ -107,3 +107,11 @@ path could not be verified.
   post-release verify command; publishing keeps the hard abort.
 - v0.1.3 shipped with this pipeline: published, verified, and the installed
   0.1.2 app auto-updated to 0.1.3 (rehearsal confirmed 2026-07-17).
+- Homebrew distribution added same day: `Casks/tesela.rb` in
+  taylorfinklea/homebrew-tap (`auto_updates true` — brew installs, the in-app
+  updater updates; sha256 taken from the zip GitHub serves, captured during
+  stage-8 verify). New stage 9/9 `publish_cask` bumps version+sha in the local
+  tap checkout (`DESKTOP_TAP_DIR`, default `~/git/homebrew-tap`), commits in
+  the tap's bot style, rebases (bot pushes race), and pushes; guards make it
+  loud-but-non-fatal since the release is already live. Personal machines
+  install via chezmoi-personal `scripts/install-homebrew-personal.sh`.
