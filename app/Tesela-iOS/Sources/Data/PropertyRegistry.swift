@@ -64,9 +64,9 @@ private struct AnyCodingKey: CodingKey {
 /// `property_overrides`) lives ONLY in Property/Tag-page frontmatter, never in the
 /// DB/API surface, so iOS must parse the pages exactly like web does.
 ///
-/// Read layer only (Phase 5.2): resolution semantics mirror web
-/// `getTagPropertyDefs` + `applyOverride` (which mirror Rust `apply_override`).
-/// No editor/toolbar/chip UI consumes this yet — P5.3-5.6 wire it up.
+/// Resolution semantics mirror web `getTagPropertyDefs` + `applyOverride`
+/// (which mirror Rust `apply_override`). `BlockRow`/`PropertyChip` consume the
+/// resolved type and choices for type-aware display and editing.
 
 // MARK: - Value-type / enums (mirror property-registry.ts:8-93)
 

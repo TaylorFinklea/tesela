@@ -102,6 +102,9 @@ struct BlockRow: View {
     /// the service's `setBlockProperty`; when nil, callers fall back to
     /// the whole-list `onSetProperties` path.
     var onSetProperty: ((_ key: String, _ value: String) -> Void)? = nil
+    /// Multi-select member delta — routes to the engine/server LoroList seam.
+    var onUpdatePropertyList:
+        ((_ key: String, _ current: [String], _ add: [String], _ remove: [String]) -> Void)? = nil
     /// Skip the current recurring-block occurrence to its next date.
     var onSkipRecurrence: (() -> Void)? = nil
 
@@ -170,6 +173,10 @@ struct BlockRow: View {
         return map
     }
 
+    private func propertyDef(for key: String) -> PropertyDef? {
+        resolvedDefsByName[key.lowercased()] ?? propertyRegistry.properties[key.lowercased()]
+    }
+
     /// The `choiceColors` tint for a displayed select/multi-select property
     /// value — mirrors web `DisplayChip`'s Phase-4 per-choice color. Looks
     /// up the resolved def for `key`, then `choiceColors[value.lowercased()]`
@@ -177,7 +184,7 @@ struct BlockRow: View {
     /// keeps its muted style. The status marker is intentionally NOT routed
     /// here (it stays priority-colored by design).
     private func chipTint(forKey key: String, value: String) -> Color? {
-        guard let def = resolvedDefsByName[key.lowercased()] else { return nil }
+        guard let def = propertyDef(for: key) else { return nil }
         guard def.valueType == .select || def.valueType == .multiSelect else { return nil }
         if def.choiceColors.isEmpty { return nil }
         let raw = value.trimmingCharacters(in: .whitespaces)
@@ -248,6 +255,11 @@ struct BlockRow: View {
     /// presets the sheet's field WITHOUT clobbering the user's stored
     /// `bareDateField` default. `nil` falls back to that default.
     @State private var dateSheetFieldPreset: String? = nil
+    @State private var editingProperty: PropertyEditTarget?
+
+    private var canEditProperties: Bool {
+        onSetProperty != nil || onSetProperties != nil
+    }
 
     private var configuredToolbarItems: [KeyboardToolbarItem] {
         decodeKeyboardToolbarItems(keyboardToolbarRaw)
@@ -332,7 +344,7 @@ struct BlockRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 content
                 if visibleChips.any {
-                    HStack(spacing: 4) {
+                    FlowLayout(spacing: 4) {
                         if visibleChips.tags {
                             ForEach(tags, id: \.self) { tag in
                                 TagChip(value: tag)
@@ -363,11 +375,25 @@ struct BlockRow: View {
                         }
                         if visibleChips.props {
                             ForEach(displayProperties, id: \.key) { prop in
+                                let definition = propertyDef(for: prop.key)
                                 PropertyChip(
                                     key: prop.key,
                                     value: prop.value,
-                                    def: resolvedDefsByName[prop.key.lowercased()],
-                                    tint: chipTint(forKey: prop.key, value: prop.value)
+                                    def: definition,
+                                    tint: chipTint(forKey: prop.key, value: prop.value),
+                                    onEdit: canEditProperties ? {
+                                        editingProperty = PropertyEditTarget(
+                                            key: prop.key,
+                                            value: prop.value,
+                                            definition: definition
+                                        )
+                                    } : nil,
+                                    onToggle: canEditProperties && definition?.valueType == .checkbox ? {
+                                        writeProperty(
+                                            key: prop.key,
+                                            value: PropertyEditing.toggledCheckboxValue(prop.value)
+                                        )
+                                    } : nil
                                 )
                             }
                         }
@@ -422,6 +448,17 @@ struct BlockRow: View {
                     dateSheetFieldPreset = nil
                 },
                 onCancel: { showingDateSheet = false; dateSheetFieldPreset = nil }
+            )
+        }
+        .sheet(item: $editingProperty) { target in
+            PropertyEditSheet(
+                target: target,
+                onSaveScalar: { value in
+                    writeProperty(key: target.key, value: value)
+                },
+                onSaveList: { delta in
+                    writePropertyList(key: target.key, delta: delta)
+                }
             )
         }
     }
@@ -701,6 +738,16 @@ struct BlockRow: View {
         var updated = properties.filter { $0.key != key }
         updated.append(BlockProperty(key: key, value: value))
         onSetProperties?(updated)
+    }
+
+    private func writePropertyList(key: String, delta: PropertyListDelta) {
+        if let onUpdatePropertyList {
+            onUpdatePropertyList(key, delta.current, delta.add, delta.remove)
+            return
+        }
+        var next = delta.current.filter { !delta.remove.contains($0) }
+        for value in delta.add where !next.contains(value) { next.append(value) }
+        writeProperty(key: key, value: next.joined(separator: ", "))
     }
 
     /// The collab editor's keyboard accessory, styled as a floating pill

@@ -142,7 +142,7 @@ struct GrAppShell: View {
                 // sub-second peer delivery; returns whether the engine
                 // recorded the write so a not-found bid surfaces as a throw
                 // instead of a silently vanished row.
-                mosaic.onLocalPropertySet = { [weak relayTicker] slug, bidHex, key, value in
+                mosaic.onLocalPropertySet = { [weak relayTicker] slug, bidHex, key, value, valueType in
                     guard let relayTicker else { return false }
                     let session = relayTicker.engineSessionToken
                     return await relayTicker.setBlockPropertyAndPush(
@@ -150,6 +150,21 @@ struct GrAppShell: View {
                         bidHex: bidHex,
                         key: key,
                         value: value,
+                        valueType: valueType,
+                        requiredSession: session
+                    )
+                }
+                mosaic.onLocalPropertyListUpdate = {
+                    [weak relayTicker] slug, bidHex, key, current, add, remove in
+                    guard let relayTicker else { return false }
+                    let session = relayTicker.engineSessionToken
+                    return await relayTicker.updateBlockPropertyListAndPush(
+                        slug: slug,
+                        bidHex: bidHex,
+                        key: key,
+                        current: current,
+                        add: add,
+                        remove: remove,
                         requiredSession: session
                     )
                 }

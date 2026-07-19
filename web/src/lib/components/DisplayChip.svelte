@@ -14,29 +14,60 @@
   import { formatRecurrence } from "$lib/recurrence-format";
   import { skipRecurrence } from "$lib/recurrence-actions";
   import { formatDateMonthDay } from "$lib/date-format";
+  import PropertyEditor from "./PropertyEditor.svelte";
+  import {
+    checkboxIsChecked,
+    isMultiSelectType,
+    parseMultiSelectValue,
+    propertyLinkTarget,
+    toggledCheckboxValue,
+    type MultiSelectDelta,
+  } from "$lib/property-editing";
 
   let {
     propKey,
     value,
     def,
     blockId = null,
+    onset = undefined,
+    onlistchange = undefined,
   }: {
     propKey: string;
     value: string;
     def: PropertyDefinition;
     blockId?: string | null;
+    onset?: (value: string) => void;
+    onlistchange?: (delta: MultiSelectDelta) => void;
   } = $props();
 
   /** Whether this is the recurring chip (drives formatting + skip affordance). */
   const isRecurring = $derived(propKey === "recurring");
+  const isCheckbox = $derived(def.value_type === "checkbox");
+  const isMultiSelect = $derived(isMultiSelectType(def.value_type));
+  const linkTarget = $derived(propertyLinkTarget(def.value_type, value));
 
   /** Popover open state for the skip menu. */
   let skipMenuOpen = $state(false);
+  let editorOpen = $state(false);
+  let editorPosition = $state({ x: 0, y: 0 });
 
   function handleChipClick(e: MouseEvent) {
-    if (!isRecurring) return;
-    e.stopPropagation();
-    skipMenuOpen = !skipMenuOpen;
+    if (isRecurring) {
+      e.stopPropagation();
+      skipMenuOpen = !skipMenuOpen;
+      return;
+    }
+    if (isCheckbox && onset) {
+      e.stopPropagation();
+      onset(toggledCheckboxValue(value));
+      return;
+    }
+    if (isMultiSelect && onlistchange) {
+      e.stopPropagation();
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      editorPosition = { x: rect.left, y: rect.bottom + 2 };
+      editorOpen = true;
+    }
   }
 
   function handleSkip(e: MouseEvent) {
@@ -49,6 +80,11 @@
     if (skipMenuOpen) {
       skipMenuOpen = false;
     }
+  }
+
+  function handleListChange(delta: MultiSelectDelta): void {
+    editorOpen = false;
+    onlistchange?.(delta);
   }
 
   /** Effective label mode: explicit setting > derived ("icon" if icon set, else "full"). */
@@ -90,6 +126,7 @@
 
   const formattedValue = $derived.by((): string => {
     const v = (value ?? "").trim();
+    if (isCheckbox) return checkboxIsChecked(v) ? "☑" : "☐";
     // Recurring chips always route through the recurrence formatter regardless
     // of chip_value_format so users see "Daily, 10×" instead of raw grammar.
     if (isRecurring) return formatRecurrence(v);
@@ -124,12 +161,12 @@
    */
   const choiceColor = $derived.by((): string | null => {
     if (isRecurring) return null;
-    if (def.value_type !== "select" && def.value_type !== "multi-select") return null;
+    if (def.value_type !== "select" && !isMultiSelect) return null;
     const colors = def.choice_colors;
     if (!colors || Object.keys(colors).length === 0) return null;
     const raw = (value ?? "").trim();
     if (!raw) return null;
-    const parts = def.value_type === "multi-select" ? raw.split(",").map((p) => p.trim()) : [raw];
+    const parts = isMultiSelect ? parseMultiSelectValue(raw) : [raw];
     for (const p of parts) {
       const hit = colors[p.toLowerCase()];
       if (hit) return hit;
@@ -148,29 +185,47 @@
 
 <svelte:window onclick={handleClickOutside} />
 
-<span class="relative">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <span
-    class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'} {isRecurring && blockId ? 'cursor-pointer hover:bg-muted/70' : ''}"
-    style={chipStyle}
-    title="{def.name}: {value}"
-    onclick={handleChipClick}
-    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleChipClick(e as unknown as MouseEvent); }}
-    role={isRecurring && blockId ? "button" : undefined}
-    tabindex={isRecurring && blockId ? 0 : undefined}
-  >
-    {#if labelMode === "icon" && (icon.component || icon.emoji)}
-      {#if icon.component}
-        {@const Cmp = icon.component as import("svelte").Component<{ size?: number; stroke?: number }>}
-        <Cmp size={11} stroke={1.75} />
-      {:else}
-        <span class="leading-none">{icon.emoji}</span>
-      {/if}
-    {:else if labelText}
-      <span class="text-muted-foreground/50">{labelText}</span>
+{#snippet chipContents()}
+  {#if labelMode === "icon" && (icon.component || icon.emoji)}
+    {#if icon.component}
+      {@const Cmp = icon.component as import("svelte").Component<{ size?: number; stroke?: number }>}
+      <Cmp size={11} stroke={1.75} />
+    {:else}
+      <span class="leading-none">{icon.emoji}</span>
     {/if}
-    <span>{formattedValue}</span>
-  </span>
+  {:else if labelText}
+    <span class="text-muted-foreground/50">{labelText}</span>
+  {/if}
+  <span>{formattedValue}</span>
+{/snippet}
+
+<span class="relative">
+  {#if linkTarget}
+    <a
+      class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium hover:underline {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
+      style={chipStyle}
+      title="Open {def.name}: {value}"
+      href={linkTarget}
+      target={def.value_type === "url" ? "_blank" : undefined}
+      rel={def.value_type === "url" ? "noopener noreferrer" : undefined}
+      onclick={(event) => event.stopPropagation()}
+    >{@render chipContents()}</a>
+  {:else if (isRecurring && blockId) || (isCheckbox && onset) || (isMultiSelect && onlistchange)}
+    <button
+      type="button"
+      class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium hover:bg-muted/70 {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
+      style={chipStyle}
+      title="{def.name}: {value}"
+      aria-pressed={isCheckbox ? checkboxIsChecked(value) : undefined}
+      onclick={handleChipClick}
+    >{@render chipContents()}</button>
+  {:else}
+    <span
+      class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
+      style={chipStyle}
+      title="{def.name}: {value}"
+    >{@render chipContents()}</span>
+  {/if}
 
   {#if skipMenuOpen && isRecurring && blockId}
     <div
@@ -187,3 +242,16 @@
     </div>
   {/if}
 </span>
+
+{#if editorOpen && isMultiSelect}
+  <PropertyEditor
+    propertyName={def.name}
+    currentValue={value}
+    valueType={def.value_type}
+    choices={def.choices}
+    position={editorPosition}
+    onselect={() => {}}
+    onlistchange={handleListChange}
+    onclose={() => (editorOpen = false)}
+  />
+{/if}

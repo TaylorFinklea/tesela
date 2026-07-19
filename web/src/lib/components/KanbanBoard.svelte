@@ -2,7 +2,12 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
-  import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
+  import {
+    updateBlockProperty,
+    updateBlockPropertyList,
+    clearBlockProperty,
+  } from "$lib/property-update";
+  import type { MultiSelectDelta } from "$lib/property-editing";
   import { getGroupByProp, setGroupByProp } from "$lib/stores/tag-view-prefs.svelte";
   import { resolveKanbanGroupBy, isSelectWithChoices } from "$lib/kanban-group-by";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
@@ -76,6 +81,39 @@
     queryFn: () => api.executeQuery(dsl, null, null),
     enabled: dsl.trim().length > 0,
   }));
+
+  async function updateCardProperty(block: ParsedBlock, propKey: string, value: string) {
+    try {
+      await updateBlockProperty({
+        block,
+        propKey,
+        value,
+        queryKey: kanbanQueryKey,
+        queryClient,
+      });
+    } catch (error) {
+      console.error("Failed to update card property:", error);
+    }
+  }
+
+  async function updateCardPropertyList(
+    block: ParsedBlock,
+    propKey: string,
+    delta: MultiSelectDelta,
+  ) {
+    try {
+      await updateBlockPropertyList({
+        block,
+        propKey,
+        add: delta.add,
+        remove: delta.remove,
+        queryKey: kanbanQueryKey,
+        queryClient,
+      });
+    } catch (error) {
+      console.error("Failed to update card multi-select property:", error);
+    }
+  }
 
   // Phase 11 — property registry powers card chip rendering. Reuses the
   // same buildRegistry that BlockOutliner uses inline so cards inherit any
@@ -726,6 +764,8 @@
                 isFocused={isCardFocused}
                 ondragstart={handleCardDragStart}
                 onmoverequest={handleMoveRequest}
+                onsetproperty={(propKey, value) => void updateCardProperty(block, propKey, value)}
+                onlistchange={(propKey, delta) => void updateCardPropertyList(block, propKey, delta)}
               />
             </div>
           {/each}

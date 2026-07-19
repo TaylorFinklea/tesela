@@ -117,6 +117,7 @@
   } from "$lib/stores/pane-tree.svelte";
   import { clearContentJump, type ContentJump } from "$lib/stores/content-jump.svelte";
   import { outlinerOwnsDocumentFocus } from "$lib/editor/outliner-focus-owner";
+  import { applyMultiSelectDelta, type MultiSelectDelta } from "$lib/property-editing";
 
   let {
     noteId,
@@ -1425,6 +1426,32 @@
       await api.setBlockProperty(addr, k, value);
     } catch (e) {
       console.error("setBlockProperty (structured) failed", addr, k, e);
+    }
+  }
+
+  /** Multi-select counterpart to `setBlockPropertyStructured`: optimistic
+   *  display is string-projected, but persistence is a true per-member delta. */
+  async function updateBlockPropertyListStructured(
+    blockId: string,
+    key: string,
+    delta: MultiSelectDelta,
+  ) {
+    const block = blocks.find((b) => b.id === blockId);
+    if (!block || noteMutationIsReserved()) return;
+    const k = key.toLowerCase();
+    const addr = block.bid ? `${block.note_id}:${block.bid}` : block.id;
+    const previous = block.properties[k] ?? "";
+    const next = applyMultiSelectDelta(previous, delta.add, delta.remove);
+    blocks = blocks.map((b) =>
+      b.id === blockId ? { ...b, properties: { ...b.properties, [k]: next } } : b,
+    );
+    try {
+      await api.updateBlockPropertyList(addr, k, delta.add, delta.remove);
+    } catch (e) {
+      blocks = blocks.map((b) =>
+        b.id === blockId ? { ...b, properties: { ...b.properties, [k]: previous } } : b,
+      );
+      console.error("updateBlockPropertyList (structured) failed", addr, k, e);
     }
   }
 
@@ -2783,7 +2810,14 @@
               </span>
             {/if}
             {#each chips as chip}
-              <DisplayChip propKey={chip.key} value={chip.value} def={chip.def} blockId={block.id} />
+              <DisplayChip
+                propKey={chip.key}
+                value={chip.value}
+                def={chip.def}
+                blockId={block.id}
+                onset={(value) => void setBlockPropertyStructured(block.id, chip.key, value)}
+                onlistchange={(delta) => void updateBlockPropertyListStructured(block.id, chip.key, delta)}
+              />
             {/each}
           </div>
         {/if}

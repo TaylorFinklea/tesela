@@ -3,6 +3,7 @@
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { PropertyDef } from "$lib/types/PropertyDef";
   import type { PropertyRegistry } from "$lib/property-registry";
+  import type { MultiSelectDelta } from "$lib/property-editing";
   import DisplayChip from "./DisplayChip.svelte";
 
   let {
@@ -13,6 +14,8 @@
     isFocused = false,
     ondragstart,
     onmoverequest,
+    onsetproperty,
+    onlistchange,
   }: {
     block: ParsedBlock;
     properties: PropertyDef[];
@@ -28,6 +31,8 @@
     isFocused?: boolean;
     ondragstart: (e: DragEvent, block: ParsedBlock) => void;
     onmoverequest: (block: ParsedBlock, event: MouseEvent) => void;
+    onsetproperty: (propKey: string, value: string) => void;
+    onlistchange: (propKey: string, delta: MultiSelectDelta) => void;
   } = $props();
 
   /**
@@ -85,7 +90,13 @@
     <div class="flex flex-wrap gap-1 mt-2">
       {#each chipRows as row}
         {#if row.def}
-          <DisplayChip propKey={row.propKey} value={row.value} def={row.def} />
+          <DisplayChip
+            propKey={row.propKey}
+            value={row.value}
+            def={row.def}
+            onset={(value) => onsetproperty(row.propKey, value)}
+            onlistchange={(delta) => onlistchange(row.propKey, delta)}
+          />
         {:else}
           <span
             class="text-[10px] px-1.5 py-0.5 rounded-full"

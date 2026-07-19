@@ -46,7 +46,11 @@ impl ValueType {
             "checkbox" => ValueType::Checkbox,
             "url" => ValueType::Url,
             "select" => ValueType::Select,
-            "multiselect" => ValueType::MultiSelect,
+            // Rust's canonical storage/API spelling is `multiselect`; Property
+            // pages authored by the web/iOS clients use `multi-select`.
+            // Accept both at the registry boundary so the same declaration
+            // selects a LoroList instead of silently degrading to free text.
+            "multiselect" | "multi-select" => ValueType::MultiSelect,
             "node" => ValueType::Node,
             "email" => ValueType::Email,
             "phone" => ValueType::Phone,
@@ -122,6 +126,7 @@ mod tests {
     fn value_type_parses_known_strings() {
         assert_eq!(ValueType::parse("select"), ValueType::Select);
         assert_eq!(ValueType::parse("multiselect"), ValueType::MultiSelect);
+        assert_eq!(ValueType::parse("multi-select"), ValueType::MultiSelect);
         assert_eq!(ValueType::parse("datetime"), ValueType::DateTime);
         assert_eq!(ValueType::parse("node"), ValueType::Node);
         assert_eq!(ValueType::parse("email"), ValueType::Email);

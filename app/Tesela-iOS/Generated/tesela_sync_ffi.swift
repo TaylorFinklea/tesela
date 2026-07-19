@@ -1652,6 +1652,15 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String) async throws  -> UInt32
 
     /**
+     * Typed scalar counterpart to [`Self::set_block_property`]. The caller
+     * supplies the Property page's canonical `value_type`, allowing checkbox
+     * and number edits made on-device to use the same primitive Loro scalar
+     * representation as the registry-aware server route. Unknown types keep
+     * the established text fallback.
+     */
+    func setBlockPropertyTyped(slug: String, blockIdHex: String, key: String, valueType: String, value: String) async throws  -> UInt32
+
+    /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
      * outbound foundation for cursor-accurate collaborative editing. Instead
      * of re-authoring the WHOLE block text via [`Self::record_note_diff`]
@@ -1675,6 +1684,14 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * splice is an in-place edit — the block must already exist).
      */
     func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32, utf16DeleteLen: UInt32, insert: String) async throws  -> UInt32
+
+    /**
+     * Apply independent add/remove operations to a multi-value property's
+     * LoroList. `current` is the caller's materialized baseline: re-adding it
+     * is idempotent for an existing list and promotes a legacy in-text value
+     * before the delta is applied, without ever clearing/replacing the list.
+     */
+    func updateBlockPropertyList(slug: String, blockIdHex: String, key: String, current: [String], add: [String], remove: [String]) async throws  -> UInt32
 
     /**
      * Delete a saved view by id. Returns `true` when removed, `false`
@@ -2392,6 +2409,30 @@ open func setBlockProperty(slug: String, blockIdHex: String, key: String, value:
 }
 
     /**
+     * Typed scalar counterpart to [`Self::set_block_property`]. The caller
+     * supplies the Property page's canonical `value_type`, allowing checkbox
+     * and number edits made on-device to use the same primitive Loro scalar
+     * representation as the registry-aware server route. Unknown types keep
+     * the established text fallback.
+     */
+open func setBlockPropertyTyped(slug: String, blockIdHex: String, key: String, valueType: String, value: String)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_set_block_property_typed(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterString.lower(key),FfiConverterString.lower(valueType),FfiConverterString.lower(value)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+
+    /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
      * outbound foundation for cursor-accurate collaborative editing. Instead
      * of re-authoring the WHOLE block text via [`Self::record_note_diff`]
@@ -2421,6 +2462,29 @@ open func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32,
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_splice_block_text(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterUInt32.lower(utf16Offset),FfiConverterUInt32.lower(utf16DeleteLen),FfiConverterString.lower(insert)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+
+    /**
+     * Apply independent add/remove operations to a multi-value property's
+     * LoroList. `current` is the caller's materialized baseline: re-adding it
+     * is idempotent for an existing list and promotes a legacy in-text value
+     * before the delta is applied, without ever clearing/replacing the list.
+     */
+open func updateBlockPropertyList(slug: String, blockIdHex: String, key: String, current: [String], add: [String], remove: [String])async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_update_block_property_list(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterString.lower(key),FfiConverterSequenceString.lower(current),FfiConverterSequenceString.lower(add),FfiConverterSequenceString.lower(remove)
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
@@ -5435,7 +5499,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property() != 23266) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property_typed() != 54293) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_update_block_property_list() != 22481) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_views_delete() != 46309) {

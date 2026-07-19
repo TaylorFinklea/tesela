@@ -373,6 +373,26 @@ export const api = {
     };
     return noteId ? propertyMutationBarrier.track(noteId, mutation) : mutation();
   },
+  /** Apply independent member operations to a multi-select LoroList. Unlike
+   *  `setBlockProperty`, this never clears/replaces the collection. */
+  updateBlockPropertyList: (
+    blockId: string,
+    key: string,
+    add: string[],
+    remove: string[],
+  ) => {
+    const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
+    const mutation = () => {
+      if (noteId) recordLocalSave(noteId);
+      return post<{ ok: boolean }>("/blocks/update-property-list", {
+        block_id: blockId,
+        key,
+        add,
+        remove,
+      });
+    };
+    return noteId ? propertyMutationBarrier.track(noteId, mutation) : mutation();
+  },
   /** Clear a single `key:: value` property line from a block. Block-granular
    *  counterpart of `setBlockProperty` for the "unset" case — only this block
    *  is rewritten server-side, so a concurrent peer edit survives. Records the

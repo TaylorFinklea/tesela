@@ -188,10 +188,7 @@ pub async fn list_notes(
     let matching = s.store.list(q.tag.as_deref(), usize::MAX, 0).await?;
     let total = matching.len();
     let notes: Vec<Note> = matching.into_iter().skip(offset).take(limit).collect();
-    Ok((
-        [("x-total-count", total.to_string())],
-        Json(notes),
-    ))
+    Ok(([("x-total-count", total.to_string())], Json(notes)))
 }
 
 pub async fn get_note(
@@ -697,12 +694,10 @@ pub async fn upsert_blocks(
     // authors nothing (the guard returns an empty roll set).
     let after_blocks_content = updated.content.clone();
     let rolled_bumps =
-        persist_lifecycle_rolls(&s, delta_note_id, &id, &prev_content, &after_blocks_content)
-            .await;
-    let updated =
-        s.store.get(&note_id).await?.ok_or_else(|| {
-            AppError::NotFound(format!("Note not found after block lifecycle roll: {}", id))
-        })?;
+        persist_lifecycle_rolls(&s, delta_note_id, &id, &prev_content, &after_blocks_content).await;
+    let updated = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!("Note not found after block lifecycle roll: {}", id))
+    })?;
     s.index.reindex(&updated).await?;
     // Refresh the link graph for this note (same as the PUT path).
     {
@@ -2069,6 +2064,22 @@ async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) -> bool {
     false
 }
 
+/// Ensure a materialized note has a resident Loro document before a typed
+/// property operation targets one of its block nodes. Relay bootstrap gets
+/// first chance to preserve the shared lineage; when no authoritative relay
+/// snapshot is available, seed the existing local markdown view instead.
+async fn ensure_note_resident_for_property_write(
+    s: &Arc<AppState>,
+    note: &Note,
+) -> anyhow::Result<()> {
+    bootstrap_note_if_needed(s, note.id.as_str()).await;
+    let note_id = stable_uuid_from_slug(note.id.as_str());
+    if s.sync_engine.doc_version(note_id).await.is_none() {
+        record_sync_create(s, note).await?;
+    }
+    Ok(())
+}
+
 pub async fn get_backlinks(
     Path(id): Path<String>,
     State(s): State<Arc<AppState>>,
@@ -2366,6 +2377,20 @@ pub struct SetBlockPropertyReq {
 }
 
 #[derive(Deserialize)]
+pub struct UpdateBlockPropertyListReq {
+    /// Block id in `<note_id>:<line>` or stable `<note_id>:<bid>` form.
+    pub block_id: String,
+    /// Registry-declared multi-select property key.
+    pub key: String,
+    /// Members to union into the property's LoroList.
+    #[serde(default)]
+    pub add: Vec<String>,
+    /// Members to remove from the property's LoroList.
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub struct ClearBlockPropertyReq {
     /// Block id in `<note_id>:<line>` format (matches `ParsedBlock.id`).
     pub block_id: String,
@@ -2454,7 +2479,7 @@ pub async fn set_block_property(
     // isn't resident yet — otherwise a task toggle / scheduled set on a synced
     // daily forks a disjoint doc and clobbers/twins on the next relay merge
     // (same class as the text garble). Best-effort + resident-gated.
-    bootstrap_note_if_needed(&s, note_id_str).await;
+    ensure_note_resident_for_property_write(&s, &note).await?;
 
     // Choose the PropOp from the property's registry value_type, then emit it
     // through the engine. Multi-value clears then re-adds each item so a
@@ -2534,9 +2559,14 @@ pub async fn set_block_property(
     // through a container set makes the roll authoritative regardless of prior
     // residency. A non-recurring / already-completed flip produces no roll and
     // authors nothing.
-    let bumps =
-        persist_lifecycle_rolls(&s, doc_note_id, note_id_str, &prev_content, &after_prop_content)
-            .await;
+    let bumps = persist_lifecycle_rolls(
+        &s,
+        doc_note_id,
+        note_id_str,
+        &prev_content,
+        &after_prop_content,
+    )
+    .await;
 
     // Re-read the final materialized note for indexing + the response echo.
     let updated = s.store.get(&note_id).await?.ok_or_else(|| {
@@ -2584,6 +2614,212 @@ pub async fn set_block_property(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Apply an add/remove delta to a multi-select property's mergeable LoroList.
+///
+/// This deliberately does not route through `set_block_property`: replacing a
+/// comma-joined string there maps to `Clear` + `AddToList`, which discards the
+/// list's independent-member merge semantics. Each member here gets its own
+/// `AddToList` or `RemoveFromList` op. The currently materialized members are
+/// first re-asserted idempotently so a legacy in-text property is promoted to
+/// a real list before its continuation line is stripped.
+pub async fn update_block_property_list(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<UpdateBlockPropertyListReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let (note_id_str, id_suffix) = match req.block_id.rsplit_once(':') {
+        Some(pair) => pair,
+        None => {
+            return Err(AppError::Validation(format!(
+                "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
+                req.block_id
+            )))
+        }
+    };
+
+    let key = req.key.trim().to_lowercase();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AppError::Validation(format!(
+            "invalid property key '{}'",
+            req.key
+        )));
+    }
+    let value_type = lookup_value_type(&s, &key).await;
+    if value_type != ValueType::MultiSelect && key != "tags" {
+        return Err(AppError::Validation(format!(
+            "property '{key}' is not multi-select"
+        )));
+    }
+
+    let add = normalized_list_members(&req.add);
+    let remove = normalized_list_members(&req.remove);
+    if add.iter().any(|item| remove.contains(item)) {
+        return Err(AppError::Validation(
+            "the same list member cannot be both added and removed".to_string(),
+        ));
+    }
+    if add.is_empty() && remove.is_empty() {
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
+
+    let note_id = NoteId::new(note_id_str);
+    let note = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {note_id_str}")))?;
+    let prev_content = note.content.clone();
+    let block_bid =
+        block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "block '{}' not found in note '{}'",
+                req.block_id, note_id_str
+            ))
+        })?;
+    let block_id = parse_bid(&block_bid)?;
+    let doc_note_id = stable_uuid_from_slug(note_id_str);
+
+    // A markdown-seeded note may still carry this property only inside the
+    // block's prose. Re-adding its visible members is idempotent for an
+    // existing list and initializes the list for that legacy representation.
+    let current = block_property_value(&prev_content, note_id_str, &block_bid, &key)
+        .map(|value| list_members_from_materialized(&value))
+        .unwrap_or_default();
+
+    ensure_note_resident_for_property_write(&s, &note).await?;
+
+    let mut prop_ops = Vec::with_capacity(current.len() + add.len() + remove.len());
+    prop_ops.extend(
+        current
+            .into_iter()
+            .map(|item| PropOp::AddToList(PropScalar::Text(item))),
+    );
+    prop_ops.extend(
+        remove
+            .iter()
+            .cloned()
+            .map(|item| PropOp::RemoveFromList(PropScalar::Text(item))),
+    );
+    prop_ops.extend(
+        add.iter()
+            .cloned()
+            .map(|item| PropOp::AddToList(PropScalar::Text(item))),
+    );
+
+    for value in prop_ops {
+        let payload = OpPayload::BlockPropertySet {
+            note_id: doc_note_id,
+            block_id,
+            key: key.clone(),
+            value,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!(
+                "sync: record_local BlockPropertySet(list delta) failed for {}: {e}",
+                req.block_id
+            );
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to record BlockPropertySet list delta: {e}"
+            )));
+        }
+    }
+
+    // Same migrate-on-write rule as the scalar route: once the list exists in
+    // the typed container, remove the legacy continuation from block prose.
+    if let Some(stripped) = strip_block_intext_prop(&prev_content, &block_bid, &key) {
+        let payload = OpPayload::BlockUpsert {
+            block_id,
+            note_id: doc_note_id,
+            parent_block_id: stripped.parent.map(|p| *p.as_bytes()),
+            order_key: "00000000".to_string(),
+            indent_level: stripped.indent,
+            text: stripped.text,
+            after_block_id: None,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!(
+                "sync: record_local list prose-strip BlockUpsert failed for {}: {e}",
+                req.block_id
+            );
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to strip in-text list property: {e}"
+            )));
+        }
+    }
+
+    let updated = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Note not found after update-property-list: {note_id_str}"
+        ))
+    })?;
+    s.index.reindex(&updated).await?;
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&updated.content);
+        if let Err(e) = s.index.update_links(&note_id, &links).await {
+            tracing::warn!(
+                "Failed to update links on update-property-list for {:?}: {}",
+                note_id,
+                e
+            );
+        }
+    }
+    if updated.content != prev_content {
+        if let Err(e) = s
+            .index
+            .record_version(&note_id, Some(&prev_content), &updated.content, 200)
+            .await
+        {
+            tracing::warn!("Failed to record version on update-property-list: {e}");
+        }
+    }
+
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
+    tracing::info!(
+        "update-property-list: {}::{} +{:?} -{:?}",
+        req.block_id,
+        key,
+        add,
+        remove
+    );
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+fn normalized_list_members(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && !out.iter().any(|seen| seen == value) {
+            out.push(value.to_string());
+        }
+    }
+    out
+}
+
+fn list_members_from_materialized(value: &str) -> Vec<String> {
+    normalized_list_members(
+        &value
+            .split(',')
+            .map(str::to_string)
+            .collect::<Vec<String>>(),
+    )
+}
+
+fn block_property_value(
+    content: &str,
+    note_id_str: &str,
+    block_bid: &str,
+    key: &str,
+) -> Option<String> {
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    parse_blocks(note_id_str, &body)
+        .into_iter()
+        .find(|block| block.bid.as_deref() == Some(block_bid))?
+        .properties
+        .get(key)
+        .cloned()
+}
+
 /// Resolve a block's canonical `<!-- bid:UUID -->` value from `content` by its
 /// body-relative `line_num` (web's `ParsedBlock.id = <note_id>:<line>`).
 /// Returns `None` when the line is not a known block or carries no bid.
@@ -2610,6 +2846,38 @@ fn block_bid_from_suffix(content: &str, note_id_str: &str, id_suffix: &str) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_members_trim_drop_empty_and_stable_dedup() {
+        let values = vec![
+            " alpha ".to_string(),
+            "".to_string(),
+            "beta".to_string(),
+            "alpha".to_string(),
+        ];
+        assert_eq!(normalized_list_members(&values), vec!["alpha", "beta"]);
+        assert_eq!(
+            list_members_from_materialized("alpha, beta, alpha"),
+            vec!["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn block_property_value_reads_the_target_bid_only() {
+        let first = "11111111-1111-1111-1111-111111111111";
+        let second = "22222222-2222-2222-2222-222222222222";
+        let content = format!(
+            "---\ntitle: Test\n---\n- First <!-- bid:{first} -->\n  teams:: alpha, beta\n- Second <!-- bid:{second} -->\n  teams:: gamma\n"
+        );
+        assert_eq!(
+            block_property_value(&content, "test", first, "teams").as_deref(),
+            Some("alpha, beta")
+        );
+        assert_eq!(
+            block_property_value(&content, "test", second, "teams").as_deref(),
+            Some("gamma")
+        );
+    }
 
     /// Test that block_bid_from_suffix correctly resolves both numeric line
     /// indices and direct bid strings to the same canonical bid. Regression
@@ -3797,7 +4065,10 @@ mod tests {
             }
 
             let engine: Arc<dyn SyncEngine> = Arc::new(engine);
-            let store = Arc::new(FsNoteStore::new(tmp.to_path_buf(), StorageConfig::default()));
+            let store = Arc::new(FsNoteStore::new(
+                tmp.to_path_buf(),
+                StorageConfig::default(),
+            ));
             let index = Arc::new(
                 tesela_core::db::SqliteIndex::open(&tmp.join(".tesela").join("test.db"))
                     .await
@@ -4088,8 +4359,13 @@ mod tests {
                 ("last_completed", "[[2026-05-08]]"),
                 ("status", "todo"),
             ];
-            let state =
-                seeded_state(tmp.path(), slug, &default_seed_content(), &already_completed).await;
+            let state = seeded_state(
+                tmp.path(),
+                slug,
+                &default_seed_content(),
+                &already_completed,
+            )
+            .await;
 
             let before = state
                 .store
@@ -4123,7 +4399,8 @@ mod tests {
                 .expect("note present")
                 .content;
             assert!(
-                rendered.contains("recurrence_done:: 1") && !rendered.contains("recurrence_done:: 2"),
+                rendered.contains("recurrence_done:: 1")
+                    && !rendered.contains("recurrence_done:: 2"),
                 "guard-tripped re-completion must NOT advance the container; render:\n{rendered}"
             );
 

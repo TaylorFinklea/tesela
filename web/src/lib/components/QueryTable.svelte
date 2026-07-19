@@ -27,7 +27,8 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
-  import { updateBlockProperty } from "$lib/property-update";
+  import { updateBlockProperty, updateBlockPropertyList } from "$lib/property-update";
+  import type { MultiSelectDelta } from "$lib/property-editing";
   import { queryItemToParsedBlock } from "$lib/query-item-adapt";
   import { resolveTableColumns, type TableColumnCandidate } from "$lib/table/table-columns";
   import { sortByColumn } from "$lib/table/table-sort";
@@ -310,6 +311,34 @@
     }
   }
 
+  async function persistCellListEdit(
+    block: ParsedBlock,
+    col: TableColumnCandidate,
+    delta: MultiSelectDelta,
+  ): Promise<void> {
+    try {
+      await updateBlockPropertyList({
+        block,
+        propKey: col.name,
+        add: delta.add,
+        remove: delta.remove,
+        queryKey: tableQueryKey,
+        queryClient,
+      });
+    } catch (e) {
+      console.error("Failed to update multi-select cell:", e);
+    }
+  }
+
+  async function handleCellListEdit(delta: MultiSelectDelta): Promise<void> {
+    if (!editingBlock || !editingColumn) return;
+    const block = editingBlock;
+    const col = editingColumn;
+    editingBlock = null;
+    editingColumn = null;
+    await persistCellListEdit(block, col, delta);
+  }
+
   function closeCellEditor(): void {
     editingBlock = null;
     editingColumn = null;
@@ -486,7 +515,17 @@
                 onclick={(e) => { cursor = { row: ri, col: ci + 1 }; openCellEditor(block, col, e); }}
               >
                 {#if val && def}
-                  <DisplayChip propKey={col.name.toLowerCase()} value={val} {def} />
+                  <DisplayChip
+                    propKey={col.name.toLowerCase()}
+                    value={val}
+                    {def}
+                    onset={(value) => {
+                      editingBlock = block;
+                      editingColumn = col;
+                      void handleCellEdit(value);
+                    }}
+                    onlistchange={(delta) => void persistCellListEdit(block, col, delta)}
+                  />
                 {:else if val}
                   <span class="text-muted-foreground">{val}</span>
                 {:else}
@@ -508,6 +547,7 @@
       choices={getEffectiveChoices(editingColumn)}
       position={editorPosition}
       onselect={handleCellEdit}
+      onlistchange={handleCellListEdit}
       onclose={closeCellEditor}
     />
   {/if}

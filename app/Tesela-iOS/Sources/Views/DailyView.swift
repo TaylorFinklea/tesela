@@ -225,6 +225,18 @@ struct DailyView: View {
                         )
                     }
                 },
+                onUpdatePropertyList: { key, current, add, remove in
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.updateBlockPropertyList(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            current: current,
+                            add: add,
+                            remove: remove,
+                            reservation: reservation
+                        )
+                    }
+                },
                 onSkipRecurrence: {
                     mosaic.enqueueBackendMutation { reservation in
                         try? await mosaic.recurBump(
@@ -311,6 +323,18 @@ struct DailyView: View {
                             reservation: reservation
                         )
                     }
+                },
+                onUpdatePropertyList: { key, current, add, remove in
+                    mosaic.enqueueBackendMutation { reservation in
+                        try? await mosaic.updateBlockPropertyList(
+                            blockId: block.noteId + ":" + block.id,
+                            key: key,
+                            current: current,
+                            add: add,
+                            remove: remove,
+                            reservation: reservation
+                        )
+                    }
                 }
             )
             .opacity(0.7)
@@ -389,6 +413,18 @@ struct DailyView: View {
                                 blockId: block.noteId + ":" + block.id,
                                 key: key,
                                 value: value,
+                                reservation: reservation
+                            )
+                        }
+                    },
+                    onUpdatePropertyList: { key, current, add, remove in
+                        mosaic.enqueueBackendMutation { reservation in
+                            try? await mosaic.updateBlockPropertyList(
+                                blockId: block.noteId + ":" + block.id,
+                                key: key,
+                                current: current,
+                                add: add,
+                                remove: remove,
                                 reservation: reservation
                             )
                         }

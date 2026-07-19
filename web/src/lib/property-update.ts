@@ -9,6 +9,7 @@ import {
   patchCachedProperty,
   type CachedQueryData,
 } from "$lib/cached-query-patch";
+import { applyMultiSelectDelta } from "$lib/property-editing";
 
 /**
  * Upsert a single `key:: value` property on a block via the block-granular
@@ -60,6 +61,40 @@ export async function updateBlockProperty(params: {
     if (previousData) {
       queryClient.setQueryData(queryKey, previousData);
     }
+    throw err;
+  }
+}
+
+/** Apply a true member delta to a multi-select property with the same
+ * optimistic cache/rollback discipline as scalar property writes. */
+export async function updateBlockPropertyList(params: {
+  block: ParsedBlock;
+  propKey: string;
+  add: string[];
+  remove: string[];
+  queryKey: QueryKey;
+  queryClient: QueryClient;
+}): Promise<void> {
+  const { block, propKey, add, remove, queryKey, queryClient } = params;
+  const key = propKey.toLowerCase();
+  const addr = block.bid ? `${block.note_id}:${block.bid}` : block.id;
+  const previousData = queryClient.getQueryData<CachedQueryData>(queryKey);
+  const currentValue = block.properties[key] ?? block.properties[propKey] ?? "";
+  const nextValue = applyMultiSelectDelta(currentValue, add, remove);
+
+  if (previousData) {
+    queryClient.setQueryData(
+      queryKey,
+      patchCachedProperty(previousData, block.id, key, nextValue),
+    );
+  }
+
+  try {
+    await api.updateBlockPropertyList(addr, key, add, remove);
+    queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: ["note", block.note_id] });
+  } catch (err) {
+    if (previousData) queryClient.setQueryData(queryKey, previousData);
     throw err;
   }
 }

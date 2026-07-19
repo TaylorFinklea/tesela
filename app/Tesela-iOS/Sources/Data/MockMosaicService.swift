@@ -324,9 +324,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `setBlockProperty` can read the just-materialized file after the
     /// write and THROW on a not-found bid instead of letting the row
     /// optimistically vanish over a silent no-op.
-    /// Args: (slug, bidHex, key, value) → true when the engine recorded it.
+    /// Args: (slug, bidHex, key, value, optional value type) → true when the
+    /// engine recorded it.
     var onLocalPropertySet:
-        ((_ slug: String, _ bidHex: String, _ key: String, _ value: String) async -> Bool)? = nil
+        ((_ slug: String, _ bidHex: String, _ key: String, _ value: String,
+          _ valueType: String?) async -> Bool)? = nil
+
+    /// Relay-mode multi-select mutation. `current` is the materialized
+    /// baseline used to promote a legacy in-text property; persistence remains
+    /// independent add/remove member ops in the engine.
+    var onLocalPropertyListUpdate:
+        ((_ slug: String, _ bidHex: String, _ key: String, _ current: [String],
+          _ add: [String], _ remove: [String]) async -> Bool)? = nil
 
     /// Relay-mode whole-note write used by `saveInboxDsl` (the saved-filter
     /// Query note). Same `recordAndPush` + live-WS tail as `onLocalWrite`,
@@ -487,7 +496,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     return
                 }
                 guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
-                let applied = await onLocalPropertySet?(noteId, bid, "status", status) ?? false
+                let applied = await onLocalPropertySet?(noteId, bid, "status", status, nil) ?? false
                 guard self.isCurrentBackend(generation: generation, backend: backend) else { return }
                 if applied {
                     // The engine re-materialized the file before the seam
@@ -544,7 +553,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
         func set(_ key: String, _ value: String) async -> Bool {
             guard isCurrentGeneration(generation) else { return false }
-            _ = await onLocalPropertySet?(noteId, bid, key, value)
+            _ = await onLocalPropertySet?(noteId, bid, key, value, nil)
             return isCurrentGeneration(generation)
         }
         // Advance ONE date field from its own value, re-wrapping as the
@@ -3297,6 +3306,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let value: String
     }
 
+    /// Body for `POST /blocks/update-property-list`.
+    private struct APIUpdateBlockPropertyListBody: Encodable {
+        let block_id: String
+        let key: String
+        let add: [String]
+        let remove: [String]
+    }
+
     /// `Link` JSON from `GET /notes/{id}/backlinks`. For backlinks the
     /// server sets `target` to the *source* note's id and `text` to the
     /// line of context; the other `Link` fields are unused here.
@@ -5615,7 +5632,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     ]
                 )
             }
-            let applied = await onLocalPropertySet?(noteId, bid, key, value) ?? false
+            let valueType = propertyRegistry.properties[key.lowercased()]?.valueType.rawValue
+            let applied = await onLocalPropertySet?(noteId, bid, key, value, valueType) ?? false
             guard isCurrentBackend(generation: generation, backend: backend) else {
                 throw CancellationError()
             }
@@ -5625,6 +5643,65 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     userInfo: [
                         NSLocalizedDescriptionKey:
                             "engine property write for \(blockId) did not apply"
+                    ]
+                )
+            }
+            await refresh(from: backend, generation: generation)
+        }
+    }
+
+    /// Apply independent member operations to a multi-select property's
+    /// LoroList. HTTP and relay modes share the same delta contract; neither
+    /// path clears/replaces the collection with a comma-joined scalar.
+    func updateBlockPropertyList(
+        blockId: String,
+        key: String,
+        current: [String],
+        add: [String],
+        remove: [String],
+        reservation: BackendMutationReservation
+    ) async throws {
+        let (backend, generation) = try reservedBackend(for: reservation)
+        switch backend {
+        case .mock:
+            return
+        case .http(let baseURL):
+            let body = APIUpdateBlockPropertyListBody(
+                block_id: blockId,
+                key: key,
+                add: add,
+                remove: remove
+            )
+            try await httpPostNoResponse(
+                "/blocks/update-property-list",
+                baseURL: baseURL,
+                body: body
+            )
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
+        case .relay:
+            guard let (noteId, bid) = resolveLocalBlockBid(blockId) else {
+                throw URLError(
+                    .fileDoesNotExist,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "block \(blockId) not found in the local mosaic"
+                    ]
+                )
+            }
+            let applied = await onLocalPropertyListUpdate?(
+                noteId, bid, key, current, add, remove
+            ) ?? false
+            guard isCurrentBackend(generation: generation, backend: backend) else {
+                throw CancellationError()
+            }
+            guard applied else {
+                throw URLError(
+                    .cannotWriteToFile,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "engine property list write for \(blockId) did not apply"
                     ]
                 )
             }

@@ -14,7 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use rand::RngCore;
-use tesela_core::stable_uuid_from_slug;
+use tesela_core::{
+    property::{parse_scalar, ValueType},
+    stable_uuid_from_slug,
+};
 use tesela_sync::crypto::aead::{open as aead_open, presence_aad, seal as aead_seal};
 use tesela_sync::crypto::relay_auth::{
     canonical_request, compute_request_mac, derive_relay_auth_key,
@@ -1377,26 +1380,74 @@ impl SyncEngineHandle {
         key: String,
         value: String,
     ) -> Result<u32, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
-        let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
-            message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
-        })?;
         let key = normalize_prop_key(&key)?;
-        if !self.block_exists(note_id, &block_id).await {
-            return Ok(0);
+        self.record_block_property_ops(&slug, &block_id_hex, &key, prop_ops_for_set(&key, &value))
+            .await
+    }
+
+    /// Typed scalar counterpart to [`Self::set_block_property`]. The caller
+    /// supplies the Property page's canonical `value_type`, allowing checkbox
+    /// and number edits made on-device to use the same primitive Loro scalar
+    /// representation as the registry-aware server route. Unknown types keep
+    /// the established text fallback.
+    pub async fn set_block_property_typed(
+        &self,
+        slug: String,
+        block_id_hex: String,
+        key: String,
+        value_type: String,
+        value: String,
+    ) -> Result<u32, FfiSyncError> {
+        let key = normalize_prop_key(&key)?;
+        let value_type = ValueType::parse(value_type.trim());
+        let ops = match value_type {
+            ValueType::Text => vec![PropOp::SetText(value)],
+            ValueType::MultiSelect => list_set_ops(&value),
+            other => vec![PropOp::SetScalar(parse_scalar(other, &value))],
+        };
+        self.record_block_property_ops(&slug, &block_id_hex, &key, ops)
+            .await
+    }
+
+    /// Apply independent add/remove operations to a multi-value property's
+    /// LoroList. `current` is the caller's materialized baseline: re-adding it
+    /// is idempotent for an existing list and promotes a legacy in-text value
+    /// before the delta is applied, without ever clearing/replacing the list.
+    pub async fn update_block_property_list(
+        &self,
+        slug: String,
+        block_id_hex: String,
+        key: String,
+        current: Vec<String>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    ) -> Result<u32, FfiSyncError> {
+        let key = normalize_prop_key(&key)?;
+        let current = normalized_list_members(&current);
+        let add = normalized_list_members(&add);
+        let remove = normalized_list_members(&remove);
+        if add.iter().any(|item| remove.contains(item)) {
+            return Err(FfiSyncError::Other {
+                message: "the same list member cannot be both added and removed".into(),
+            });
         }
-        for op in prop_ops_for_set(&key, &value) {
-            self.inner
-                .record_local(OpPayload::BlockPropertySet {
-                    note_id,
-                    block_id,
-                    key: key.clone(),
-                    value: op,
-                })
-                .await
-                .map_err(FfiSyncError::from)?;
-        }
-        Ok(1)
+        let mut ops = Vec::with_capacity(current.len() + add.len() + remove.len());
+        ops.extend(
+            current
+                .into_iter()
+                .map(|item| PropOp::AddToList(PropScalar::Text(item))),
+        );
+        ops.extend(
+            remove
+                .into_iter()
+                .map(|item| PropOp::RemoveFromList(PropScalar::Text(item))),
+        );
+        ops.extend(
+            add.into_iter()
+                .map(|item| PropOp::AddToList(PropScalar::Text(item))),
+        );
+        self.record_block_property_ops(&slug, &block_id_hex, &key, ops)
+            .await
     }
 
     /// Remove a property from a block — the on-device mirror of the server's
@@ -1614,6 +1665,34 @@ impl SyncEngineHandle {
     async fn block_exists(&self, note_id: [u8; 16], block_id: &[u8; 16]) -> bool {
         self.inner.has_live_block(note_id, *block_id).await
     }
+
+    async fn record_block_property_ops(
+        &self,
+        slug: &str,
+        block_id_hex: &str,
+        key: &str,
+        ops: Vec<PropOp>,
+    ) -> Result<u32, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(slug);
+        let block_id = parse_block_id_hex(block_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
+        })?;
+        if !self.block_exists(note_id, &block_id).await {
+            return Ok(0);
+        }
+        for op in ops {
+            self.inner
+                .record_local(OpPayload::BlockPropertySet {
+                    note_id,
+                    block_id,
+                    key: key.to_string(),
+                    value: op,
+                })
+                .await
+                .map_err(FfiSyncError::from)?;
+        }
+        Ok(1)
+    }
 }
 
 /// Normalize + validate a property key the way the server's set/clear
@@ -1636,16 +1715,31 @@ fn normalize_prop_key(key: &str) -> Result<String, FfiSyncError> {
 /// set replaces the list deterministically — mirrors `list_set_ops`).
 fn prop_ops_for_set(key: &str, value: &str) -> Vec<PropOp> {
     if key == "tags" {
-        let mut ops = vec![PropOp::Clear];
-        for item in value.split(',') {
-            let item = item.trim();
-            if !item.is_empty() {
-                ops.push(PropOp::AddToList(PropScalar::Text(item.to_string())));
-            }
-        }
-        return ops;
+        return list_set_ops(value);
     }
     vec![PropOp::SetText(value.to_string())]
+}
+
+fn list_set_ops(value: &str) -> Vec<PropOp> {
+    let mut ops = vec![PropOp::Clear];
+    for item in value.split(',') {
+        let item = item.trim();
+        if !item.is_empty() {
+            ops.push(PropOp::AddToList(PropScalar::Text(item.to_string())));
+        }
+    }
+    ops
+}
+
+fn normalized_list_members(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && !out.iter().any(|seen| seen == value) {
+            out.push(value.to_string());
+        }
+    }
+    out
 }
 
 /// Format a 16-byte id as the dashed lowercase UUID `serialize_note`'s
@@ -3545,6 +3639,146 @@ mod tests {
             "one status line on disk: {on_disk:?}"
         );
         assert!(on_disk.contains("status:: done"), "{on_disk:?}");
+    }
+
+    #[tokio::test]
+    async fn typed_checkbox_property_uses_canonical_boolean_rendering() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "typed-checkbox".to_string();
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Typed".into(),
+            format!("- item <!-- bid:{bid} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            h.set_block_property_typed(
+                slug.clone(),
+                bid.into(),
+                "archived".into(),
+                "checkbox".into(),
+                "TRUE".into(),
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let rendered = h
+            .inner
+            .render_note(stable_uuid_from_slug(&slug))
+            .await
+            .unwrap();
+        assert!(rendered.contains("archived:: true"), "{rendered:?}");
+    }
+
+    #[tokio::test]
+    async fn list_delta_promotes_legacy_members_then_adds_and_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "typed-list".to_string();
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Typed".into(),
+            format!("- item <!-- bid:{bid} -->\n  teams:: alpha, beta\n"),
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            h.update_block_property_list(
+                slug.clone(),
+                bid.into(),
+                "teams".into(),
+                vec!["alpha".into(), "beta".into()],
+                vec!["gamma".into()],
+                vec!["alpha".into()],
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let rendered = h
+            .inner
+            .render_note(stable_uuid_from_slug(&slug))
+            .await
+            .unwrap();
+        assert!(!rendered.contains("teams:: alpha"), "{rendered:?}");
+        assert!(rendered.contains("teams:: beta, gamma"), "{rendered:?}");
+        assert_eq!(rendered.matches("teams::").count(), 1, "{rendered:?}");
+    }
+
+    #[tokio::test]
+    async fn concurrent_list_adds_union_and_converge() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+        let slug = "typed-list-concurrent".to_string();
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            "Typed".into(),
+            format!("- item <!-- bid:{bid} -->\n  teams:: base\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        let bootstrap = a
+            .produce_note_delta(slug.clone(), None)
+            .await
+            .unwrap()
+            .expect("bootstrap");
+        b.apply_delta_frame(bootstrap).await.unwrap();
+        let a_base = a.note_version(slug.clone()).await;
+        let b_base = b.note_version(slug.clone()).await;
+
+        a.update_block_property_list(
+            slug.clone(),
+            bid.into(),
+            "teams".into(),
+            vec!["base".into()],
+            vec!["alpha".into()],
+            vec![],
+        )
+        .await
+        .unwrap();
+        b.update_block_property_list(
+            slug.clone(),
+            bid.into(),
+            "teams".into(),
+            vec!["base".into()],
+            vec!["beta".into()],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let from_a = a
+            .produce_note_delta(slug.clone(), b_base)
+            .await
+            .unwrap()
+            .expect("A delta");
+        let from_b = b
+            .produce_note_delta(slug.clone(), a_base)
+            .await
+            .unwrap()
+            .expect("B delta");
+        a.apply_delta_frame(from_b).await.unwrap();
+        b.apply_delta_frame(from_a).await.unwrap();
+
+        let note_id = stable_uuid_from_slug(&slug);
+        let rendered_a = a.inner.render_note(note_id).await.unwrap();
+        let rendered_b = b.inner.render_note(note_id).await.unwrap();
+        assert_eq!(rendered_a, rendered_b, "list replicas converge");
+        assert!(rendered_a.contains("alpha"), "{rendered_a:?}");
+        assert!(rendered_a.contains("beta"), "{rendered_a:?}");
     }
 
     #[tokio::test]

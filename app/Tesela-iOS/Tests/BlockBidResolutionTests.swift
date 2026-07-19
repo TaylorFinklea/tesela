@@ -65,7 +65,7 @@ final class BlockBidResolutionTests: XCTestCase {
     func testRelaySetBlockPropertyBareBidThrowsBeforeSeam() async {
         let service = MockMosaicService()
         service.attach(backend: .relay)
-        service.onLocalPropertySet = { _, _, _, _ in
+        service.onLocalPropertySet = { _, _, _, _, _ in
             XCTFail("seam must not fire for a bare-bid (non-composite) address")
             return true
         }
@@ -132,7 +132,7 @@ final class BlockBidResolutionTests: XCTestCase {
         let service = MockMosaicService()
         service.attach(backend: .relay)
         var captured: (slug: String, bid: String, key: String, value: String)?
-        service.onLocalPropertySet = { slug, bid, key, value in
+        service.onLocalPropertySet = { slug, bid, key, value, _ in
             captured = (slug, bid, key, value)
             return true
         }
@@ -151,13 +151,42 @@ final class BlockBidResolutionTests: XCTestCase {
         XCTAssertEqual(captured?.value, "done")
     }
 
+    func testRelayMultiSelectRoutesIndependentMemberDeltaThroughEngineSeam() async throws {
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        var captured: (
+            slug: String, bid: String, key: String,
+            current: [String], add: [String], remove: [String]
+        )?
+        service.onLocalPropertyListUpdate = { slug, bid, key, current, add, remove in
+            captured = (slug, bid, key, current, add, remove)
+            return true
+        }
+        try await service.enqueueBackendMutation { reservation in
+            try await service.updateBlockPropertyList(
+                blockId: "daily-note:44444444-4444-4444-4444-444444444444",
+                key: "teams",
+                current: ["alpha", "beta"],
+                add: ["gamma"],
+                remove: ["alpha"],
+                reservation: reservation
+            )
+        }.value
+        XCTAssertEqual(captured?.slug, "daily-note")
+        XCTAssertEqual(captured?.bid, "44444444-4444-4444-4444-444444444444")
+        XCTAssertEqual(captured?.key, "teams")
+        XCTAssertEqual(captured?.current, ["alpha", "beta"])
+        XCTAssertEqual(captured?.add, ["gamma"])
+        XCTAssertEqual(captured?.remove, ["alpha"])
+    }
+
     func testRelaySetBlockPropertyThrowsWhenEngineRejects() async {
         // The seam reporting false (engine closed / bid not found) must
         // THROW — the caller keeps the triaged row instead of dropping it
         // over a write that never landed.
         let service = MockMosaicService()
         service.attach(backend: .relay)
-        service.onLocalPropertySet = { _, _, _, _ in false }
+        service.onLocalPropertySet = { _, _, _, _, _ in false }
         do {
             try await service.enqueueBackendMutation { reservation in
                 try await service.setBlockProperty(
@@ -196,7 +225,7 @@ final class BlockBidResolutionTests: XCTestCase {
     func testRelaySetBlockPropertyThrowsOnMalformedAddress() async {
         let service = MockMosaicService()
         service.attach(backend: .relay)
-        service.onLocalPropertySet = { _, _, _, _ in
+        service.onLocalPropertySet = { _, _, _, _, _ in
             XCTFail("seam must not fire for a malformed address")
             return true
         }
@@ -219,7 +248,7 @@ final class BlockBidResolutionTests: XCTestCase {
         // `.mock` keeps dropping the write silently (design-time seed) —
         // the relay routing must not leak into it.
         let service = MockMosaicService()
-        service.onLocalPropertySet = { _, _, _, _ in
+        service.onLocalPropertySet = { _, _, _, _, _ in
             XCTFail("seam must not fire in mock mode")
             return true
         }

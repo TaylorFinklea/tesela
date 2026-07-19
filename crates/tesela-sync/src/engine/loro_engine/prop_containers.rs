@@ -6,10 +6,10 @@
 // LoroList recording first-seen key order — LoroMap iteration order is NOT
 // guaranteed, so the materializer/index walk `prop_keys`, never the map.
 // Scalars are stored as primitive LoroValues (zero sub-containers); free text
-// as a nested LoroText; multi-value as a nested LoroList (concurrent add/remove
-// union-merges). Every nested write goes through `get_or_create_container` at a
-// stable key — never `insert_container` at an existing key — so concurrent
-// first-touch converges on ONE container (same discipline as `write_block_text`).
+// as a nested LoroText; multi-value as a deterministic mergeable LoroList
+// (concurrent first-touch and later add/remove operations merge on the same
+// container id). Text keeps the regular-child discipline used by
+// `write_block_text`; list writes migrate an older regular child on first add.
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -189,13 +189,11 @@ fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> Sy
 /// absent). Only `props` is touched; the key stays in `prop_keys`, so
 /// first-seen render order is preserved across a representation switch.
 ///
-/// Why not `ensure_mergeable_text`/`_list`: those likewise reject a
-/// non-mergeable occupant — a scalar OR a *regular op-id child* (the shape
-/// every doc already in the wild holds) — with `ArgErr`, and adopting them
-/// would change both the container identity of existing props and the
-/// convergence semantics disjoint-twin healing depends on. Keeping the
-/// regular-op-id-child discipline and clearing the incompatible occupant is
-/// the representation-tolerant fix that leaves live-doc healing untouched.
+/// `SetText` keeps the regular-op-id-child discipline because
+/// `ensure_mergeable_text` rejects the regular text children already shipped
+/// in the fleet. Lists have an explicit migrate-and-replay path in
+/// [`prop_ensure_list`], where a deterministic container id is required for
+/// concurrent first-touch union semantics.
 ///
 /// Concurrent convergence: two peers each clearing a scalar and creating a
 /// regular child at the same key produce two op-id children; map conflict
@@ -291,10 +289,37 @@ pub(super) fn prop_ensure_list(
     prop_keys: &loro::LoroList,
     key: &str,
 ) -> SyncResult<loro::LoroList> {
-    clear_incompatible_child(props, key, loro::ContainerType::List)?;
-    let list = props
-        .get_or_create_container(key, loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    let list = match props.ensure_mergeable_list(key) {
+        Ok(list) => list,
+        Err(loro::LoroError::ArgErr(_)) => {
+            // Fleet snapshots may hold a regular op-id LoroList (or a scalar /
+            // text representation) at this key. Preserve list members, remove
+            // that non-mergeable occupant, then replay them into the
+            // deterministic mergeable child.
+            let existing = get_list_container(props, key)
+                .map(|list| {
+                    (0..list.len())
+                        .filter_map(|i| list.get(i))
+                        .filter_map(|value| value.into_value().ok())
+                        .filter_map(loro_value_to_scalar)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            props
+                .delete(key)
+                .map_err(|e| SyncError::Storage(format!("loro props clear {key}: {e}")))?;
+            let list = props
+                .ensure_mergeable_list(key)
+                .map_err(|e| SyncError::Storage(format!("loro prop list ensure: {e}")))?;
+            for value in existing {
+                if list_position(&list, &value).is_none() {
+                    list_push_scalar(&list, &value)?;
+                }
+            }
+            list
+        }
+        Err(e) => return Err(SyncError::Storage(format!("loro prop list ensure: {e}"))),
+    };
     prop_keys_ensure(prop_keys, key)?;
     Ok(list)
 }

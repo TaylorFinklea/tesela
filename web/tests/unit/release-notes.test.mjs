@@ -36,7 +36,8 @@ class MemoryStorage {
 test("parses the bundled schema-1 catalog", () => {
   const parsed = parseReleaseCatalog(catalog());
   assert.equal(parsed.current.desktop, "2026-07-17.desktop-0.1.3");
-  assert.equal(loadBundledReleaseNotes()?.releases.length, 7);
+  assert.equal(parsed.current.ios, "2026-07-19.ios-1.1-81");
+  assert.equal(loadBundledReleaseNotes()?.releases.length, 8);
 });
 
 test("strict parsing rejects unsupported schema and safe loading fails soft", () => {
@@ -81,6 +82,7 @@ test("platform history starts at current and contains only applicable older rele
   assert.deepEqual(
     platformReleaseHistory(parsed, "ios").map((release) => release.id),
     [
+      "2026-07-19.ios-1.1-81",
       "2026-07-15.ios-1.1-80",
       "2026-07-14.ios-1.1-79",
       "2026-07-08.ios-1.1-75",
@@ -171,6 +173,6 @@ test("manual browsing does not alter seen state until current detail renders", (
 test("version labels are platform-aware", () => {
   const parsed = parseReleaseCatalog(catalog());
   assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "desktop")[0], "desktop"), "Tesela 0.1.3");
-  assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "ios")[0], "ios"), "Tesela 1.1 (80)");
+  assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "ios")[0], "ios"), "Tesela 1.1 (81)");
   assert.equal(releaseVersionLabel(platformReleaseHistory(parsed, "web")[0], "web"), "Tesela Web");
 });

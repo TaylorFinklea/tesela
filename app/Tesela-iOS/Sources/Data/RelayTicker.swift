@@ -1956,6 +1956,7 @@ final class RelayTicker: ObservableObject {
         bidHex: String,
         key: String,
         value: String,
+        valueType: String? = nil,
         requiredSession: EngineSessionToken? = nil
     ) async -> Bool {
         guard let session = await beginEngineOperationWhenAvailable(
@@ -1986,12 +1987,22 @@ final class RelayTicker: ObservableObject {
         }
         let applied: UInt32
         do {
-            applied = try await engine.setBlockProperty(
-                slug: slug,
-                blockIdHex: bidHex,
-                key: key,
-                value: value
-            )
+            if let valueType {
+                applied = try await engine.setBlockPropertyTyped(
+                    slug: slug,
+                    blockIdHex: bidHex,
+                    key: key,
+                    valueType: valueType,
+                    value: value
+                )
+            } else {
+                applied = try await engine.setBlockProperty(
+                    slug: slug,
+                    blockIdHex: bidHex,
+                    key: key,
+                    value: value
+                )
+            }
         } catch {
             lastError = error.localizedDescription
             return false
@@ -2003,6 +2014,80 @@ final class RelayTicker: ObservableObject {
         // Engine durability is guaranteed. In hub mode the live `/ws`
         // socket owns delivery (the caller pushes the delta after this
         // returns), so the relay coordinator must NOT also drain this op.
+        if session.hubMode {
+            await deliverHubDelta(slug: slug, session: session)
+            return true
+        }
+        guard let relayLease = tryAcquireImmediateOutbound() else {
+            return true
+        }
+        defer { finishRelayOperation(relayLease) }
+        invalidateCoordinatorIfRepaired()
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return true }
+        do {
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            noteOutboundOutcome(outcome)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        return true
+    }
+
+    /// Multi-select sibling of `setBlockPropertyAndPush`. The bridge records
+    /// independent LoroList member ops (including the visible baseline needed
+    /// to promote legacy in-text values), then uses the identical hub/relay
+    /// delivery tail as every other property mutation.
+    func updateBlockPropertyListAndPush(
+        slug: String,
+        bidHex: String,
+        key: String,
+        current: [String],
+        add: [String],
+        remove: [String],
+        requiredSession: EngineSessionToken? = nil
+    ) async -> Bool {
+        guard let session = await beginEngineOperationWhenAvailable(
+            requiredSession: requiredSession
+        ) else {
+            return false
+        }
+        defer { finishEngineOperation() }
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard let engine else { return false }
+        await bootstrapNoteIfNeeded(
+            slug: slug,
+            requiredHubIdentity: session.hubIdentity
+        )
+        guard isCurrentEngineSession(session) else { return false }
+        if lastPushedVV[slug] == nil {
+            lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+        }
+        let applied: UInt32
+        do {
+            applied = try await engine.updateBlockPropertyList(
+                slug: slug,
+                blockIdHex: bidHex,
+                key: key,
+                current: current,
+                add: add,
+                remove: remove
+            )
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard applied == 1 else {
+            lastError = "property list write: block \(bidHex) not found in \(slug)"
+            return false
+        }
         if session.hubMode {
             await deliverHubDelta(slug: slug, session: session)
             return true

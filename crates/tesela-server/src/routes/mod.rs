@@ -77,6 +77,10 @@ pub fn build(state: AppState) -> Router {
         .route("/blocks/move-subtree", post(notes::move_block_subtree))
         .route("/blocks/recur-bump", post(notes::recur_bump))
         .route("/blocks/set-property", post(notes::set_block_property))
+        .route(
+            "/blocks/update-property-list",
+            post(notes::update_block_property_list),
+        )
         .route("/blocks/clear-property", post(notes::clear_block_property))
         .route("/sync/reminders/push", post(sync::push))
         .route("/sync/reminders/pull", post(sync::pull))

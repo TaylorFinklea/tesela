@@ -297,3 +297,188 @@ async fn set_status_done_on_recurring_block_rolls_via_engine() {
 
     let _ = temp.path();
 }
+
+/// A multi-select delta promotes a markdown-seeded continuation line into the
+/// engine's mergeable list, applies independent member changes, and remains
+/// addressable by the block's stable bid after the note re-materializes.
+#[tokio::test(flavor = "current_thread")]
+async fn update_property_list_promotes_legacy_members_and_applies_deltas() {
+    let temp = TempDir::new().unwrap();
+    let mosaic = temp.path().join("mosaic");
+    make_fixture_mosaic(&mosaic).unwrap();
+    fs::write(
+        mosaic.join("notes/labels.md"),
+        "---\ntitle: \"Labels\"\ntype: \"Property\"\nvalue_type: \"multi-select\"\nchoices: [\"alpha\", \"beta\", \"gamma\", \"delta\"]\ntags: []\n---\n- Labels property.\n",
+    )
+    .unwrap();
+
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server = ServerGuard(Some(child));
+    let client = reqwest::Client::new();
+
+    let seed_body = format!("- a task <!-- bid:{TASK_BID} -->\n  labels:: alpha, beta\n");
+    let created: serde_json::Value = client
+        .post(format!("{base}/notes"))
+        .json(&serde_json::json!({
+            "title": "List Property Note",
+            "content": seed_body,
+            "tags": [],
+        }))
+        .send()
+        .await
+        .expect("POST /notes")
+        .error_for_status()
+        .expect("note created")
+        .json()
+        .await
+        .expect("create json");
+    let note_id = created["id"].as_str().expect("note id").to_string();
+
+    client
+        .post(format!("{base}/blocks/update-property-list"))
+        .json(&serde_json::json!({
+            "block_id": format!("{note_id}:0"),
+            "key": "labels",
+            "add": [" gamma ", "gamma"],
+            "remove": ["alpha"],
+        }))
+        .send()
+        .await
+        .expect("POST /blocks/update-property-list")
+        .error_for_status()
+        .expect("first list delta ok");
+
+    let first = read_note_file_containing(&mosaic, "a task").expect("materialized note");
+    let first_line = first
+        .lines()
+        .find(|line| line.trim_start().starts_with("labels::"))
+        .expect("labels property line");
+    assert_eq!(first.matches("labels::").count(), 1, "got:\n{first}");
+    assert!(!first_line.contains("alpha"), "got:\n{first}");
+    assert!(first_line.contains("beta"), "got:\n{first}");
+    assert!(first_line.contains("gamma"), "got:\n{first}");
+    assert_eq!(first_line.matches("gamma").count(), 1, "got:\n{first}");
+
+    client
+        .post(format!("{base}/blocks/update-property-list"))
+        .json(&serde_json::json!({
+            "block_id": format!("{note_id}:{TASK_BID}"),
+            "key": "labels",
+            "add": ["delta"],
+            "remove": ["beta"],
+        }))
+        .send()
+        .await
+        .expect("POST /blocks/update-property-list by bid")
+        .error_for_status()
+        .expect("second list delta ok");
+
+    let second = read_note_file_containing(&mosaic, "a task").expect("materialized note");
+    let second_line = second
+        .lines()
+        .find(|line| line.trim_start().starts_with("labels::"))
+        .expect("labels property line");
+    assert_eq!(second.matches("labels::").count(), 1, "got:\n{second}");
+    assert!(!second_line.contains("alpha"), "got:\n{second}");
+    assert!(!second_line.contains("beta"), "got:\n{second}");
+    assert!(second_line.contains("gamma"), "got:\n{second}");
+    assert!(second_line.contains("delta"), "got:\n{second}");
+
+    let _ = temp.path();
+}
+
+/// A note discovered from disk at server startup is not yet resident in the
+/// sync engine. Its first typed property edit must seed that materialized note
+/// into the engine before authoring the list delta, otherwise the request can
+/// return 200 while the markdown view remains unchanged.
+#[tokio::test(flavor = "current_thread")]
+async fn update_property_list_seeds_a_markdown_only_note_before_first_edit() {
+    let temp = TempDir::new().unwrap();
+    let mosaic = temp.path().join("mosaic");
+    make_fixture_mosaic(&mosaic).unwrap();
+    fs::write(
+        mosaic.join("notes/labels.md"),
+        "---\ntitle: \"Labels\"\ntype: \"Property\"\nvalue_type: \"multi-select\"\nchoices: [\"alpha\", \"beta\", \"gamma\"]\ntags: []\n---\n- Labels property.\n",
+    )
+    .unwrap();
+    fs::write(
+        mosaic.join("notes/cold-list.md"),
+        format!(
+            "---\ntitle: \"Cold List\"\ntags: []\n---\n- a cold task <!-- bid:{TASK_BID} -->\n  labels:: alpha, beta\n"
+        ),
+    )
+    .unwrap();
+
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server = ServerGuard(Some(child));
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/blocks/update-property-list"))
+        .json(&serde_json::json!({
+            "block_id": format!("cold-list:{TASK_BID}"),
+            "key": "labels",
+            "add": ["gamma"],
+            "remove": ["beta"],
+        }))
+        .send()
+        .await
+        .expect("POST /blocks/update-property-list")
+        .error_for_status()
+        .expect("cold list delta ok");
+
+    let file = fs::read_to_string(mosaic.join("notes/cold-list.md")).unwrap();
+    let line = file
+        .lines()
+        .find(|line| line.trim_start().starts_with("labels::"))
+        .expect("labels property line");
+    assert!(line.contains("alpha"), "got:\n{file}");
+    assert!(!line.contains("beta"), "got:\n{file}");
+    assert!(line.contains("gamma"), "got:\n{file}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_property_seeds_a_markdown_only_note_before_first_edit() {
+    let temp = TempDir::new().unwrap();
+    let mosaic = temp.path().join("mosaic");
+    make_fixture_mosaic(&mosaic).unwrap();
+    fs::write(
+        mosaic.join("notes/pinned.md"),
+        "---\ntitle: \"Pinned\"\ntype: \"Property\"\nvalue_type: \"checkbox\"\ntags: []\n---\n- Pinned property.\n",
+    )
+    .unwrap();
+    fs::write(
+        mosaic.join("notes/cold-scalar.md"),
+        format!(
+            "---\ntitle: \"Cold Scalar\"\ntags: []\n---\n- a cold task <!-- bid:{TASK_BID} -->\n  pinned:: false\n"
+        ),
+    )
+    .unwrap();
+
+    let (child, _addr, base) = common::spawn_with_retry(Duration::from_secs(15), |addr| {
+        spawn_server_child(&mosaic, addr)
+    });
+    let _server = ServerGuard(Some(child));
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/blocks/set-property"))
+        .json(&serde_json::json!({
+            "block_id": format!("cold-scalar:{TASK_BID}"),
+            "key": "pinned",
+            "value": "true",
+        }))
+        .send()
+        .await
+        .expect("POST /blocks/set-property")
+        .error_for_status()
+        .expect("cold scalar set ok");
+
+    let file = fs::read_to_string(mosaic.join("notes/cold-scalar.md")).unwrap();
+    assert!(file.contains("pinned:: true"), "got:\n{file}");
+    assert_eq!(file.matches("pinned::").count(), 1, "got:\n{file}");
+}

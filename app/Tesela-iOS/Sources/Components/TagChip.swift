@@ -346,7 +346,7 @@ enum ChipFormat {
     }
 }
 
-/// Display-only chip for an arbitrary block property (`key:: value`) that
+/// Type-aware chip for an arbitrary block property (`key:: value`) that
 /// isn't one of the specially-rendered date/recurrence chips — e.g. a custom
 /// `points::` or `testpoints::`. Renders the property label + formatted value
 /// in the muted chip styling so custom properties are visible on iOS (the web
@@ -367,6 +367,10 @@ struct PropertyChip: View {
     /// tinted recipe (translucent background + saturated foreground); the
     /// task STATUS marker is NOT routed here (it stays priority-colored).
     var tint: Color? = nil
+    /// Opens the owning block's item-driven property edit sheet.
+    var onEdit: (() -> Void)? = nil
+    /// Checkbox-only immediate toggle.
+    var onToggle: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
 
@@ -385,7 +389,42 @@ struct PropertyChip: View {
         ChipIconRegistry.resolve(def?.chipIcon)
     }
 
+    @ViewBuilder
     var body: some View {
+        if let url = PropertyEditing.linkURL(valueType: def?.valueType, value: value) {
+            HStack(spacing: 2) {
+                Link(destination: url) { chipLabel }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(def?.name ?? key): \(value)")
+                if let onEdit {
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(theme.fgFaint)
+                            .frame(width: 20, height: 20)
+                            .background(theme.fgMuted.opacity(0.10))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit \(def?.name ?? key)")
+                }
+            }
+        } else if def?.valueType == .checkbox, let onToggle {
+            Button(action: onToggle) { chipLabel }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "\(def?.name ?? key), \(PropertyEditing.isChecked(value) ? "checked" : "unchecked")"
+                )
+        } else if let onEdit {
+            Button(action: onEdit) { chipLabel }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit \(def?.name ?? key): \(value)")
+        } else {
+            chipLabel
+        }
+    }
+
+    private var chipLabel: some View {
         HStack(spacing: 4) {
             if labelMode == .icon, icon.symbol != nil || icon.emoji != nil {
                 if let symbol = icon.symbol {
@@ -399,7 +438,9 @@ struct PropertyChip: View {
                 Text(labelText)
                     .foregroundStyle(keyColor)
             }
-            Text(formattedValue)
+            Text(def?.valueType == .checkbox
+                 ? (PropertyEditing.isChecked(value) ? "☑" : "☐")
+                 : formattedValue)
                 .foregroundStyle(valueColor)
         }
         .font(.system(size: 11.5, weight: .medium, design: .monospaced))

@@ -816,7 +816,7 @@ final class MockMosaicServiceTests: XCTestCase {
     func testRecurringTaskRollsForwardOnCompletion() async {
         let service = MockMosaicService()
         var writes: [(key: String, value: String)] = []
-        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        service.onLocalPropertySet = { _, _, key, value, _ in writes.append((key, value)); return true }
         let props = [
             BlockProperty(key: "status", value: "done"),
             BlockProperty(key: "recurring", value: "weekly"),
@@ -835,7 +835,7 @@ final class MockMosaicServiceTests: XCTestCase {
     func testRecurringRollPreservesTimeOfDay() async {
         let service = MockMosaicService()
         var writes: [(key: String, value: String)] = []
-        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        service.onLocalPropertySet = { _, _, key, value, _ in writes.append((key, value)); return true }
         let props = [
             BlockProperty(key: "recurring", value: "every 2 days"),
             BlockProperty(key: "deadline", value: "2026-06-15 09:30"),
@@ -850,7 +850,7 @@ final class MockMosaicServiceTests: XCTestCase {
     func testRecurringSpentSeriesDoesNotRoll() async {
         let service = MockMosaicService()
         var writes: [(key: String, value: String)] = []
-        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        service.onLocalPropertySet = { _, _, key, value, _ in writes.append((key, value)); return true }
         let props = [
             BlockProperty(key: "recurring", value: "weekly count 1"),
             BlockProperty(key: "scheduled", value: "2026-06-15"),
@@ -869,7 +869,7 @@ final class MockMosaicServiceTests: XCTestCase {
     func testNonRecurringTaskIsNotRolled() async {
         let service = MockMosaicService()
         var writes: [(key: String, value: String)] = []
-        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        service.onLocalPropertySet = { _, _, key, value, _ in writes.append((key, value)); return true }
         let plain = [BlockProperty(key: "status", value: "done"), BlockProperty(key: "scheduled", value: "2026-06-15")]
         let rolledPlain = await service.rollRecurringComplete(noteId: "n", bid: "b", properties: plain)
         XCTAssertFalse(rolledPlain)
