@@ -21,17 +21,19 @@
 - command manifest freshness + web production build: pass
 - iOS app target build + focused `DashboardWidgetsTests`: pass on iPhone 17 simulator
 - direct simulator install/launch: pass; live Graphite shell rendered
+- iOS Dashboard click-through on iPhone 17 / iOS 26.5: add/remove/reorder/collapse, picker cancel, all-added picker state, and relaunch persistence pass
+- unavailable-source fixture: explicit recovery state rendered and remained removable; native accessibility removal pass
+- Sync Health refresh: no crash; simulator had no live relay tick, so live-tick content was not claimed
 
 ## Verification boundary
 
-- iOS semantic snapshot + simulator-browser bridges stalled; Dashboard click-through remains manual checklist coverage
 - repo-wide `cargo fmt --all -- --check` fails on existing untouched Rust drift; tracked by `tesela-bz5`
 - no Rust changed; `cargo build -p tesela-server` passed for the browser harness
 - build skill stopped the remaining repo-wide Rust matrix at the formatter failure
 - full unit initially exposed release tests pinned to desktop 0.1.2 while catalog/config were already 0.1.3; expectations aligned to shipped source
 
-## Manual QA
+## Product QA exercised
 
-- web/desktop: add a Query note + saved view; reorder, collapse, reload; confirm data/states and remove
-- iOS: Library → Dashboard; add a Query note + saved view; reorder, collapse, relaunch; confirm Agenda/Inbox/Sync Health
-- both: delete/restore a selected source; confirm unavailable state then live recovery
+- web/desktop: add Query-note + saved-view widgets; reorder, collapse, reload, and remove
+- iOS: Library → Dashboard; add, remove, reorder, collapse, relaunch, picker cancel/all-added, and Sync Health refresh
+- iOS unavailable source: render fallback title/recovery guidance, then remove without crashing
