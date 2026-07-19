@@ -3,9 +3,30 @@
   "current": {
     "web": "2026-07-15.desktop-0.1.2",
     "desktop": "2026-07-17.desktop-0.1.3",
-    "ios": "2026-07-15.ios-1.1-80"
+    "ios": "2026-07-19.ios-1.1-81"
   },
   "releases": [
+    {
+      "id": "2026-07-19.ios-1.1-81",
+      "publishedAt": "2026-07-19T15:56:36Z",
+      "title": "Your day at a glance",
+      "summary": "A configurable Dashboard and new Home Screen widgets keep Agenda and Inbox close at hand.",
+      "platforms": ["ios"],
+      "versions": {
+        "ios": {
+          "marketing": "1.1",
+          "build": "81"
+        }
+      },
+      "new": [
+        "Add Agenda and Inbox widgets to your iPhone or iPad Home Screen in small or medium sizes.",
+        "Open the new Dashboard in Tesela to arrange Agenda, Inbox, Sync Health, saved views, and query cards."
+      ],
+      "fixed": [],
+      "important": [
+        "Home Screen widgets are read-only; tap one to open its full Agenda or Inbox view in Tesela."
+      ]
+    },
     {
       "id": "2026-07-17.desktop-0.1.3",
       "publishedAt": "2026-07-17T20:24:00Z",

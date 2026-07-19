@@ -2,7 +2,7 @@
 
 ## Delivered
 
-- bead `tesela-a4m.1`
+- beads `tesela-a4m.1` and `tesela-a4m.2`
 - distinct Tesela Agenda and Tesela Inbox WidgetKit gallery entries
 - small + medium layouts; bounded read-only rows, honest empty/missing states,
   relative snapshot age, privacy-sensitive content
@@ -39,15 +39,15 @@
 
 ## Release boundary
 
-- generic device build reaches provisioning and fails because Apple has no
-  development profile for `app.tesela.ios.widgets`, while the existing
-  `app.tesela.ios` profile predates App Groups and lacks
-  `group.app.tesela.shared`
-- the managed App Store Connect credential could not refresh profiles because
-  the BWS bootstrap token remained unavailable in the login Keychain after the
-  admin restart
-- follow-up `tesela-a4m.2` owns App Group registration/profile refresh and an
-  exact generic-device signing gate; it is release operations, not product QA
+- Xcode account refresh created host + widget development profiles; the exact
+  generic-device build passed with matching App Group entitlements and embedded
+  extension validation
+- managed App Store Connect credentials created and installed explicit App Store
+  profiles for both bundle IDs; distribution export retained the shared App
+  Group, production push, and `get-task-allow = false`
+- TestFlight 1.1 (81), delivery `59584b74-40ea-4cc3-8fac-e3f139603f8c`:
+  uploaded, processing `VALID`, audience `APP_STORE_ELIGIBLE`, present in App
+  Store Connect
 
 ## Known baseline
 

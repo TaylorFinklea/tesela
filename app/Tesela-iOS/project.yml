@@ -67,7 +67,7 @@ targets:
       properties:
         CFBundleDisplayName: Tesela Widgets
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "80"
+        CFBundleVersion: "81"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
@@ -191,7 +191,7 @@ targets:
         # ascending builds within a version. Marketing-version bumps stay
         # MANUAL + rare.
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "80"
+        CFBundleVersion: "81"
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: app.tesela.ios
