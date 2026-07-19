@@ -43,6 +43,34 @@ packages:
     exactVersion: 0.15.5
 
 targets:
+  TeselaWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+      - path: Sources/WidgetShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios.widgets
+        PRODUCT_NAME: TeselaWidgets
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_ENTITLEMENTS: "TeselaWidgets.entitlements"
+        CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
+        CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "YES"
+        CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
+        CODE_SIGN_STYLE: "Automatic"
+        DEVELOPMENT_TEAM: "K7CBQW6MPG"
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Tesela Widgets
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "80"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
   TeselaTests:
     type: bundle.unit-test
     platform: iOS
@@ -62,6 +90,24 @@ targets:
         CODE_SIGN_STYLE: "Automatic"
         DEVELOPMENT_TEAM: "K7CBQW6MPG"
 
+  TeselaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Tesela
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios.uitests
+        TEST_TARGET_NAME: Tesela
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
+        CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "NO"
+        CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
+        CODE_SIGN_STYLE: "Automatic"
+        DEVELOPMENT_TEAM: "K7CBQW6MPG"
+
   Tesela:
     type: application
     platform: iOS
@@ -69,6 +115,8 @@ targets:
       - path: Sources
       - path: Generated
     dependencies:
+      - target: TeselaWidgets
+        embed: true
       - package: SwiftWhisper
         product: SwiftWhisper
       - package: FluidAudio
@@ -113,7 +161,7 @@ targets:
         #   profile belongs to team X, which does not match the selected
         #   team Y" error at build time.
         CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
-        CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "NO"
+        CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "YES"
         CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
         CODE_SIGN_STYLE: "Automatic"
         DEVELOPMENT_TEAM: "K7CBQW6MPG"
@@ -123,11 +171,13 @@ targets:
         # the Apple Developer portal; with automatic signing the managed
         # profile then grants aps-environment. If Push is NOT enabled, the
         # device archive fails with a provisioning error.
+        CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: "TeselaSimulator.entitlements"
         CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: "Tesela.entitlements"
         TARGETED_DEVICE_FAMILY: "1,2"
     scheme:
       testTargets:
         - TeselaTests
+        - TeselaUITests
     info:
       path: Info.plist
       properties:
@@ -142,6 +192,11 @@ targets:
         # MANUAL + rare.
         CFBundleShortVersionString: "1.1"
         CFBundleVersion: "80"
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: app.tesela.ios
+            CFBundleURLSchemes:
+              - tesela
         # Export compliance: the app uses only STANDARD, published crypto
         # (ChaCha20-Poly1305 sync E2E + HKDF/HMAC-SHA256 + rustls TLS), which is
         # EXEMPT (EAR 740.17 standard-cryptography). Declaring this here stops

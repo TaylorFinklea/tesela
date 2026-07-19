@@ -171,6 +171,7 @@ struct AppShell: View {
                         requestMosaicActivation()
                         await hubActivation.waitUntilIdle()
                         relayTicker.start()
+                        await WidgetSnapshotPublisher.publish(from: mosaic)
                     }
                     .onChange(of: activationToken) { _, _ in
                         streamRecorder.invalidateForProfileSwitch()
@@ -231,6 +232,11 @@ struct AppShell: View {
                 presenter: releaseNotes,
                 onboardingComplete: onboardingComplete
             )
+            .onOpenURL(perform: handleDeepLink)
+            .task(id: widgetSnapshotRevision) {
+                guard onboardingComplete else { return }
+                await WidgetSnapshotPublisher.publish(from: mosaic)
+            }
         }
     }
 
@@ -242,6 +248,23 @@ struct AppShell: View {
             profile?.serverURL ?? backend.serverURL,
             profile?.mosaicPath ?? ""
         ].joined(separator: "|")
+    }
+
+    private var widgetSnapshotRevision: String {
+        let connection: String
+        switch mosaic.connection {
+        case .idle: connection = "idle"
+        case .connecting: connection = "connecting"
+        case .switching: connection = "switching"
+        case .ready: connection = "ready"
+        case .failed: connection = "failed"
+        }
+        return "\(onboardingComplete)|\(connection)|\(mosaic.refreshTick)|\(mosaic.viewsTick)"
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard let destination = TeselaDeepLink.destination(for: url) else { return }
+        activeTab = destination.tab
     }
 
     private var voiceCaptureScope: VoiceCaptureScope {

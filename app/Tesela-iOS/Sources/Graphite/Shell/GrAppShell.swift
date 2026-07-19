@@ -261,6 +261,7 @@ struct GrAppShell: View {
                 // Backend-dependent bring-up — also re-run on a backend change.
                 requestBackendActivation()
                 await hubActivation.waitUntilIdle()
+                await WidgetSnapshotPublisher.publish(from: mosaic)
             }
             .onAppear { startPresencePrune() }
             .onDisappear { stopPresencePrune() }
@@ -320,6 +321,11 @@ struct GrAppShell: View {
                 .preferredColorScheme(.dark)
             }
         }
+        .onOpenURL(perform: handleDeepLink)
+        .task(id: widgetSnapshotRevision) {
+            guard onboardingComplete else { return }
+            await WidgetSnapshotPublisher.publish(from: mosaic)
+        }
         .releaseNotesPresentation(
             presenter: releaseNotes,
             onboardingComplete: onboardingComplete
@@ -343,6 +349,23 @@ struct GrAppShell: View {
     /// next tick; without this the presence socket stayed on the old group.
     private var backendToken: String {
         "\(backend.mode.rawValue)|\(relocationHubIdentity)|\(RelayTicker.cachedPairingCode() ?? "")"
+    }
+
+    private var widgetSnapshotRevision: String {
+        let connection: String
+        switch mosaic.connection {
+        case .idle: connection = "idle"
+        case .connecting: connection = "connecting"
+        case .switching: connection = "switching"
+        case .ready: connection = "ready"
+        case .failed: connection = "failed"
+        }
+        return "\(onboardingComplete)|\(connection)|\(mosaic.refreshTick)|\(mosaic.viewsTick)"
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard let destination = TeselaDeepLink.destination(for: url) else { return }
+        activeTab = destination.tab
     }
 
     private var voiceCaptureScope: VoiceCaptureScope {

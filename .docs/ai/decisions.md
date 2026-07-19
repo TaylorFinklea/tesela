@@ -946,3 +946,23 @@ post-release; stage 8 quits a running installed app (single-instance socket
 swallows second launches) and the cleanup trap's relaunch doubles as the
 update rehearsal. Desktop releases pass `--latest` explicitly; tesela-egc6
 tracks giving CLI workflows `--latest=false`.
+
+### 2026-07-19 — iOS widgets read a versioned App Group projection owned by the main app
+
+Tesela's first OS home-screen slice is two read-only WidgetKit configurations:
+Agenda and Inbox, each in small and medium families. The main app remains the
+only Loro, query, relay, Keychain, and FFI owner. It projects the canonical
+seven-day Agenda and built-in Inbox query into an atomically written,
+versioned JSON snapshot in `group.app.tesela.shared`; the extension only
+decodes that bounded snapshot and asks the user to open Tesela when none
+exists. Widget text is privacy-sensitive, and each whole tile deep-links to
+the matching Graphite tab through a shared route parser.
+
+Extension-side database or sync access was rejected because it would create a
+second lifecycle and authority boundary for local-first data. App Intent
+configuration and inline mutations were deferred: separate static gallery
+entries make the first slice predictable, while completion, capture,
+user-selected views, Lock Screen families, and controls remain explicit future
+product work. Full contract and evidence:
+`phases/2026-07-19-ios-home-screen-widgets-spec.md` and
+`phases/2026-07-19-ios-home-screen-widgets-report.md`.

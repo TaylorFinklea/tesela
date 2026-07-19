@@ -32,6 +32,7 @@ OUT="$ROOT/build/ios"
 ARCHIVE="$OUT/Tesela.xcarchive"
 EXPORT="$OUT/export"
 INFO="$IOS/Info.plist"
+WIDGET_INFO="$IOS/Widgets/Info.plist"
 RELEASE_NOTES="$OUT/release-notes.txt"
 
 NO_UPLOAD=0
@@ -122,8 +123,9 @@ IOS_RELEASE_ID="$(node -p "require('./release-notes/releases.json').current.ios"
 mkdir -p "$OUT"
 node scripts/changelog.mjs render --release "$IOS_RELEASE_ID" --format plain > "$RELEASE_NOTES"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$INFO"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$WIDGET_INFO"
 /usr/bin/sed -i '' -E "s/^([[:space:]]*CFBundleVersion:).*/\1 \"$BUILDNO\"/" "$IOS/project.yml"
-echo "         version $APP_VERSION (build $BUILDNO)  — commit project.yml + Info.plist after the upload"
+echo "         version $APP_VERSION (build $BUILDNO)  — commit project.yml + app/widget Info.plists after the upload"
 echo "         release notes: $RELEASE_NOTES"
 /bin/rm -rf "$ARCHIVE"
 xcodebuild archive \
