@@ -44,7 +44,7 @@ Non-feature repository-wide blockers:
 
 ## Review
 
-Fresh adversarial review identified forwarding-order, deletion, conflict-import, dispatch, and cache-invalidation risks. Full-snapshot routing, persisted-baseline replay, conflict retention, and web invalidation were already repaired. Follow-up fixes added uncontested forwarded block deletion, fail-closed Protocol handling without aborting imported-state persistence, engine-reported direct/deferred forwarding targets, and target-specific `NoteUpdated` invalidation.
+Fresh adversarial review identified forwarding-order, deletion, conflict-import, dispatch, and cache-invalidation risks. Full-snapshot routing, persisted-baseline replay, conflict retention, and web invalidation were repaired. Follow-up fixes added uncontested forwarded block deletion, fail-closed Protocol handling without aborting imported-state persistence, engine-reported direct/deferred forwarding targets across delta and authoritative snapshot imports, and target-specific `NoteUpdated` invalidation through WS, relay tick, retained-op catch-up, and snapshot catch-up. The final fresh adversarial review returned **APPROVE**.
 
 ## Residual risk
 
