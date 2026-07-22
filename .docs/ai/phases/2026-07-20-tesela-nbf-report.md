@@ -49,4 +49,4 @@ Fresh adversarial review identified forwarding-order, deletion, conflict-import,
 ## Residual risk
 
 - Forwarded semantic target mutations emit target-specific `NoteUpdated` refetch signals, but the binary frame remains addressed to the retained source lineage; open target editors converge through authoritative refetch rather than an exact-id splice.
-- Full workspace green remains blocked by unrelated existing Clippy warnings and parallel timing sensitivity documented above. Keep `tesela-nbf` open until those required gates are clean or explicitly waived.
+- Feature-local focused gates, platform checks, and final adversarial review are green. The user explicitly waived unrelated existing workspace Clippy warnings and parallel-only server shutdown timing failures for Bead closure.

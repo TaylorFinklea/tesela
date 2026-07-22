@@ -2,12 +2,10 @@
 Branch: `main`
 
 ## Plan
-- [x] `tesela-nbf` implementation and focused verification
-- [ ] Clear/waive repository-wide gates and close Bead
+- [x] `tesela-nbf` complete; unrelated repository-wide failures explicitly waived
 
 ## Blockers
-- `cargo clippy --workspace -- -D warnings`: pre-existing TUI field-reassign and server sync-relay doc warnings
-- `cargo test -p tesela-server`: 2 serve shutdown tests exceed 20s only under full parallel load; pass isolated
+- None
 
 ## Open questions
-- Whether existing workspace gate failures may be waived for `tesela-nbf`
+- None
