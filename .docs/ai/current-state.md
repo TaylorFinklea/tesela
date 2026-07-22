@@ -3,7 +3,7 @@ Branch: `main`
 
 ## Plan
 - [x] `tesela-nbf` implementation and focused verification
-- [ ] Clear/waive repository-wide gates, close Bead, commit feature paths
+- [ ] Clear/waive repository-wide gates and close Bead
 
 ## Blockers
 - `cargo clippy --workspace -- -D warnings`: pre-existing TUI field-reassign and server sync-relay doc warnings
