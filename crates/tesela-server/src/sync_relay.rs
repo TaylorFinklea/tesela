@@ -358,7 +358,7 @@ pub async fn tick(
                         // WsEvent for a no-op merge is harmless; record each
                         // cleanly-applied doc (deduped) so the live-WS
                         // fan-out can notify web + re-broadcast the delta.
-                        for doc in &report.applied {
+                        for doc in report.applied.iter().chain(&report.forwarded_targets) {
                             if !applied_note_ids.contains(doc) {
                                 applied_note_ids.push(*doc);
                             }
@@ -545,7 +545,10 @@ pub async fn tick(
         let floor = state.inbound_cursor.max(1);
         for id in ledger_catchup {
             let hex_id = hex::encode(id);
-            state.catchup_since_seq.entry(hex_id.clone()).or_insert(floor);
+            state
+                .catchup_since_seq
+                .entry(hex_id.clone())
+                .or_insert(floor);
             if !state.catchup_notes.contains(&hex_id) {
                 state.catchup_notes.push(hex_id);
             }
@@ -1119,9 +1122,15 @@ pub(crate) async fn catchup_from_snapshots(
             .import_authoritative_snapshot(note_id, &plaintext)
             .await
         {
-            Ok(()) => {
+            Ok(forwarded_targets) => {
                 tracing::info!("relay snapshot catch-up healed note {hex_id}");
                 healed.push(hex_id);
+                for target in forwarded_targets {
+                    let target_hex = hex::encode(target);
+                    if !healed.contains(&target_hex) {
+                        healed.push(target_hex);
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!("relay snapshot catch-up import {hex_id}: {e}");
@@ -1206,6 +1215,12 @@ async fn catchup_from_retained_ops(
                 doc,
                 update_bytes: bytes,
             });
+        }
+        for target in report.forwarded_targets {
+            let hex_id = hex::encode(target);
+            if !outcome.healed.contains(&hex_id) {
+                outcome.healed.push(hex_id);
+            }
         }
     }
     outcome
@@ -1412,8 +1427,8 @@ mod tests {
         tick(&engine_a, &ident, &handle_a).await.unwrap();
         tick(&engine_a, &ident, &handle_a).await.unwrap();
 
-        // The relay compacted: a fresh probe sees a watermark + both snapshots,
-        // and the raw op log is gone.
+        // The relay compacted: a fresh probe sees a watermark, both note
+        // snapshots, and the authoritative page-directory snapshot; raw ops are gone.
         let probe = RelayClient::new(
             base_url.clone(),
             group,
@@ -1425,7 +1440,11 @@ mod tests {
             comp_seq > 0,
             "tick deposited a snapshot batch + advanced the relay watermark"
         );
-        assert_eq!(snaps.len(), 2, "both notes' snapshots are on the relay");
+        assert_eq!(
+            snaps.len(),
+            3,
+            "both notes and the synced page-directory snapshots are on the relay"
+        );
         assert!(
             probe.poll(0).await.unwrap().rows.is_empty(),
             "ops <= watermark compacted out from under since=0"
@@ -1660,7 +1679,13 @@ mod tests {
             })
             .await
             .unwrap();
-        let handle_a = handle_for(&base_url, group, dev_a, key.clone(), a_tmp.path().to_path_buf());
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
         // GET /snapshots is MAC-gated + needs the group registered (pairing does
         // this in production).
         handle_a.client.register(1).await.unwrap();
@@ -2048,7 +2073,10 @@ mod tests {
                 state.catchup_notes
             );
             assert_eq!(
-                state.catchup_since_seq.get(&hex::encode(NID_POISON)).copied(),
+                state
+                    .catchup_since_seq
+                    .get(&hex::encode(NID_POISON))
+                    .copied(),
                 Some(poison_seq),
                 "the poisoned envelope's own seq is tracked as the protection bound"
             );
@@ -2349,7 +2377,13 @@ mod tests {
             })
             .await
             .unwrap();
-        let handle_a = handle_for(&base_url, group, dev_a, key.clone(), a_tmp.path().to_path_buf());
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
         bring_up(&handle_a).await.expect("A bring-up");
         tick(&engine_a, &ident, &handle_a).await.unwrap(); // PUT ALPHA op
 
@@ -2357,7 +2391,13 @@ mod tests {
         let b_tmp = tempfile::tempdir().unwrap();
         let dev_b = DeviceId::from_bytes([0xb1; 16]);
         let engine_b = engine_in(&b_tmp, dev_b).await;
-        let handle_b = handle_for(&base_url, group, dev_b, key.clone(), b_tmp.path().to_path_buf());
+        let handle_b = handle_for(
+            &base_url,
+            group,
+            dev_b,
+            key.clone(),
+            b_tmp.path().to_path_buf(),
+        );
         bring_up(&handle_b).await.expect("B bring-up");
         tick(&engine_b, &ident, &handle_b).await.unwrap();
         let n = handle_b.state.read().await.inbound_cursor;
@@ -2550,8 +2590,8 @@ mod tests {
         strand_cursor_undecodable(&engine_a, NID).await;
         assert_eq!(
             engine_a.produce_relay_updates().await.len(),
-            1,
-            "stranded: the dirty note re-exports (snapshot fallback), never nothing"
+            2,
+            "stranded: the dirty note and synced page directory re-export, never nothing"
         );
 
         let client_a = RelayClient::new(base_url.clone(), group, dev_a, key.clone());
@@ -2563,11 +2603,20 @@ mod tests {
             .await
             .expect("deposit");
 
-        // HEALED at the production call site: cursor re-anchored to the
-        // snapshot-time version, so with no new edits `produce` ships NOTHING.
-        assert!(
-            engine_a.produce_relay_updates().await.is_empty(),
-            "deposit_snapshots' repair re-anchored the stranded cursor → strand healed"
+        // HEALED at the production call site: the stranded note's cursor is
+        // re-anchored to its snapshot-time version. The directory was never
+        // broadcast, so its first normal send remains pending; it must not
+        // mask a re-export of the repaired note.
+        let pending = engine_a.produce_relay_updates().await;
+        assert_eq!(
+            pending.len(),
+            1,
+            "only the never-broadcast directory remains"
+        );
+        assert_eq!(
+            pending[0].0,
+            tesela_sync::engine::loro_engine::PAGE_DIRECTORY_DOC_ID,
+            "deposit_snapshots repaired the stranded note cursor"
         );
 
         // And the next edit ships a real INCREMENTAL delta a base-less peer
@@ -2585,9 +2634,17 @@ mod tests {
             .await
             .unwrap();
         let out = engine_a.produce_relay_updates().await;
-        assert_eq!(out.len(), 1, "the post-heal edit ships");
-        let (_id, delta, _vv) = &out[0];
-        let fresh = engine_in(&tempfile::tempdir().unwrap(), DeviceId::from_bytes([0x5c; 16])).await;
+        assert_eq!(
+            out.len(),
+            2,
+            "the post-heal edit and pending directory ship"
+        );
+        let (_id, delta, _vv) = out
+            .iter()
+            .find(|(id, _, _)| *id == NID)
+            .expect("post-heal note delta");
+        let fresh_tmp = tempfile::tempdir().unwrap();
+        let fresh = engine_in(&fresh_tmp, DeviceId::from_bytes([0x5c; 16])).await;
         let report = fresh.apply_relay_updates(&[(NID, delta.clone())]).await;
         assert_eq!(
             report.pending,
@@ -2669,14 +2726,20 @@ mod tests {
             .await
             .unwrap();
         let out = engine_s.produce_relay_updates().await;
-        assert_eq!(out.len(), 1, "S ships its resumed edit");
-        let (_id, resume_delta, _vv) = out.into_iter().next().unwrap();
+        assert_eq!(out.len(), 2, "S ships its resumed edit and page directory");
+        let (_id, resume_delta, _vv) = out
+            .into_iter()
+            .find(|(id, _, _)| *id == NID)
+            .expect("resumed note delta is present");
 
         // REPAIR DISCRIMINATOR: the resume is an INCREMENTAL delta — a base-less
         // peer cannot apply it cleanly (Loro leaves it PENDING behind the base).
         // Without the F1 repair this would be a self-contained snapshot instead.
-        let probe = engine_in(&tempfile::tempdir().unwrap(), DeviceId::from_bytes([0x63; 16])).await;
-        let probe_report = probe.apply_relay_updates(&[(NID, resume_delta.clone())]).await;
+        let probe_tmp = tempfile::tempdir().unwrap();
+        let probe = engine_in(&probe_tmp, DeviceId::from_bytes([0x63; 16])).await;
+        let probe_report = probe
+            .apply_relay_updates(&[(NID, resume_delta.clone())])
+            .await;
         assert_eq!(
             probe_report.pending,
             vec![NID],
@@ -2694,7 +2757,13 @@ mod tests {
         let r_tmp = tempfile::tempdir().unwrap();
         let dev_r = DeviceId::from_bytes([0x71; 16]);
         let engine_r = engine_in(&r_tmp, dev_r).await;
-        let handle_r = handle_for(&base_url, group, dev_r, key.clone(), r_tmp.path().to_path_buf());
+        let handle_r = handle_for(
+            &base_url,
+            group,
+            dev_r,
+            key.clone(),
+            r_tmp.path().to_path_buf(),
+        );
         bring_up(&handle_r).await.expect("R bring-up");
 
         tick(&engine_r, &ident, &handle_r).await.unwrap();

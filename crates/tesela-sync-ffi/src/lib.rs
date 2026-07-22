@@ -1586,6 +1586,7 @@ impl SyncEngineHandle {
         self.inner
             .import_authoritative_snapshot(note_id, &bytes)
             .await
+            .map(|_| ())
             .map_err(FfiSyncError::from)
     }
 
@@ -1609,6 +1610,7 @@ impl SyncEngineHandle {
         self.inner
             .import_authoritative_snapshot(id, &bytes)
             .await
+            .map(|_| ())
             .map_err(FfiSyncError::from)
     }
 

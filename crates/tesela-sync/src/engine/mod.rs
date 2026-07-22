@@ -409,8 +409,9 @@ pub trait SyncEngine: Send + Sync {
         &self,
         note_id: [u8; 16],
         bytes: &[u8],
-    ) -> SyncResult<()> {
-        self.import_doc_update(note_id, bytes).await
+    ) -> SyncResult<Vec<[u8; 16]>> {
+        self.import_doc_update(note_id, bytes).await?;
+        Ok(Vec::new())
     }
 
     /// Like [`import_doc_update`](Self::import_doc_update) but RETURNS whether

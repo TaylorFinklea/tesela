@@ -4438,7 +4438,7 @@ impl SyncEngine for LoroEngine {
         &self,
         note_id: [u8; 16],
         bytes: &[u8],
-    ) -> SyncResult<()> {
+    ) -> SyncResult<Vec<[u8; 16]>> {
         LoroEngine::import_authoritative_snapshot(self, note_id, bytes).await
     }
 

@@ -479,11 +479,11 @@ impl LoroEngine {
         &self,
         note_id: [u8; 16],
         bytes: &[u8],
-    ) -> SyncResult<()> {
+    ) -> SyncResult<Vec<[u8; 16]>> {
         let outcome = self
             .apply_import(note_id, bytes, ImportMode::Authoritative)
             .await
-            .map(|_| ());
+            .map(|outcome| outcome.forwarded_targets);
         // This IS the causal-gap heal (tesela-c7s item 2): a note queued for
         // snapshot catch-up because a live delta landed pending has now
         // re-based on the relay's authoritative full state, so its gap is
