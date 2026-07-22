@@ -34,6 +34,7 @@
     blockId = null,
     onset = undefined,
     onlistchange = undefined,
+    onnodeopen = undefined,
   }: {
     propKey: string;
     value: string;
@@ -41,6 +42,7 @@
     blockId?: string | null;
     onset?: (value: string) => void;
     onlistchange?: (delta: MultiSelectDelta) => void;
+    onnodeopen?: (slug: string) => void;
   } = $props();
 
   /** Whether this is the recurring chip (drives formatting + skip affordance). */
@@ -220,7 +222,18 @@
 {/snippet}
 
 <span class="relative">
-  {#if effectiveLinkTarget}
+  {#if nodeResolution?.state === "resolved" && onnodeopen}
+    <button
+      type="button"
+      class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium hover:underline {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
+      style={chipStyle}
+      title="Open {def.name}: {formattedValue}"
+      onclick={(event) => {
+        event.stopPropagation();
+        onnodeopen?.(nodeResolution.slug);
+      }}
+    >{@render chipContents()}</button>
+  {:else if effectiveLinkTarget}
     <a
       class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium hover:underline {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
       style={chipStyle}

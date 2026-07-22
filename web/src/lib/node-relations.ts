@@ -61,3 +61,24 @@ export function rankPageCandidates(
     .sort((a, b) => b.score - a.score || a.entry.title.localeCompare(b.entry.title))
     .map(({ entry }) => entry);
 }
+
+export function pagePropertyEntries(
+  body: string,
+  custom: Record<string, unknown>,
+): Array<{ k: string; v: string }> {
+  const values = new Map<string, { k: string; v: string }>();
+  for (const [key, raw] of Object.entries(custom)) {
+    if (raw == null) continue;
+    values.set(key.toLowerCase(), {
+      k: key,
+      v: typeof raw === "string" ? raw : JSON.stringify(raw),
+    });
+  }
+  for (const line of body.split("\n")) {
+    if (/^\s*-\s/.test(line)) break;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)::[ \t]*(.*)$/.exec(line);
+    if (!match || match[1].toLowerCase() === "tags") continue;
+    values.set(match[1].toLowerCase(), { k: match[1], v: match[2] });
+  }
+  return [...values.values()];
+}

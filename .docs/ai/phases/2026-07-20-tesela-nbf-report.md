@@ -28,9 +28,9 @@ Passing:
 - `cargo test -p tesela-sync` — 369 passed, 1 ignored; then 370 passed after the final forwarded-deletion regression
 - `cargo test -p tesela-sync-ffi` — 50 passed
 - `bash scripts/check-ffi-drift.sh` — bindings in sync, 5 files
-- `pnpm --dir web test:unit` — 1,018 passed
+- `pnpm --dir web test:unit` — 1,019 passed after the executable page-property regression
 - `pnpm --dir web check` — 0 errors, 45 existing warnings
-- focused iOS XCTest (`PropertyEditingTests`, `QueryConformanceTests`) — TEST SUCCEEDED
+- focused iOS XCTest (`PropertyEditingTests`, `QueryConformanceTests`) — TEST SUCCEEDED, 10 passed
 - `cargo fmt --all -- --check`
 - `cargo build --workspace`
 - isolated server import budget regression — passed at 16.32 s
@@ -45,6 +45,8 @@ Non-feature repository-wide blockers:
 ## Review
 
 Fresh adversarial review identified forwarding-order, deletion, conflict-import, dispatch, and cache-invalidation risks. Full-snapshot routing, persisted-baseline replay, conflict retention, and web invalidation were repaired. Follow-up fixes added uncontested forwarded block deletion, fail-closed Protocol handling without aborting imported-state persistence, engine-reported direct/deferred forwarding targets across delta and authoritative snapshot imports, and target-specific `NoteUpdated` invalidation through WS, relay tick, retained-op catch-up, and snapshot catch-up. The final fresh adversarial review returned **APPROVE**.
+
+Executable browser QA then exposed and repaired two presentation gaps: page-owned properties written through `/pages/set-property` were absent because Graphite read only frontmatter `custom`, and resolved Node chips used an inert `<a>` instead of the app's page-navigation callback. Browser verification covered canonical PageId persistence, resolved title rendering, current-slug navigation, native picker search, Save, Cancel, and focused Escape with no cancellation write.
 
 ## Residual risk
 

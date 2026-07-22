@@ -29,3 +29,18 @@ test("picker filters live non-conflicting pages", () => {
   assert.deepEqual(rankPageCandidates(directory, "graph").map((entry) => entry.page_id), [target]);
   assert.deepEqual(rankPageCandidates([{ ...directory[0], conflict: true }], "").map((entry) => entry.page_id), []);
 });
+
+test("page properties include canonical body properties written by the page API", async () => {
+  const { pagePropertyEntries } = await import("../../src/lib/node-relations.ts");
+  assert.deepEqual(
+    pagePropertyEntries(
+      "project:: 11111111-1111-5111-8111-111111111111\n- source block\n  child:: block-owned",
+      { owner: "Taylor", tesela_page_id: "reserved" },
+    ),
+    [
+      { k: "owner", v: "Taylor" },
+      { k: "tesela_page_id", v: "reserved" },
+      { k: "project", v: "11111111-1111-5111-8111-111111111111" },
+    ],
+  );
+});

@@ -33,7 +33,7 @@
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { RelationBacklink } from "$lib/types/RelationBacklink";
-  import type { PageDirectoryEntry } from "$lib/node-relations";
+  import { pagePropertyEntries, type PageDirectoryEntry } from "$lib/node-relations";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
@@ -51,6 +51,7 @@
   import GrTypeTag from "$lib/graphite/GrTypeTag.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
   import PropertyEditor from "$lib/components/PropertyEditor.svelte";
+  import DisplayChip from "$lib/components/DisplayChip.svelte";
   import { buildRegistry } from "$lib/property-registry";
 
   let { pageId, paneId }: { pageId: string; paneId?: string } = $props();
@@ -133,18 +134,9 @@
   let outlineWidth = $state(0);
   const useCompactQuery = $derived(outlineWidth > 0 && outlineWidth < QUERY_FULL_MIN_PX);
 
-  // Page-level properties for the side `.gr-proplist`. Pulls the flat
-  // string fields from frontmatter `custom` (the freeform property bag).
-  const pageProps = $derived.by<Array<{ k: string; v: string }>>(() => {
-    const custom = note?.metadata.custom ?? {};
-    const out: Array<{ k: string; v: string }> = [];
-    for (const [k, raw] of Object.entries(custom)) {
-      if (raw == null) continue;
-      const v = typeof raw === "string" ? raw : JSON.stringify(raw);
-      out.push({ k, v });
-    }
-    return out;
-  });
+  // Page-level properties include frontmatter custom fields and the canonical
+  // root-level `key:: value` lines written by POST /pages/set-property.
+  const pageProps = $derived(pagePropertyEntries(split.body, note?.metadata.custom ?? {}));
 
   // ── debounced save (mirrors BufferShell) ───────────────────────────────
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -425,11 +417,26 @@
         <div class="gr-proplist">
           <div class="ph">Properties</div>
           {#each pageProps as p (p.k)}
-            <button type="button" class="gr-prow" onclick={(event) => openPagePropertyEditor(event, p.k, p.v)}>
-              <span class="chord"></span>
+            {@const definition = propertyRegistry.get(p.k.toLowerCase())}
+            <div class="gr-prow">
+              <button
+                type="button"
+                class="chord"
+                aria-label="Edit {p.k}"
+                onclick={(event) => openPagePropertyEditor(event, p.k, p.v)}
+              ></button>
               <span class="k">{p.k}</span>
-              <span class="v">{p.v}</span>
-            </button>
+              {#if definition?.value_type === "node"}
+                <DisplayChip
+                  propKey={p.k.toLowerCase()}
+                  value={p.v}
+                  def={definition}
+                  onnodeopen={(slug) => openPageInFocused(asPageId(slug))}
+                />
+              {:else}
+                <span class="v">{p.v}</span>
+              {/if}
+            </div>
           {/each}
         </div>
       {/if}
