@@ -3,9 +3,32 @@
   "current": {
     "web": "2026-07-15.desktop-0.1.2",
     "desktop": "2026-07-17.desktop-0.1.3",
-    "ios": "2026-07-19.ios-1.1-81"
+    "ios": "2026-07-22.ios-1.1-82"
   },
   "releases": [
+    {
+      "id": "2026-07-22.ios-1.1-82",
+      "publishedAt": "2026-07-22T22:10:00Z",
+      "title": "Pages that stay connected",
+      "summary": "Node properties now create durable page relationships that survive renames.",
+      "platforms": ["ios"],
+      "versions": {
+        "ios": {
+          "marketing": "1.1",
+          "build": "82"
+        }
+      },
+      "new": [
+        "Choose a page for a Node property with a searchable picker.",
+        "Open resolved Node chips and inspect relation sources alongside linked references."
+      ],
+      "fixed": [
+        "Page relationships keep pointing to the same page after it is renamed."
+      ],
+      "important": [
+        "Deleted, unresolved, or conflicting page relationships remain visible but cannot be opened."
+      ]
+    },
     {
       "id": "2026-07-19.ios-1.1-81",
       "publishedAt": "2026-07-19T15:56:36Z",

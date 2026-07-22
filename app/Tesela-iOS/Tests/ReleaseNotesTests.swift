@@ -21,10 +21,11 @@ final class ReleaseNotesTests: XCTestCase {
         let catalog = try catalog()
 
         XCTAssertEqual(catalog.schemaVersion, 1)
-        XCTAssertEqual(catalog.current.ios, "2026-07-19.ios-1.1-81")
+        XCTAssertEqual(catalog.current.ios, "2026-07-22.ios-1.1-82")
         XCTAssertEqual(
             catalog.history(for: .ios).map(\.id),
             [
+                "2026-07-22.ios-1.1-82",
                 "2026-07-19.ios-1.1-81",
                 "2026-07-15.ios-1.1-80",
                 "2026-07-14.ios-1.1-79",
@@ -48,9 +49,7 @@ final class ReleaseNotesTests: XCTestCase {
         XCTAssertTrue(
             catalog.shouldPresentCurrent(for: .ios, lastSeen: "2026-07-15.ios-1.1-80")
         )
-        XCTAssertFalse(
-            catalog.shouldPresentCurrent(for: .ios, lastSeen: "2026-07-19.ios-1.1-81")
-        )
+        XCTAssertFalse(catalog.shouldPresentCurrent(for: .ios, lastSeen: "2026-07-22.ios-1.1-82"))
     }
 
     func testDowngradeDoesNotReopenAnOlderCurrentRelease() throws {
@@ -83,13 +82,13 @@ final class ReleaseNotesTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: presenter.seenKey))
 
         presenter.autoPresentIfNeeded(onboardingComplete: true)
-        XCTAssertEqual(presenter.presentation?.current?.id, "2026-07-19.ios-1.1-81")
+        XCTAssertEqual(presenter.presentation?.current?.id, "2026-07-22.ios-1.1-82")
         XCTAssertNil(defaults.string(forKey: presenter.seenKey))
 
         presenter.markCurrentRendered()
         XCTAssertEqual(
             defaults.string(forKey: presenter.seenKey),
-            "2026-07-19.ios-1.1-81"
+            "2026-07-22.ios-1.1-82"
         )
 
         presenter.presentation = nil
