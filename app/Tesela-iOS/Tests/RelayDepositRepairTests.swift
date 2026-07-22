@@ -30,9 +30,12 @@ final class RelayDepositRepairTests: XCTestCase {
 
         // What the deposit path exports + hands to the relay.
         let snapshots = try await engine.exportAllNoteSnapshots()
-        XCTAssertEqual(snapshots.count, 1, "the authored note is tracked + exported")
-        XCTAssertFalse(
-            snapshots[0].versionVv.isEmpty,
+        XCTAssertEqual(
+            snapshots.count, 2,
+            "the authored note and reserved page directory are tracked + exported"
+        )
+        XCTAssertTrue(
+            snapshots.allSatisfy { !$0.versionVv.isEmpty },
             "each record carries its export-time version vector — the value the repair re-anchors to"
         )
 
@@ -43,8 +46,8 @@ final class RelayDepositRepairTests: XCTestCase {
 
         let after = try await engine.exportAllNoteSnapshots()
         XCTAssertEqual(
-            after.count, 1,
-            "the repair forward left the note intact (healthy/unbroadcast cursor untouched)"
+            after.count, 2,
+            "the repair forward left the note and reserved page directory intact"
         )
     }
 }
