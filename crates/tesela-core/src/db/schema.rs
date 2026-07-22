@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -217,5 +217,19 @@ END"#,
         "ALTER TABLE tag_defs ADD COLUMN property_overrides_json TEXT NOT NULL DEFAULT '{}'",
         "ALTER TABLE tag_defs ADD COLUMN plural TEXT",
         "ALTER TABLE property_defs ADD COLUMN hide_by_default BOOLEAN NOT NULL DEFAULT 0",
+    ],
+), (
+    "007_typed_relation_edges",
+    &[
+        r#"CREATE TABLE IF NOT EXISTS relation_edges (
+    source_page_id TEXT NOT NULL,
+    source_note_id TEXT NOT NULL,
+    source_block_id TEXT,
+    property_key TEXT NOT NULL,
+    target_page_id TEXT NOT NULL,
+    PRIMARY KEY (source_page_id, source_block_id, property_key)
+)"#,
+        "CREATE INDEX IF NOT EXISTS idx_relation_edges_target ON relation_edges(target_page_id)",
+        "CREATE INDEX IF NOT EXISTS idx_relation_edges_source_note ON relation_edges(source_note_id)",
     ],
 )];

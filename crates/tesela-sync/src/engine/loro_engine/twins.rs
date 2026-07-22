@@ -11,7 +11,7 @@ impl LoroEngine {
     pub async fn scan_disjoint_twins(&self) -> Vec<([u8; 16], String, Vec<String>)> {
         let mut out = Vec::new();
         for note_id in self.note_ids().await {
-            if Self::is_views_doc(&note_id) {
+            if Self::is_special_doc(&note_id) {
                 continue;
             }
             let doc = self.doc_for_note_mut(note_id).await;
@@ -67,7 +67,7 @@ impl LoroEngine {
     pub async fn heal_disjoint_twins(&self) -> Vec<([u8; 16], String)> {
         let mut healed = Vec::new();
         for note_id in self.note_ids().await {
-            if Self::is_views_doc(&note_id) {
+            if Self::is_special_doc(&note_id) {
                 continue;
             }
             let apply_lock = self.apply_lock_for_note(note_id).await;

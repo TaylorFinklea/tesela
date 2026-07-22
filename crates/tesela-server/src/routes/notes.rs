@@ -11,22 +11,26 @@ use serde::{Deserialize, Serialize};
 use tesela_core::{
     block::parse_blocks,
     daily::DailyNoteConfig,
+    db::SqliteIndex,
     lifecycle::{
         apply_dependency_cycles, apply_post_save_bumps_with_info, compute_lifecycle_container_sets,
         property_kv, try_bump_block, try_skip_block, BumpInfo,
     },
     link::{GraphEdge, Link, LinkType},
-    note::NoteId,
+    note::{NoteId, PageId},
     note_tree::{parse_note, serialize_note},
     property::{parse_scalar, ValueType},
     stable_uuid_from_slug,
-    storage::markdown::{parse_frontmatter, sanitize_filename},
+    storage::markdown::{
+        page_id_from_frontmatter_checked, parse_frontmatter, sanitize_filename,
+        set_page_id_frontmatter,
+    },
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
 use tesela_sync::{
-    BlockRelocationRequest, BlockRelocationStatus, MovePlacement, OpPayload, PropOp, PropScalar,
-    RelocationNoteSeed, SyncError,
+    BlockRelocationRequest, BlockRelocationStatus, MovePlacement, OpPayload, PageDirectoryEntry,
+    PropOp, PropScalar, RelocationNoteSeed, SyncError,
 };
 
 use crate::{
@@ -245,7 +249,7 @@ pub async fn get_loro_snapshot(
     Path(id): Path<String>,
     State(s): State<Arc<AppState>>,
 ) -> AppResult<impl IntoResponse> {
-    let note_id = stable_uuid_from_slug(&id);
+    let note_id = s.sync_engine.resolve_note_doc_id(&id).await?;
     let bytes = s
         .sync_engine
         .export_doc_update(note_id, None)
@@ -301,6 +305,7 @@ pub async fn get_daily_note(
         // Mirrors iOS `bootstrapNoteIfNeeded`.
         bootstrap_note_if_needed(&s, note.id.as_str()).await;
         record_sync_create(&s, &note).await?;
+        rebuild_relation_edges_for_note(&s, &note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     }
     Ok(Json(note))
@@ -327,6 +332,7 @@ pub async fn create_note(
             ))
         })?;
         s.index.reindex(&adopted).await?;
+        rebuild_relation_edges_for_note(&s, &adopted).await?;
         {
             use tesela_core::link::extract_wiki_links;
             use tesela_core::traits::link_graph::LinkGraph;
@@ -378,6 +384,7 @@ pub async fn create_note(
         bootstrap_note_if_needed(&s, note.id.as_str()).await;
     }
     record_sync_create(&s, &note).await?;
+    rebuild_relation_edges_for_note(&s, &note).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
 }
@@ -432,7 +439,7 @@ pub async fn update_note(
     // live path never contends with the relay's broadcast cursor (spec
     // finding #3). `None` when the doc isn't yet resident (first write) —
     // we then export the full state below.
-    let delta_note_id = stable_uuid_from_slug(note.id.as_str());
+    let delta_note_id = s.sync_engine.resolve_note_doc_id(note.id.as_str()).await?;
     let pre_vv = s.sync_engine.doc_version(delta_note_id).await;
     // Phase 1 (sync redesign 2026-05-26): single write path through
     // the engine. Previously this called s.store.update(&note) to
@@ -482,6 +489,17 @@ pub async fn update_note(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found after update: {}", id)))?;
     s.index.reindex(&updated).await?;
+    if is_property_definition(&prev_content) || is_property_definition(&updated.content) {
+        crate::rebuild_relation_edges_from_page_directory(
+            s.store.as_ref(),
+            s.index.as_ref(),
+            s.sync_engine.as_ref(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    } else {
+        rebuild_relation_edges_for_note(&s, &updated).await?;
+    }
     // v5 polish: refresh the link graph for this note. Without this, the
     // wiki-link extractor only runs via the fs-watcher path, leaving the
     // `links` table empty when notes round-trip through PUT only. The
@@ -607,7 +625,7 @@ pub async fn upsert_blocks(
     // blake3-truncate the slug. This is the note-id space every
     // `OpPayload` block op carries, so the ops land on the same doc the
     // file materializes from.
-    let delta_note_id = stable_uuid_from_slug(note.id.as_str());
+    let delta_note_id = s.sync_engine.resolve_note_doc_id(note.id.as_str()).await?;
     // Instant-multidevice (Phase A): capture this note's Loro version
     // BEFORE applying the ops so we can export the cursor-free delta for
     // just-these-changes afterward. `None` when the doc isn't resident.
@@ -699,6 +717,7 @@ pub async fn upsert_blocks(
         AppError::NotFound(format!("Note not found after block lifecycle roll: {}", id))
     })?;
     s.index.reindex(&updated).await?;
+    rebuild_relation_edges_for_note(&s, &updated).await?;
     // Refresh the link graph for this note (same as the PUT path).
     {
         use tesela_core::link::extract_wiki_links;
@@ -868,10 +887,16 @@ pub async fn move_block_subtree(
 
     let request = BlockRelocationRequest {
         move_id: *req.move_id.as_bytes(),
-        source_note_id: stable_uuid_from_slug(&req.source_note_id),
+        source_note_id: s
+            .sync_engine
+            .resolve_note_doc_id(&req.source_note_id)
+            .await?,
         source_slug: req.source_note_id.clone(),
         root_bid: *req.root_bid.as_bytes(),
-        destination_note_id: stable_uuid_from_slug(&req.destination_note_id),
+        destination_note_id: s
+            .sync_engine
+            .resolve_note_doc_id(&req.destination_note_id)
+            .await?,
         destination_slug: req.destination_note_id.clone(),
         target_bid: req.target_bid.map(|bid| *bid.as_bytes()),
         placement: req.placement,
@@ -942,8 +967,7 @@ pub async fn move_block_subtree(
                 );
             }
         }
-        if outcome.status == BlockRelocationStatus::Applied && affected.changed && !affected.created
-        {
+        if outcome.status == BlockRelocationStatus::Applied && !affected.created {
             if let Some(previous) = prior_notes
                 .iter()
                 .find(|previous| previous.id.as_str() == affected.slug)
@@ -1109,6 +1133,7 @@ pub async fn delete_block(
         Err(e) => return Err(e.into()),
     };
     s.index.reindex(&updated).await?;
+    rebuild_relation_edges_for_note(&s, &updated).await?;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1347,6 +1372,52 @@ async fn resolve_one_segment(
     Ok(SegmentResolution::Created(resolved_slug))
 }
 
+fn resolve_rename_page_id(
+    source_content: &str,
+    source_doc_id: &[u8; 16],
+    directory: &[PageDirectoryEntry],
+) -> AppResult<PageId> {
+    let frontmatter_page_id =
+        page_id_from_frontmatter_checked(source_content).map_err(|error| {
+            AppError::Validation(format!("source note has invalid tesela_page_id: {error}"))
+        })?;
+    let source_doc_hex = hex::encode(source_doc_id);
+    let mut directory_page_id = None;
+
+    for entry in directory
+        .iter()
+        .filter(|entry| entry.loro_doc_id == source_doc_hex)
+    {
+        if entry.deleted {
+            return Err(AppError::Conflict(
+                "source page is tombstoned in the page directory".into(),
+            ));
+        }
+        if entry.conflict {
+            return Err(AppError::Conflict(
+                "source page has an unresolved page-directory conflict".into(),
+            ));
+        }
+        if let Some(existing) = directory_page_id {
+            if existing != entry.page_id {
+                return Err(AppError::Conflict(
+                    "source document has multiple PageIds in the page directory".into(),
+                ));
+            }
+        } else {
+            directory_page_id = Some(entry.page_id);
+        }
+    }
+
+    match (frontmatter_page_id, directory_page_id) {
+        (Some(frontmatter), Some(directory)) if frontmatter != directory => Err(
+            AppError::Validation("source page has a frontmatter/directory PageId conflict".into()),
+        ),
+        (Some(page_id), _) | (_, Some(page_id)) => Ok(page_id),
+        (None, None) => Ok(PageId::from_legacy_doc_id(source_doc_id)),
+    }
+}
+
 /// Rename a tag page's slug and rewrite references across the corpus.
 ///
 /// Two-phase contract: when `req.commit == false` the handler returns the
@@ -1399,11 +1470,26 @@ pub async fn rename_tag(
         )));
     }
 
-    if s.store.get(&to_id).await?.is_some() {
-        return Err(AppError::Validation(format!(
-            "slug '{}' is already taken",
-            req.to_slug
-        )));
+    let source_doc_id = s
+        .sync_engine
+        .resolve_note_doc_id(source.id.as_str())
+        .await?;
+    let planned_page_id = resolve_rename_page_id(
+        &source.content,
+        &source_doc_id,
+        &s.sync_engine.page_directory_list().await,
+    )?;
+    let existing_target = s.store.get(&to_id).await?;
+    if let Some(target) = existing_target.as_ref() {
+        let target_page_id =
+            tesela_core::storage::markdown::page_id_from_frontmatter_checked(&target.content)
+                .map_err(AppError::Validation)?;
+        if target_page_id != Some(planned_page_id) {
+            return Err(AppError::Validation(format!(
+                "slug '{}' is already taken",
+                req.to_slug
+            )));
+        }
     }
 
     // Walk the corpus and compute rewrites. For each note we record:
@@ -1458,6 +1544,20 @@ pub async fn rename_tag(
         })));
     }
 
+    // Establish the source identity before mutating any references, then
+    // re-check it because a relay bootstrap can reveal a directory conflict.
+    ensure_note_resident_for_property_write(&s, &source).await?;
+    let page_id = resolve_rename_page_id(
+        &source.content,
+        &source_doc_id,
+        &s.sync_engine.page_directory_list().await,
+    )?;
+    if page_id != planned_page_id {
+        return Err(AppError::Conflict(
+            "source PageId changed while preparing the rename".into(),
+        ));
+    }
+
     // Commit phase. Apply each plan entry through the store's update path,
     // reindex, and emit sync ops. Errors abort the rest of the rewrite —
     // partial state is acceptable since each note is independently valid.
@@ -1482,23 +1582,70 @@ pub async fn rename_tag(
         let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated_note });
     }
 
-    // Now move the source tag's own file.
-    let renamed = s.store.create(&req.to_slug, &source.content, &[]).await?;
+    // Persist a restartable forwarding intent before creating the target.
+    // A crash can then safely retry: the source remains live until the final
+    // tombstone, and an already-created target with the same PageId is reused.
+    let renamed_content = set_page_id_frontmatter(&source.content, page_id);
+    let new_doc_id = s
+        .sync_engine
+        .resolve_note_doc_id(req.to_slug.as_str())
+        .await?;
+    let mut aliases = s
+        .sync_engine
+        .page_directory_list()
+        .await
+        .into_iter()
+        .find(|entry| entry.page_id == page_id && entry.loro_doc_id == hex::encode(source_doc_id))
+        .map(|entry| entry.aliases)
+        .unwrap_or_default();
+    aliases.retain(|alias| !alias.eq_ignore_ascii_case(req.to_slug.as_str()));
+    aliases.push(source.id.as_str().to_string());
+    aliases.sort_unstable();
+    aliases.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    s.sync_engine
+        .page_directory_upsert(PageDirectoryEntry {
+            page_id,
+            loro_doc_id: hex::encode(source_doc_id),
+            slug: source.id.as_str().to_string(),
+            title: source.title.clone(),
+            aliases: aliases.clone(),
+            deleted: false,
+            forward_to_loro_doc_id: Some(hex::encode(new_doc_id)),
+            conflict: true,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("page-directory rename intent: {error}"))?;
+
+    let renamed = match existing_target {
+        Some(target) => target,
+        None => s.store.create(&req.to_slug, &renamed_content, &[]).await?,
+    };
     s.index.reindex(&renamed).await?;
-    // Bootstrap-before-author (convergence fix M1, 2026-06-29): the rename
-    // target slug was verified absent LOCALLY (above), but it may already exist
-    // on the relay (created on another device); adopt that lineage as a shared
-    // base before `record_sync_create` mints a fresh disjoint doc, else they
-    // later union into same-bid twins. No-op once resident / absent on the relay.
     bootstrap_note_if_needed(&s, renamed.id.as_str()).await;
     record_sync_create(&s, &renamed).await?;
+    // Keep the old slug as a live alias on the new binding. The old stream is
+    // tombstoned below, so alias resolution never follows a deleted record.
+    s.sync_engine
+        .page_directory_upsert(PageDirectoryEntry {
+            page_id,
+            loro_doc_id: hex::encode(new_doc_id),
+            slug: renamed.id.as_str().to_string(),
+            title: renamed.title.clone(),
+            aliases: aliases.clone(),
+            deleted: false,
+            forward_to_loro_doc_id: None,
+            conflict: false,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("page-directory rename alias: {error}"))?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated {
         note: renamed.clone(),
     });
 
     s.store.delete(&from_id).await?;
     s.index.remove(&from_id).await?;
-    record_sync_delete(&s, &from_id).await?;
+    record_sync_delete_doc(&s, source_doc_id, &from_id).await?;
+    rebuild_relation_edges_for_note(&s, &renamed).await?;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted {
         id: req.from_slug.clone(),
     });
@@ -1635,7 +1782,7 @@ fn splice_body_into_content(content: &str, new_body: &str) -> String {
 /// rolled back; the error detail says so.
 async fn record_sync_create(s: &Arc<AppState>, note: &Note) -> anyhow::Result<()> {
     let payload = OpPayload::NoteUpsert {
-        note_id: stable_uuid_from_slug(note.id.as_str()),
+        note_id: s.sync_engine.resolve_note_doc_id(note.id.as_str()).await?,
         display_alias: Some(note.id.as_str().to_string()),
         title: note.title.clone(),
         content: note.content.clone(),
@@ -1651,6 +1798,12 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) -> anyhow::Result<()
             "note '{}' was written to disk, but its sync op could not be \
              recorded ({e}); the note will not sync to peers and may be \
              reverted by the engine — retry the save",
+            note.id
+        );
+    }
+    if let Err(error) = rebuild_relation_edges_for_note(s, note).await {
+        tracing::warn!(
+            "relations: failed to rebuild projection for {}: {error:?}",
             note.id
         );
     }
@@ -1719,7 +1872,7 @@ async fn record_sync_update(
     base_content: Option<&str>,
     note: &Note,
 ) -> anyhow::Result<()> {
-    let note_id = stable_uuid_from_slug(note.id.as_str());
+    let note_id = s.sync_engine.resolve_note_doc_id(note.id.as_str()).await?;
     // Base-diff: when the author sent its edit base, diff base→new (the
     // author's real changes). Otherwise diff prev_content→new (today's
     // behavior; `prev_content` IS the base for server-internal rewrites).
@@ -1779,6 +1932,12 @@ async fn record_sync_update(
                 note.id
             );
         }
+        if let Err(error) = rebuild_relation_edges_for_note(s, note).await {
+            tracing::warn!(
+                "relations: failed to rebuild projection for {}: {error:?}",
+                note.id
+            );
+        }
         return Ok(());
     }
 
@@ -1832,6 +1991,12 @@ async fn record_sync_update(
                 note.id
             );
         }
+    }
+    if let Err(error) = rebuild_relation_edges_for_note(s, note).await {
+        tracing::warn!(
+            "relations: failed to rebuild projection for {}: {error:?}",
+            note.id
+        );
     }
     Ok(())
 }
@@ -1962,6 +2127,12 @@ async fn persist_lifecycle_rolls(
     bumps
 }
 
+pub(crate) fn is_property_definition(content: &str) -> bool {
+    parse_frontmatter(content)
+        .ok()
+        .and_then(|(metadata, _)| metadata.note_type)
+        .is_some_and(|note_type| note_type.eq_ignore_ascii_case("property"))
+}
 /// Parse `content`, stamp persistent block ids onto any unstamped
 /// bullets, and return the canonical serialized form. Returns
 /// `content` unchanged if every bullet already has a bid.
@@ -1975,21 +2146,30 @@ fn stamp_block_ids(content: &str) -> String {
 
 /// Producer path for note deletion. See `record_sync_create` for the
 /// A9a error-propagation contract: a swallowed failure here meant the
-/// delete never reached peers (the note resurrects) while the client
-/// got a 204.
-async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) -> anyhow::Result<()> {
+async fn record_sync_delete_doc(
+    s: &Arc<AppState>,
+    doc_id: [u8; 16],
+    note_id: &NoteId,
+) -> anyhow::Result<()> {
     let slug = note_id.as_str();
     let payload = OpPayload::NoteDelete {
-        note_id: stable_uuid_from_slug(slug),
+        note_id: doc_id,
         display_alias: Some(slug.to_string()),
     };
-    if let Err(e) = s.sync_engine.record_local(payload).await {
-        tracing::warn!("sync: record_local delete failed for {}: {}", note_id, e);
-        anyhow::bail!(
-            "note '{}' was deleted on disk, but the delete sync op could not \
-             be recorded ({e}); peers will not see the deletion",
+    s.sync_engine.record_local(payload).await.map(|_| ()).map_err(|error| {
+        anyhow::anyhow!(
+            "note '{}' was deleted on disk, but the delete sync op could not be recorded ({error}); peers will not see the deletion",
             note_id
-        );
+        )
+    })
+}
+
+async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) -> anyhow::Result<()> {
+    let slug = note_id.as_str();
+    let doc_id = s.sync_engine.resolve_note_doc_id(slug).await?;
+    record_sync_delete_doc(s, doc_id, note_id).await?;
+    if let Err(error) = s.index.remove_relation_edges_for_note(slug).await {
+        tracing::warn!("relations: failed to remove projection for {slug}: {error}");
     }
     Ok(())
 }
@@ -2026,7 +2206,13 @@ async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) -> bool {
     let Some(relay) = s.relay.as_ref() else {
         return false; // LAN-only / no relay configured — nothing to bootstrap from.
     };
-    let note_id = stable_uuid_from_slug(slug);
+    let note_id = match s.sync_engine.resolve_note_doc_id(slug).await {
+        Ok(note_id) => note_id,
+        Err(error) => {
+            tracing::warn!("bootstrap: cannot resolve {slug}: {error}");
+            return false;
+        }
+    };
     // Resident-gate: an already-held doc already carries its shared base.
     if s.sync_engine.doc_version(note_id).await.is_some() {
         return false;
@@ -2073,11 +2259,87 @@ async fn ensure_note_resident_for_property_write(
     note: &Note,
 ) -> anyhow::Result<()> {
     bootstrap_note_if_needed(s, note.id.as_str()).await;
-    let note_id = stable_uuid_from_slug(note.id.as_str());
+    let note_id = s.sync_engine.resolve_note_doc_id(note.id.as_str()).await?;
     if s.sync_engine.doc_version(note_id).await.is_none() {
         record_sync_create(s, note).await?;
     }
     Ok(())
+}
+
+pub async fn get_page_directory(
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<PageDirectoryEntry>>> {
+    Ok(Json(s.sync_engine.page_directory_list().await))
+}
+
+pub async fn get_relation_backlinks(
+    Path(page_id): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<tesela_core::RelationBacklink>>> {
+    use tesela_core::traits::link_graph::LinkGraph;
+    let page_id = PageId::parse(&page_id)
+        .ok_or_else(|| AppError::Validation("invalid PageId".to_string()))?;
+    Ok(Json(s.index.get_relation_backlinks(page_id).await?))
+}
+
+async fn resolve_materialized_page_binding(
+    engine: &dyn tesela_sync::SyncEngine,
+    note: &Note,
+) -> AppResult<Option<PageDirectoryEntry>> {
+    let page_id = tesela_core::storage::markdown::page_id_from_frontmatter_checked(&note.content)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    let directory = engine.page_directory_list().await;
+    if let Some(page_id) = page_id {
+        if directory.iter().any(|entry| {
+            entry.slug.eq_ignore_ascii_case(note.id.as_str()) && entry.page_id != page_id
+        }) {
+            return Err(AppError::Conflict(format!(
+                "note '{}' disagrees with page-directory identity",
+                note.id
+            )));
+        }
+        let mut matches = directory.into_iter().filter(|entry| {
+            entry.page_id == page_id
+                && entry.slug.eq_ignore_ascii_case(note.id.as_str())
+                && !entry.deleted
+                && !entry.conflict
+        });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(AppError::Conflict(format!(
+                "note '{}' has ambiguous page-directory bindings",
+                note.id
+            )));
+        }
+        return Ok(first);
+    }
+    Ok(None)
+}
+
+/// Rebuild one note's typed relation projection only after resolving its
+/// authoritative live directory binding. Invalid legacy Node text intentionally
+/// emits no edge: it stays visible until a picker writes a canonical PageId.
+pub(crate) async fn rebuild_relation_edges_for_materialized_note(
+    engine: &dyn tesela_sync::SyncEngine,
+    index: &SqliteIndex,
+    note: &Note,
+) -> AppResult<()> {
+    let Some(source) = resolve_materialized_page_binding(engine, note).await? else {
+        use tesela_core::traits::link_graph::LinkGraph;
+        index
+            .remove_relation_edges_for_note(note.id.as_str())
+            .await?;
+        return Ok(());
+    };
+    index
+        .rebuild_relation_edges_from_authoritative_note(note, source.page_id)
+        .await?;
+    Ok(())
+}
+
+async fn rebuild_relation_edges_for_note(s: &Arc<AppState>, note: &Note) -> AppResult<()> {
+    rebuild_relation_edges_for_materialized_note(s.sync_engine.as_ref(), s.index.as_ref(), note)
+        .await
 }
 
 pub async fn get_backlinks(
@@ -2314,7 +2576,7 @@ pub async fn recur_bump(
             return Ok(Json(RecurBumpResp {
                 bumped: false,
                 next_deadline: None,
-            }))
+            }));
         }
     };
 
@@ -2374,6 +2636,14 @@ pub struct SetBlockPropertyReq {
     pub key: String,
     /// New property value (e.g. `"done"`, `"[[2026-06-01]]"`).
     pub value: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetPagePropertyReq {
+    pub note_id: String,
+    pub key: String,
+    /// Null clears the property.
+    pub value: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2438,7 +2708,7 @@ pub async fn set_block_property(
             return Err(AppError::Validation(format!(
                 "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
                 req.block_id
-            )))
+            )));
         }
     };
 
@@ -2473,7 +2743,7 @@ pub async fn set_block_property(
             ))
         })?;
     let block_id = parse_bid(&block_bid)?;
-    let doc_note_id = stable_uuid_from_slug(note_id_str);
+    let doc_note_id = s.sync_engine.resolve_note_doc_id(note_id_str).await?;
 
     // Author the property op on the relay's authoritative lineage if this note
     // isn't resident yet — otherwise a task toggle / scheduled set on a synced
@@ -2482,9 +2752,21 @@ pub async fn set_block_property(
     ensure_note_resident_for_property_write(&s, &note).await?;
 
     // Choose the PropOp from the property's registry value_type, then emit it
-    // through the engine. Multi-value clears then re-adds each item so a
-    // route-driven set replaces the list deterministically.
-    let prop_ops = prop_ops_for_set(&s, &key, &req.value).await;
+    // through the engine. A Node write is always a canonical PageId; legacy
+    // arbitrary strings remain readable but cannot be minted by this typed seam.
+    let value_type = lookup_value_type(&s, &key).await;
+    let value = if value_type == ValueType::Node {
+        PageId::parse(&req.value)
+            .map(|page_id| page_id.to_string())
+            .ok_or_else(|| {
+                AppError::Validation(format!("node property '{key}' requires a canonical PageId"))
+            })?
+    } else {
+        req.value.clone()
+    };
+    // Multi-value clears then re-adds each item so a route-driven set replaces
+    // the list deterministically.
+    let prop_ops = prop_ops_for_set(&s, &key, &value).await;
     for value in prop_ops {
         let payload = OpPayload::BlockPropertySet {
             note_id: doc_note_id,
@@ -2577,6 +2859,7 @@ pub async fn set_block_property(
     })?;
 
     s.index.reindex(&updated).await?;
+    rebuild_relation_edges_for_note(&s, &updated).await?;
     {
         use tesela_core::link::extract_wiki_links;
         use tesela_core::traits::link_graph::LinkGraph;
@@ -2614,6 +2897,69 @@ pub async fn set_block_property(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+pub async fn set_page_property(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<SetPagePropertyReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let key = req.key.trim().to_ascii_lowercase();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AppError::Validation(format!(
+            "invalid property key {:?}",
+            req.key
+        )));
+    }
+    let note_id = NoteId::new(&req.note_id);
+    let note = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", req.note_id)))?;
+    ensure_note_resident_for_property_write(&s, &note).await?;
+    let binding = resolve_materialized_page_binding(s.sync_engine.as_ref(), &note)
+        .await?
+        .ok_or_else(|| AppError::Conflict("note has no live page-directory binding".into()))?;
+    let doc_id: [u8; 16] = hex::decode(&binding.loro_doc_id)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| AppError::Conflict("invalid page-directory document id".into()))?;
+    let value_type = lookup_value_type(&s, &key).await;
+    let value = match req.value.as_deref() {
+        Some(value) if value_type == ValueType::Node => Some(
+            PageId::parse(value)
+                .map(|page_id| page_id.to_string())
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "node property '{key}' requires a canonical PageId"
+                    ))
+                })?,
+        ),
+        Some(value) => Some(value.to_string()),
+        None => None,
+    };
+    let op = match value.as_deref() {
+        Some(value) => prop_ops_for_set(&s, &key, value)
+            .await
+            .into_iter()
+            .last()
+            .unwrap_or(PropOp::Clear),
+        None => PropOp::Clear,
+    };
+    s.sync_engine
+        .record_local(OpPayload::PagePropertySet {
+            note_id: doc_id,
+            key: key.clone(),
+            value: op,
+        })
+        .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!(error.to_string())))?;
+    if let Some(updated) = s.store.get(&note_id).await? {
+        s.index.reindex(&updated).await?;
+        rebuild_relation_edges_for_note(&s, &updated).await?;
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// Apply an add/remove delta to a multi-select property's mergeable LoroList.
 ///
 /// This deliberately does not route through `set_block_property`: replacing a
@@ -2632,7 +2978,7 @@ pub async fn update_block_property_list(
             return Err(AppError::Validation(format!(
                 "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
                 req.block_id
-            )))
+            )));
         }
     };
 
@@ -2676,7 +3022,7 @@ pub async fn update_block_property_list(
             ))
         })?;
     let block_id = parse_bid(&block_bid)?;
-    let doc_note_id = stable_uuid_from_slug(note_id_str);
+    let doc_note_id = s.sync_engine.resolve_note_doc_id(note_id_str).await?;
 
     // A markdown-seeded note may still carry this property only inside the
     // block's prose. Re-adding its visible members is idempotent for an
@@ -2846,6 +3192,31 @@ fn block_bid_from_suffix(content: &str, note_id_str: &str, id_suffix: &str) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_identity_rejects_frontmatter_directory_disagreement() {
+        let source_doc_id = [0x11; 16];
+        let frontmatter_page_id = PageId::from_legacy_doc_id(&[0x22; 16]);
+        let directory_page_id = PageId::from_legacy_doc_id(&[0x33; 16]);
+        let content = set_page_id_frontmatter("- Tag\n", frontmatter_page_id);
+        let directory = vec![PageDirectoryEntry {
+            page_id: directory_page_id,
+            loro_doc_id: hex::encode(source_doc_id),
+            slug: "old-tag".into(),
+            title: "Old Tag".into(),
+            aliases: Vec::new(),
+            deleted: false,
+            forward_to_loro_doc_id: None,
+            conflict: false,
+        }];
+
+        let err = resolve_rename_page_id(&content, &source_doc_id, &directory).unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Validation(message)
+                if message.contains("frontmatter/directory PageId conflict")
+        ));
+    }
 
     #[test]
     fn list_members_trim_drop_empty_and_stable_dedup() {
@@ -4723,7 +5094,7 @@ pub async fn clear_block_property(
             return Err(AppError::Validation(format!(
                 "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
                 req.block_id
-            )))
+            )));
         }
     };
 
@@ -4787,6 +5158,7 @@ pub async fn clear_block_property(
     })?;
 
     s.index.reindex(&updated).await?;
+    rebuild_relation_edges_for_note(&s, &updated).await?;
     {
         use tesela_core::link::extract_wiki_links;
         use tesela_core::traits::link_graph::LinkGraph;

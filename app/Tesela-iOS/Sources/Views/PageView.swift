@@ -18,6 +18,7 @@ struct PageView: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.captureContext) private var captureContext
+    @Environment(\.openURL) private var openURL
     @State private var tags: [String] = []
     @State private var peekOpen: Bool = false
     @State private var peekSegment: PeekSegment = .backlinks
@@ -200,6 +201,11 @@ struct PageView: View {
                 onMenuAction: { action in
                     handlePageAction(action, on: block)
                 },
+                nodeSearch: { mosaic.searchableNodePages($0) },
+                onOpenNode: { pageId in
+                    if let slug = mosaic.nodePageSlug(pageId) { openPage(slug, openURL) }
+                },
+                nodeResolution: { mosaic.nodePageResolution(for: $0) },
                 onSetProperties: { updated in
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },

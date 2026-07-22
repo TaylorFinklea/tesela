@@ -20,7 +20,7 @@ impl LoroEngine {
         // The views registry doc has no markdown view — `None` keeps every
         // render-driven note walker (divergence checks, CLI backfills)
         // skipping it like an unknown note.
-        if Self::is_views_doc(&note_id) {
+        if Self::is_special_doc(&note_id) {
             return None;
         }
         let doc = self.lazy_load_doc(note_id).await?;
@@ -46,7 +46,7 @@ impl LoroEngine {
     /// Returns `None` for unknown note ids.
     pub async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
         // Views registry doc: not a note, no markdown view (see render_note).
-        if Self::is_views_doc(&note_id) {
+        if Self::is_special_doc(&note_id) {
             return None;
         }
         let doc = self.lazy_load_doc(note_id).await?;
@@ -91,20 +91,14 @@ impl LoroEngine {
     /// mosaic in authoritative mode.
     pub(super) async fn materialize_note(&self, note_id: [u8; 16]) {
         if let Err(e) = self.materialize_note_checked(note_id).await {
-            tracing::warn!(
-                "tesela-sync/loro: materialize {}: {e}",
-                hex_id(&note_id)
-            );
+            tracing::warn!("tesela-sync/loro: materialize {}: {e}", hex_id(&note_id));
         }
     }
 
-    pub(super) async fn materialize_note_checked(
-        &self,
-        note_id: [u8; 16],
-    ) -> SyncResult<()> {
+    pub(super) async fn materialize_note_checked(&self, note_id: [u8; 16]) -> SyncResult<()> {
         // The views registry doc never materializes to notes/ — it has no
         // slug and is not a note (it would otherwise warn every import).
-        if Self::is_views_doc(&note_id) {
+        if Self::is_special_doc(&note_id) {
             return Ok(());
         }
         let Some(dir) = self.inner.materialize_dir.as_ref() else {
@@ -142,9 +136,7 @@ impl LoroEngine {
         let tmp = unique_tmp(&path);
         tokio::fs::write(&tmp, full.as_bytes())
             .await
-            .map_err(|e| {
-                SyncError::Storage(format!("materialize write {}: {e}", tmp.display()))
-            })?;
+            .map_err(|e| SyncError::Storage(format!("materialize write {}: {e}", tmp.display())))?;
         if let Err(e) = tokio::fs::rename(&tmp, &path).await {
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(SyncError::Storage(format!(

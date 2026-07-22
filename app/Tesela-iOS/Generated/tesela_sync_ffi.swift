@@ -1468,6 +1468,11 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func noteVersion(slug: String) async  -> Data?
 
     /**
+     * Immutable page identities and their current resolution metadata.
+     */
+    func pageDirectoryList() async  -> [PageDirectoryEntry]
+
+    /**
      * Prepare one cursor-free TLR2 frame for every requested note and pair
      * it with exact frame-associated post-export version vectors. Multiple
      * notes (notably the source and destination of one relocation) travel in
@@ -1659,6 +1664,12 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * the established text fallback.
      */
     func setBlockPropertyTyped(slug: String, blockIdHex: String, key: String, valueType: String, value: String) async throws  -> UInt32
+
+    /**
+     * Set or clear a page-owned typed property through the same root
+     * container used by the server. Node values require canonical PageIds.
+     */
+    func setPagePropertyTyped(slug: String, key: String, valueType: String, value: String?) async throws
 
     /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -2074,6 +2085,27 @@ open func noteVersion(slug: String)async  -> Data?  {
 }
 
     /**
+     * Immutable page identities and their current resolution metadata.
+     */
+open func pageDirectoryList()async  -> [PageDirectoryEntry]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_page_directory_list(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypePageDirectoryEntry.lift,
+            errorHandler: nil
+
+        )
+}
+
+    /**
      * Prepare one cursor-free TLR2 frame for every requested note and pair
      * it with exact frame-associated post-export version vectors. Multiple
      * notes (notably the source and destination of one relocation) travel in
@@ -2428,6 +2460,27 @@ open func setBlockPropertyTyped(slug: String, blockIdHex: String, key: String, v
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
             liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+
+    /**
+     * Set or clear a page-owned typed property through the same root
+     * container used by the server. Node values require canonical PageIds.
+     */
+open func setPagePropertyTyped(slug: String, key: String, valueType: String, value: String?)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_set_page_property_typed(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(key),FfiConverterString.lower(valueType),FfiConverterOptionString.lower(value)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -3220,6 +3273,87 @@ public func FfiConverterTypeNoteSnapshotRecord_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeNoteSnapshotRecord_lower(_ value: NoteSnapshotRecord) -> RustBuffer {
     return FfiConverterTypeNoteSnapshotRecord.lower(value)
+}
+
+
+/**
+ * Swift-friendly immutable page-directory record.
+ */
+public struct PageDirectoryEntry: Equatable, Hashable {
+    public var pageId: String
+    public var loroDocId: String
+    public var slug: String
+    public var title: String
+    public var aliases: [String]
+    public var deleted: Bool
+    public var forwardToLoroDocId: String?
+    public var conflict: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pageId: String, loroDocId: String, slug: String, title: String, aliases: [String], deleted: Bool, forwardToLoroDocId: String?, conflict: Bool) {
+        self.pageId = pageId
+        self.loroDocId = loroDocId
+        self.slug = slug
+        self.title = title
+        self.aliases = aliases
+        self.deleted = deleted
+        self.forwardToLoroDocId = forwardToLoroDocId
+        self.conflict = conflict
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PageDirectoryEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePageDirectoryEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PageDirectoryEntry {
+        return
+            try PageDirectoryEntry(
+                pageId: FfiConverterString.read(from: &buf),
+                loroDocId: FfiConverterString.read(from: &buf),
+                slug: FfiConverterString.read(from: &buf),
+                title: FfiConverterString.read(from: &buf),
+                aliases: FfiConverterSequenceString.read(from: &buf),
+                deleted: FfiConverterBool.read(from: &buf),
+                forwardToLoroDocId: FfiConverterOptionString.read(from: &buf),
+                conflict: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PageDirectoryEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.pageId, into: &buf)
+        FfiConverterString.write(value.loroDocId, into: &buf)
+        FfiConverterString.write(value.slug, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterSequenceString.write(value.aliases, into: &buf)
+        FfiConverterBool.write(value.deleted, into: &buf)
+        FfiConverterOptionString.write(value.forwardToLoroDocId, into: &buf)
+        FfiConverterBool.write(value.conflict, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePageDirectoryEntry_lift(_ buf: RustBuffer) throws -> PageDirectoryEntry {
+    return try FfiConverterTypePageDirectoryEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePageDirectoryEntry_lower(_ value: PageDirectoryEntry) -> RustBuffer {
+    return FfiConverterTypePageDirectoryEntry.lower(value)
 }
 
 
@@ -4958,6 +5092,31 @@ fileprivate struct FfiConverterSequenceTypeNoteSnapshotRecord: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypePageDirectoryEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [PageDirectoryEntry]
+
+    public static func write(_ value: [PageDirectoryEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePageDirectoryEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PageDirectoryEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PageDirectoryEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePageDirectoryEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypePreparedDeltaNoteRecord: FfiConverterRustBuffer {
     typealias SwiftType = [PreparedDeltaNoteRecord]
 
@@ -5469,6 +5628,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_page_directory_list() != 8933) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_prepare_delta_frame() != 650) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5500,6 +5662,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property_typed() != 54293) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_page_property_typed() != 57594) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {

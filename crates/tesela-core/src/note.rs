@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[cfg(test)]
 use ts_rs::TS;
@@ -47,6 +48,55 @@ impl From<String> for NoteId {
 impl From<&str> for NoteId {
     fn from(s: &str) -> Self {
         NoteId(s.to_string())
+    }
+}
+
+/// Immutable identity used by typed page relations.
+///
+/// It is deliberately separate from slug-keyed [`NoteId`] and from the
+/// legacy Loro stream address. New identities are deterministically backfilled
+/// from the current address, then persisted in note authority and never
+/// recomputed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(
+    test,
+    ts(type = "string", export, export_to = "../../../web/src/lib/types/")
+)]
+#[serde(transparent)]
+pub struct PageId(Uuid);
+
+impl PageId {
+    /// Fixed Tesela namespace for deterministic legacy backfill.
+    pub const NAMESPACE: Uuid = Uuid::from_bytes([
+        0x74, 0x65, 0x73, 0x65, 0x6c, 0x61, 0x5f, 0x70, 0x61, 0x67, 0x65, 0x5f, 0x69, 0x64, 0x5f,
+        0x31,
+    ]);
+
+    pub fn from_legacy_doc_id(doc_id: &[u8; 16]) -> Self {
+        Self(Uuid::new_v5(&Self::NAMESPACE, doc_id))
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Uuid::parse_str(value).ok().map(Self)
+    }
+
+    pub fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for PageId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for PageId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s).map(Self)
     }
 }
 
@@ -224,9 +274,18 @@ mod tests {
         assert_eq!(
             stable_uuid_from_slug("abc"),
             [
-                0x64, 0x37, 0xb3, 0xac, 0x38, 0x46, 0x51, 0x33, 0xff, 0xb6, 0x3b, 0x75, 0x27,
-                0x3a, 0x8d, 0xb5,
+                0x64, 0x37, 0xb3, 0xac, 0x38, 0x46, 0x51, 0x33, 0xff, 0xb6, 0x3b, 0x75, 0x27, 0x3a,
+                0x8d, 0xb5,
             ]
         );
+    }
+
+    #[test]
+    fn page_id_backfill_is_uuid_v5_and_deterministic() {
+        let doc = stable_uuid_from_slug("abc");
+        let first = PageId::from_legacy_doc_id(&doc);
+        assert_eq!(first, PageId::from_legacy_doc_id(&doc));
+        assert_eq!(first.as_uuid().get_version(), Some(uuid::Version::Sha1));
+        assert_eq!(PageId::parse(&first.to_string()), Some(first));
     }
 }

@@ -244,6 +244,11 @@ struct GrPageView: View {
                     }
                 },
                 pageSearch: { mosaic.searchablePages($0) },
+                nodeSearch: { mosaic.searchableNodePages($0) },
+                onOpenNode: { pageId in
+                    if let destination = mosaic.nodePageSlug(pageId) { path.append(destination) }
+                },
+                nodeResolution: { mosaic.nodePageResolution(for: $0) },
                 tagSearch: { mosaic.searchableTags($0) },
                 onIndent: { delta in
                     mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: delta)
@@ -434,7 +439,9 @@ struct GrPageView: View {
     @ViewBuilder
     private var linkedRefs: some View {
         let backlinks = mosaic.loadedBacklinks[slug] ?? []
-        if !backlinks.isEmpty {
+        let relations = mosaic.nodePageId(for: slug).map { mosaic.relationBacklinks(for: $0) } ?? []
+        let merged = backlinks + relations
+        if !merged.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("LINKED REFERENCES")
                     .font(.system(size: 9.5, design: .monospaced))
@@ -443,7 +450,7 @@ struct GrPageView: View {
                     .padding(.horizontal, 8)
                     .padding(.top, 18)
                     .padding(.bottom, 2)
-                ForEach(backlinks) { ref in
+                ForEach(merged) { ref in
                     Button {
                         guard !ref.pageId.isEmpty else { return }
                         path.append(GrPageRoute(slug: ref.pageId))

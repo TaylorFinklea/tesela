@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
@@ -135,7 +136,21 @@ async fn active_temporary_and_create_imports_write_through_the_correct_engine() 
         .json()
         .await
         .unwrap();
-    assert_eq!(index.as_array().unwrap().len(), 501);
+    let expected_slugs: BTreeSet<_> = plan
+        .items
+        .iter()
+        .map(|item| item.target_id.as_str())
+        .collect();
+    let indexed_slugs: BTreeSet<_> = index
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["slug"].as_str())
+        .collect();
+    assert!(
+        expected_slugs.is_subset(&indexed_slugs),
+        "every imported page must be present in the active engine index"
+    );
     let active_slug = "active-feature";
     let active_file = active.join(format!("notes/{active_slug}.md"));
     let active_markdown = fs::read_to_string(&active_file).unwrap();

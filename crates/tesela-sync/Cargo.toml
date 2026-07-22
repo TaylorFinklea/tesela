@@ -18,6 +18,7 @@ postcard.workspace = true
 uuid.workspace = true
 blake3.workspace = true
 
+walkdir.workspace = true
 # Time / HLC
 chrono.workspace = true
 uhlc.workspace = true

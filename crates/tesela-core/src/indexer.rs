@@ -129,7 +129,11 @@ impl Indexer {
                 RecommendedWatcher::new(
                     move |res: notify::Result<Event>| {
                         if let Ok(event) = res {
-                            let _ = fs_tx.blocking_send(event);
+                            // The index is rebuildable. Never block the watcher
+                            // callback behind a saturated event queue: `Watcher::drop`
+                            // can wait for this callback during shutdown, so a
+                            // `blocking_send` here deadlocks the server teardown.
+                            let _ = fs_tx.try_send(event);
                         }
                     },
                     notify::Config::default().with_poll_interval(debounce),
@@ -153,6 +157,7 @@ impl Indexer {
 
             loop {
                 tokio::select! {
+                    biased;
                     _ = &mut shutdown_rx => {
                         debug!("Indexer shutting down");
                         break;
@@ -272,8 +277,21 @@ pub struct IndexerHandle {
 impl IndexerHandle {
     /// Gracefully stop the indexer.
     pub async fn stop(self) {
+        self.stop_with_grace_period(Duration::from_secs(2)).await;
+    }
+
+    async fn stop_with_grace_period(mut self, grace_period: Duration) {
         let _ = self.shutdown.send(());
-        let _ = self.handle.await;
+        if tokio::time::timeout(grace_period, &mut self.handle)
+            .await
+            .is_err()
+        {
+            warn!(
+                "Indexer did not stop gracefully within {grace_period:?}; aborting rebuildable cache task"
+            );
+            self.handle.abort();
+            let _ = self.handle.await;
+        }
     }
 }
 
@@ -463,5 +481,14 @@ mod tests {
             Ok(NoteEvent::Updated(updated)) => assert!(updated.content.contains("2026-07-18")),
             other => panic!("expected a live-note update event, got {other:?}"),
         }
+    }
+    #[tokio::test]
+    async fn stop_aborts_an_unresponsive_indexer_task() {
+        let (shutdown, _shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(std::future::pending());
+
+        IndexerHandle { shutdown, handle }
+            .stop_with_grace_period(Duration::ZERO)
+            .await;
     }
 }

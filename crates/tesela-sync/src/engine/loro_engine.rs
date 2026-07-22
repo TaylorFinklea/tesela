@@ -47,7 +47,7 @@ use loro::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -56,7 +56,7 @@ use tokio::sync::RwLock;
 /// a torn snapshot via rename (review finding [8]).
 static SNAPSHOT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-const IMPORT_BATCH_CONCURRENCY: usize = 16;
+const IMPORT_BATCH_CONCURRENCY: usize = 64;
 
 /// Build a unique temp path next to `path` for atomic write+rename.
 fn unique_tmp(path: &Path) -> PathBuf {
@@ -88,7 +88,7 @@ fn note_doc_is_deleted(doc: &LoroDoc) -> bool {
 /// boundary, and the bytes already imported into Loro before we ask.
 fn peers_of_update(bytes: &[u8]) -> Vec<u64> {
     match LoroDoc::decode_import_blob_meta(bytes, false) {
-        Ok(meta) => meta.partial_end_vv.iter().map(|(peer, _)| *peer).collect(),
+        Ok(meta) => meta.partial_end_vv.keys().copied().collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -104,7 +104,7 @@ fn peers_of_update(bytes: &[u8]) -> Vec<u64> {
 ///   stranded;
 /// - a cursor that is behind or DISJOINT from current → NOT stranded (it ships
 ///   a genuine delta).
-/// `since == None` (never broadcast) is a first-snapshot, not a strand.
+///   `since == None` (never broadcast) is a first-snapshot, not a strand.
 fn outbound_cursor_stranded(since: Option<&[u8]>, current_enc: &[u8]) -> bool {
     let Some(since_bytes) = since else {
         return false;
@@ -157,6 +157,20 @@ fn broadcast_cursor_needs_repair(existing: Option<&[u8]>, snap_vv_enc: &[u8]) ->
 /// index, render, twin heal, note-op apply) via explicit guards.
 pub const VIEWS_DOC_ID: [u8; 16] = *b"tesela.views.reg";
 
+/// Well-known doc id of the synced page-identity directory.
+///
+/// The directory rides the same persistence, relay, snapshot, and bootstrap
+/// paths as note documents, but is excluded from every note-shaped projection.
+pub const PAGE_DIRECTORY_DOC_ID: [u8; 16] = *b"tesela.page.dir!";
+
+/// Reserved documents that sync as ordinary streams but are not notes.
+pub const SPECIAL_DOC_IDS: [[u8; 16]; 2] = [VIEWS_DOC_ID, PAGE_DIRECTORY_DOC_ID];
+
+/// Whether an id addresses a synced registry rather than a user note.
+pub fn is_special_doc(note_id: &[u8; 16]) -> bool {
+    SPECIAL_DOC_IDS.contains(note_id)
+}
+
 /// Fixed id of the built-in Inbox view. A CONSTANT (not a minted UUID) so
 /// two devices seeding concurrently write the SAME registry entry with the
 /// same field values — whichever insert wins the map-key LWW, the group
@@ -183,6 +197,40 @@ const VIEWS_SCHEMA_VERSION: i64 = 1;
 /// pre-fix randomly-peered container — the migration-safe direction (the
 /// container that may carry user edits wins).
 const BUILTIN_VIEWS_SEED_PEER: u64 = 0;
+
+/// Build a deterministic seed for one immutable page-to-legacy-document
+/// binding. Engine peers clear the high bit, so this high-bit namespace is
+/// reserved for seeds and cannot collide with an ordinary device author.
+///
+/// The directory intentionally uses flat scalar keys rather than a nested map
+/// per record. The seed therefore binds the one immutable pair without
+/// creating a same-key container that concurrent first creators could lose.
+fn page_directory_binding_seed_update(
+    page_id: tesela_core::PageId,
+    loro_doc_id: &str,
+) -> SyncResult<Vec<u8>> {
+    let binding = format!("{page_id}|{loro_doc_id}");
+    let hash = blake3::hash(binding.as_bytes());
+    let mut peer_bytes = [0_u8; 8];
+    peer_bytes.copy_from_slice(&hash.as_bytes()[..8]);
+    let mut peer = u64::from_le_bytes(peer_bytes) | (1_u64 << 63);
+    // `u64::MAX` is Loro's internal sentinel. This only affects one hash
+    // value and remains inside the reserved high-bit namespace.
+    if peer == u64::MAX {
+        peer -= 1;
+    }
+
+    let seed = LoroDoc::new();
+    seed.set_record_timestamp(false);
+    seed.set_peer_id(peer)
+        .map_err(|error| SyncError::Storage(format!("page-directory seed peer: {error}")))?;
+    seed.get_map("directory")
+        .insert(&format!("binding|{binding}"), binding.as_str())
+        .map_err(|error| SyncError::Storage(format!("page-directory seed insert: {error}")))?;
+    seed.commit();
+    seed.export(ExportMode::all_updates())
+        .map_err(|error| SyncError::Storage(format!("page-directory seed export: {error}")))
+}
 
 /// The builtin-views seed as ONE deterministic Loro update: a scratch doc
 /// with the reserved seed peer (and timestamp recording off) authors the
@@ -252,6 +300,9 @@ struct Inner {
     /// process restart without re-replaying the oplog. When `None`,
     /// the shadow is in-memory only.
     snapshot_dir: Option<PathBuf>,
+    /// Depth of an import batch. Directory writes are persisted once after the
+    /// batch rather than serializing the growing CRDT document for every note.
+    page_directory_batch_depth: AtomicUsize,
     /// Always-resident index doc (the hybrid model's spine; cutover spec
     /// Phase 2). A single small Loro doc holding a `"notes"` LoroMap of
     /// `hex(note_id) → {title, slug}` (tags + link graph land in step 2).
@@ -262,6 +313,7 @@ struct Inner {
     /// prevent torn files, but without this lock an older export can rename
     /// after a newer one and leave a current-schema yet incomplete index.
     index_persist_lock: tokio::sync::Mutex<()>,
+    page_directory_persist_lock: tokio::sync::Mutex<()>,
     /// Resident block_id → owning note ids map. Lets block-only ops
     /// (BlockMove/BlockDelete) resolve a unique owning note in O(1) instead
     /// of scanning every doc's tree, and is the prerequisite for
@@ -412,8 +464,10 @@ impl LoroEngine {
                 device,
                 hlc,
                 snapshot_dir: None,
+                page_directory_batch_depth: AtomicUsize::new(0),
                 index: LoroDoc::new(),
                 index_persist_lock: tokio::sync::Mutex::new(()),
+                page_directory_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
@@ -447,8 +501,10 @@ impl LoroEngine {
                 device,
                 hlc,
                 snapshot_dir: None,
+                page_directory_batch_depth: AtomicUsize::new(0),
                 index: LoroDoc::new(),
                 index_persist_lock: tokio::sync::Mutex::new(()),
+                page_directory_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(HashMap::new()),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
@@ -553,8 +609,10 @@ impl LoroEngine {
                 device,
                 hlc,
                 snapshot_dir: Some(snapshot_dir.clone()),
+                page_directory_batch_depth: AtomicUsize::new(0),
                 index,
                 index_persist_lock: tokio::sync::Mutex::new(()),
+                page_directory_persist_lock: tokio::sync::Mutex::new(()),
                 block_index: RwLock::new(block_index),
                 ownership_transition: tokio::sync::Mutex::new(()),
                 relocation_receipts: tokio::sync::Mutex::new(Default::default()),
@@ -595,6 +653,10 @@ impl LoroEngine {
             }
         }
         engine.set_doc_peer(&engine.inner.index);
+        engine.backfill_page_directory_from_loaded_docs().await?;
+        engine
+            .hydrate_missing_docs_from_materialized_notes()
+            .await?;
         engine.recover_persisted_relocations().await?;
         Ok(engine)
     }
@@ -726,6 +788,31 @@ impl LoroEngine {
     /// Mirrors the [`BlockUpsert`](OpPayload::BlockUpsert) write tail so the
     /// change reaches disk + derived projections identically: `commit`,
     /// `refresh_note_derived`, persist the snapshot, materialize the note.
+    async fn ensure_note_writable(&self, note_id: [u8; 16]) -> SyncResult<()> {
+        let doc_id = hex_id(&note_id);
+        if self
+            .page_directory_list()
+            .await
+            .iter()
+            .any(|entry| entry.loro_doc_id == doc_id && (entry.deleted || entry.conflict))
+        {
+            return Err(SyncError::Protocol(format!(
+                "cannot edit tombstoned or conflicted note {doc_id}"
+            )));
+        }
+        if self
+            .lazy_load_doc(note_id)
+            .await
+            .is_some_and(|doc| note_doc_is_deleted(&doc))
+        {
+            return Err(SyncError::Protocol(format!(
+                "cannot edit tombstoned note {doc_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Apply a UTF-16 character splice to one existing block.
     pub async fn splice_block_text(
         &self,
         note_id: [u8; 16],
@@ -734,6 +821,7 @@ impl LoroEngine {
         utf16_delete_len: u32,
         insert: &str,
     ) -> SyncResult<u32> {
+        self.ensure_note_writable(note_id).await?;
         let apply_lock = self.apply_lock_for_note(note_id).await;
         let _apply_guard = apply_lock.lock().await;
         let doc = self.doc_for_note_mut(note_id).await;
@@ -746,13 +834,10 @@ impl LoroEngine {
         let meta = tree
             .get_meta(node)
             .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
-        // Get-or-create the SAME `text_seq` container `write_block_text`
-        // uses, so seed / whole-text upsert / splice all converge on ONE
-        // sequence CRDT (a distinct container at the same key would
-        // overwrite rather than merge).
-        let text: LoroText = meta
-            .get_or_create_container("text_seq", LoroText::new())
-            .map_err(|e| SyncError::Storage(format!("loro text_seq get_or_create: {e}")))?;
+        // Obtain the SAME `text_seq` container `write_block_text` uses. Legacy
+        // regular children remain writable; fresh children use Loro's
+        // deterministic mergeable identity.
+        let text = text_container_or_ensure(&meta, "text_seq")?;
         // Delete THEN insert at the same offset = a replace.
         if utf16_delete_len > 0 {
             text.delete_utf16(utf16_offset as usize, utf16_delete_len as usize)
@@ -812,11 +897,11 @@ impl LoroEngine {
         let block_hex = hex_id(&block_id);
         let node = find_node_by_block_id(&tree, &block_hex)?;
         let meta = tree.get_meta(node).ok()?;
-        // The SAME `text_seq` container splice/upsert/read use. Existing-text
-        // blocks already have it, so get-or-create returns it (no new child).
-        let text: LoroText = meta
-            .get_or_create_container("text_seq", LoroText::new())
-            .ok()?;
+        // Cursor lookup is read-only: a block without text has no cursor yet.
+        let text = meta
+            .get("text_seq")
+            .and_then(|value| value.into_container().ok())
+            .and_then(|container| container.into_text().ok())?;
         // Anchor to the LEFT of the offset (the char before it), so the caret
         // rides along when text is inserted before it.
         let cursor = text.get_cursor(utf16_offset as usize, Side::Left)?;
@@ -1056,7 +1141,7 @@ impl LoroEngine {
     async fn refresh_note_derived_under_ownership(&self, note_id: [u8; 16], doc: &LoroDoc) {
         // The views registry doc is not a note: no blocks to register, and
         // it must NOT grow a phantom index entry / appear in note lists.
-        if Self::is_views_doc(&note_id) {
+        if Self::is_special_doc(&note_id) {
             return;
         }
         if note_doc_is_deleted(doc) {
@@ -1097,7 +1182,7 @@ impl LoroEngine {
             .read()
             .await
             .iter()
-            .filter(|(note_id, doc)| !Self::is_views_doc(note_id) && !note_doc_is_deleted(doc))
+            .filter(|(note_id, doc)| !Self::is_special_doc(note_id) && !note_doc_is_deleted(doc))
             .count()
     }
 
@@ -1277,6 +1362,7 @@ impl LoroEngine {
                     let _ownership_guard = self.inner.ownership_transition.lock().await;
                     match self.note_id_for_payload(&payload).await? {
                         Some(current_note) if current_note == note_id => {
+                            self.ensure_note_writable(note_id).await?;
                             #[cfg(test)]
                             self.pause_bid_mutation_after_validation().await;
                             return self.record_local_locked_under_ownership(payload).await;
@@ -1658,6 +1744,176 @@ impl LoroEngine {
         self.inner.outbound_strand_alarms.load(Ordering::Relaxed)
     }
 
+    /// Hydrate materialized legacy notes which have no Loro snapshot yet.
+    ///
+    /// This is deliberately narrower than [`Self::reseed_from_disk`]: it
+    /// never rewrites a resident document, so normal startup can establish
+    /// immutable PageId authority for pre-cutover files without overriding
+    /// Loro state that has already been synced.
+    async fn hydrate_missing_docs_from_materialized_notes(&self) -> SyncResult<usize> {
+        let Some(notes_dir) = self.inner.materialize_dir.as_ref() else {
+            return Ok(0);
+        };
+        let paths = walkdir::WalkDir::new(notes_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .collect::<Vec<_>>();
+        let mut hydrated = 0;
+        let directory = self.page_directory_list().await;
+        for path in paths {
+            if path.extension().and_then(|value| value.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let mut note_id = tesela_core::stable_uuid_from_slug(stem);
+            let mut content = tokio::fs::read_to_string(&path).await.map_err(|error| {
+                SyncError::Storage(format!(
+                    "read legacy materialized note {}: {error}",
+                    path.display()
+                ))
+            })?;
+            let mut materialized_page_id =
+                tesela_core::storage::markdown::page_id_from_frontmatter_checked(&content)
+                    .map_err(|error| {
+                        SyncError::Protocol(format!(
+                            "materialized note {} has invalid frontmatter PageId: {error}",
+                            path.display()
+                        ))
+                    })?;
+            let slug_entries = directory
+                .iter()
+                .filter(|entry| entry.slug.eq_ignore_ascii_case(stem))
+                .collect::<Vec<_>>();
+            let mut authoritative_doc_loaded = false;
+            for entry in &slug_entries {
+                if let Some(bound_doc_id) = parse_note_id_from_hex(&entry.loro_doc_id) {
+                    if self.doc_version(bound_doc_id).await.is_some() {
+                        authoritative_doc_loaded = true;
+                        break;
+                    }
+                }
+            }
+            if authoritative_doc_loaded {
+                continue;
+            }
+            if materialized_page_id.is_none() {
+                if slug_entries.len() == 1 && slug_entries[0].deleted && !slug_entries[0].conflict {
+                    tokio::fs::remove_file(&path).await.map_err(|error| {
+                        SyncError::Storage(format!(
+                            "remove tombstoned materialized note {}: {error}",
+                            path.display()
+                        ))
+                    })?;
+                    continue;
+                }
+                let live_matches = slug_entries
+                    .iter()
+                    .filter(|entry| !entry.deleted && !entry.conflict)
+                    .collect::<Vec<_>>();
+                if live_matches.len() == 1 {
+                    let entry = live_matches[0];
+                    note_id = parse_note_id_from_hex(&entry.loro_doc_id).ok_or_else(|| {
+                        SyncError::Protocol(format!(
+                            "materialized note {} has invalid directory document id",
+                            path.display()
+                        ))
+                    })?;
+                    materialized_page_id = Some(entry.page_id);
+                    content = tesela_core::storage::markdown::set_page_id_frontmatter(
+                        &content,
+                        entry.page_id,
+                    );
+                } else if !slug_entries.is_empty() {
+                    return Err(SyncError::Protocol(format!(
+                        "materialized note {} has no unique live page-directory binding",
+                        path.display()
+                    )));
+                }
+            }
+            if let Some(page_id) = materialized_page_id {
+                let slug_entries = directory
+                    .iter()
+                    .filter(|entry| entry.slug.eq_ignore_ascii_case(stem))
+                    .collect::<Vec<_>>();
+                if slug_entries.iter().any(|entry| entry.page_id != page_id) {
+                    return Err(SyncError::Protocol(format!(
+                        "materialized note {} disagrees with page-directory identity",
+                        path.display()
+                    )));
+                }
+            }
+            if let Some(page_id) = materialized_page_id {
+                let page_entries = directory
+                    .iter()
+                    .filter(|entry| entry.page_id == page_id)
+                    .collect::<Vec<_>>();
+                if !page_entries.is_empty() {
+                    let matching_slug_entries = page_entries
+                        .iter()
+                        .filter(|entry| entry.slug.eq_ignore_ascii_case(stem))
+                        .collect::<Vec<_>>();
+                    if matching_slug_entries.len() == 1
+                        && matching_slug_entries[0].deleted
+                        && !matching_slug_entries[0].conflict
+                    {
+                        tokio::fs::remove_file(&path).await.map_err(|error| {
+                            SyncError::Storage(format!(
+                                "remove tombstoned materialized note {}: {error}",
+                                path.display()
+                            ))
+                        })?;
+                        continue;
+                    }
+                    let live_matches = page_entries
+                        .iter()
+                        .filter(|entry| {
+                            !entry.deleted
+                                && !entry.conflict
+                                && entry.slug.eq_ignore_ascii_case(stem)
+                        })
+                        .collect::<Vec<_>>();
+                    if live_matches.len() != 1 {
+                        continue;
+                    }
+                    let Some(bound_doc_id) = parse_note_id_from_hex(&live_matches[0].loro_doc_id)
+                    else {
+                        continue;
+                    };
+                    note_id = bound_doc_id;
+                }
+            }
+            if self.doc_version(note_id).await.is_some() {
+                continue;
+            }
+            let parsed = tesela_core::note_tree::parse_note(&content);
+            let serialized = tesela_core::note_tree::serialize_note(&parsed);
+            if !tesela_core::note_tree::canonicalization_preserves_structure(&content, &serialized)
+            {
+                tracing::warn!(
+                    "tesela-sync/loro: startup hydrate skipped {} — canonicalization changed \
+                     its structural projection",
+                    path.display()
+                );
+                continue;
+            }
+            let title = frontmatter_title(&content).unwrap_or_else(|| stem.to_string());
+            self.apply_payload(&OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(stem.to_string()),
+                title,
+                content: serialized,
+                created_at_millis: 0,
+            })
+            .await?;
+            hydrated += 1;
+        }
+        Ok(hydrated)
+    }
+
     /// Reseed every structurally preserving note's Loro doc from the authoritative
     /// `.md` files in `notes_dir` by replaying a `NoteUpsert` per file. For
     /// notes already resident, `apply_payload`'s NoteUpsert tree-reconcile
@@ -1683,11 +1939,12 @@ impl LoroEngine {
                 return Err(SyncError::Storage(format!(
                     "reseed read dir {}: {e}",
                     notes_dir.display()
-                )))
+                )));
             }
         };
         let mut count = 0usize;
         let mut skipped = 0usize;
+        let directory = self.page_directory_list().await;
         while let Some(entry) = entries.next_entry().await.map_err(|e| {
             SyncError::Storage(format!("reseed read_dir {}: {e}", notes_dir.display()))
         })? {
@@ -1717,7 +1974,45 @@ impl LoroEngine {
                 skipped += 1;
                 continue;
             }
-            let note_id = tesela_core::stable_uuid_from_slug(stem);
+            let page_id =
+                tesela_core::storage::markdown::page_id_from_frontmatter_checked(&content)
+                    .map_err(|error| {
+                        SyncError::Protocol(format!(
+                            "reseed note {} has invalid PageId: {error}",
+                            path.display()
+                        ))
+                    })?;
+            let mut note_id = tesela_core::stable_uuid_from_slug(stem);
+            if let Some(page_id) = page_id {
+                if directory
+                    .iter()
+                    .any(|entry| entry.slug.eq_ignore_ascii_case(stem) && entry.page_id != page_id)
+                {
+                    return Err(SyncError::Protocol(format!(
+                        "reseed note {} disagrees with page-directory identity",
+                        path.display()
+                    )));
+                }
+                let matches = directory
+                    .iter()
+                    .filter(|entry| {
+                        entry.page_id == page_id
+                            && entry.slug.eq_ignore_ascii_case(stem)
+                            && !entry.deleted
+                            && !entry.conflict
+                    })
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 {
+                    note_id = parse_note_id_from_hex(&matches[0].loro_doc_id).ok_or_else(|| {
+                        SyncError::Protocol("invalid page-directory document id".into())
+                    })?;
+                } else if !directory.iter().all(|entry| entry.page_id != page_id) {
+                    return Err(SyncError::Protocol(format!(
+                        "reseed note {} has no unique live page-directory binding",
+                        path.display()
+                    )));
+                }
+            }
             let title = frontmatter_title(&content).unwrap_or_else(|| stem.to_string());
             let payload = OpPayload::NoteUpsert {
                 note_id,
@@ -1803,9 +2098,8 @@ impl LoroEngine {
 // device joining a group usually receives the registry and no-ops the
 // seed entirely.
 impl LoroEngine {
-    /// True when the id addresses the views registry doc (not a note).
-    fn is_views_doc(note_id: &[u8; 16]) -> bool {
-        *note_id == VIEWS_DOC_ID
+    fn is_special_doc(note_id: &[u8; 16]) -> bool {
+        is_special_doc(note_id)
     }
 
     /// Persist the views doc's snapshot (`<dir>/<hex(VIEWS_DOC_ID)>.bin`).
@@ -1815,6 +2109,897 @@ impl LoroEngine {
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, VIEWS_DOC_ID).await;
         }
+    }
+
+    async fn persist_page_directory_doc(&self) -> SyncResult<()> {
+        let _persist_guard = self.inner.page_directory_persist_lock.lock().await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot_checked(dir, PAGE_DIRECTORY_DOC_ID)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Read the flat-scalar page directory. Records are keyed by both PageId
+    /// and legacy document address so concurrent incompatible renames remain
+    /// visible as conflicts instead of resolving by LWW guesswork.
+    pub async fn page_directory_list(&self) -> Vec<crate::engine::PageDirectoryEntry> {
+        let Some(doc) = self.lazy_load_doc(PAGE_DIRECTORY_DOC_ID).await else {
+            return Vec::new();
+        };
+        let loro::LoroValue::Map(values) = doc.get_map("directory").get_deep_value() else {
+            return Vec::new();
+        };
+        let mut records: std::collections::BTreeMap<
+            (tesela_core::PageId, String),
+            std::collections::HashMap<String, loro::LoroValue>,
+        > = std::collections::BTreeMap::new();
+        let mut tombstones = std::collections::HashSet::<(tesela_core::PageId, String)>::new();
+        let mut forwards = std::collections::HashMap::<
+            (tesela_core::PageId, String),
+            std::collections::BTreeSet<String>,
+        >::new();
+        let mut aliases = std::collections::HashMap::<
+            (tesela_core::PageId, String),
+            std::collections::BTreeSet<String>,
+        >::new();
+        for (key, value) in values.iter() {
+            let mut parts = key.split('|');
+            match parts.next() {
+                Some("record") => {
+                    let (Some(page), Some(doc_id), Some(field), None) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+                    let Some(page_id) = tesela_core::PageId::parse(page) else {
+                        continue;
+                    };
+                    records
+                        .entry((page_id, doc_id.to_string()))
+                        .or_default()
+                        .insert(field.to_string(), value.clone());
+                }
+                Some("tombstone") => {
+                    let (Some(page), Some(doc_id), None) =
+                        (parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+                    let Some(page_id) = tesela_core::PageId::parse(page) else {
+                        continue;
+                    };
+                    if matches!(value, loro::LoroValue::Bool(true)) {
+                        tombstones.insert((page_id, doc_id.to_string()));
+                    }
+                }
+                Some("forward") => {
+                    let (Some(page), Some(doc_id), Some(target), None) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+                    let Some(page_id) = tesela_core::PageId::parse(page) else {
+                        continue;
+                    };
+                    if matches!(value, loro::LoroValue::Bool(true)) {
+                        forwards
+                            .entry((page_id, doc_id.to_string()))
+                            .or_default()
+                            .insert(target.to_string());
+                    }
+                }
+                Some("alias") => {
+                    let (Some(page), Some(doc_id), Some(_encoded), None) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+                    let Some(page_id) = tesela_core::PageId::parse(page) else {
+                        continue;
+                    };
+                    if let loro::LoroValue::String(alias) = value {
+                        aliases
+                            .entry((page_id, doc_id.to_string()))
+                            .or_default()
+                            .insert((**alias).to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let document_binding_counts = records.keys().fold(
+            std::collections::HashMap::<String, usize>::new(),
+            |mut counts, (_page_id, doc_id)| {
+                *counts.entry(doc_id.clone()).or_default() += 1;
+                counts
+            },
+        );
+        let live_page_counts = records.iter().fold(
+            std::collections::HashMap::<tesela_core::PageId, usize>::new(),
+            |mut page_counts, ((page_id, doc_id), fields)| {
+                let deleted = tombstones.contains(&(*page_id, doc_id.clone()))
+                    || matches!(fields.get("deleted"), Some(loro::LoroValue::Bool(true)));
+                if !deleted {
+                    *page_counts.entry(*page_id).or_default() += 1;
+                }
+                page_counts
+            },
+        );
+        let live_slug_counts = records.iter().fold(
+            std::collections::HashMap::<String, usize>::new(),
+            |mut counts, ((page_id, doc_id), fields)| {
+                let deleted = tombstones.contains(&(*page_id, doc_id.clone()))
+                    || matches!(fields.get("deleted"), Some(loro::LoroValue::Bool(true)));
+                if !deleted {
+                    if let Some(loro::LoroValue::String(slug)) = fields.get("slug") {
+                        if !slug.is_empty() {
+                            *counts.entry(slug.to_ascii_lowercase()).or_default() += 1;
+                        }
+                    }
+                }
+                counts
+            },
+        );
+        let document_pages = records.keys().fold(
+            std::collections::HashMap::<String, std::collections::HashSet<tesela_core::PageId>>::new(),
+            |mut pages, (page_id, doc_id)| {
+                pages.entry(doc_id.clone()).or_default().insert(*page_id);
+                pages
+            },
+        );
+        let string = |fields: &std::collections::HashMap<String, loro::LoroValue>, key: &str| {
+            fields.get(key).and_then(|value| match value {
+                loro::LoroValue::String(value) => Some((**value).to_string()),
+                _ => None,
+            })
+        };
+        let mut out = records
+            .into_iter()
+            .map(|((page_id, loro_doc_id), fields)| {
+                let binding = (page_id, loro_doc_id.clone());
+                let deleted = tombstones.contains(&binding)
+                    || matches!(fields.get("deleted"), Some(loro::LoroValue::Bool(true)));
+                let mut forward_targets = forwards.remove(&binding).unwrap_or_default();
+                if let Some(legacy_forward) =
+                    string(&fields, "forward_to").filter(|value| !value.is_empty())
+                {
+                    forward_targets.insert(legacy_forward);
+                }
+                let forward_conflict = forward_targets.len() > 1
+                    || forward_targets.iter().any(|target| {
+                        parse_note_id_from_hex(target).is_none()
+                            || parse_note_id_from_hex(target)
+                                .is_some_and(|id| Self::is_special_doc(&id))
+                            || document_pages.get(target).is_some_and(|pages| {
+                                pages.iter().any(|target_page| *target_page != page_id)
+                            })
+                    });
+                let forward_to_loro_doc_id = (forward_targets.len() == 1).then(|| {
+                    forward_targets
+                        .into_iter()
+                        .next()
+                        .expect("one forward target")
+                });
+                let explicit_conflict =
+                    matches!(fields.get("conflict"), Some(loro::LoroValue::Bool(true)));
+                let conflict = live_page_counts.get(&page_id).copied().unwrap_or(0) > 1
+                    || document_binding_counts
+                        .get(loro_doc_id.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        > 1
+                    || live_slug_counts
+                        .get(
+                            &string(&fields, "slug")
+                                .unwrap_or_default()
+                                .to_ascii_lowercase(),
+                        )
+                        .copied()
+                        .unwrap_or(0)
+                        > 1
+                    || parse_note_id_from_hex(&loro_doc_id).is_none()
+                    || parse_note_id_from_hex(&loro_doc_id)
+                        .is_some_and(|id| Self::is_special_doc(&id))
+                    || explicit_conflict
+                    || forward_conflict;
+                crate::engine::PageDirectoryEntry {
+                    page_id,
+                    loro_doc_id,
+                    slug: string(&fields, "slug").unwrap_or_default(),
+                    title: string(&fields, "title").unwrap_or_default(),
+                    aliases: {
+                        let facts = aliases.remove(&binding).unwrap_or_default();
+                        let mut values: Vec<String> = string(&fields, "aliases")
+                            .filter(|value| !value.is_empty())
+                            .map(|value| value.split('\u{1f}').map(str::to_string).collect())
+                            .unwrap_or_default();
+                        for alias in facts {
+                            if !values.iter().any(|existing| existing == &alias) {
+                                values.push(alias);
+                            }
+                        }
+                        values
+                    },
+                    deleted,
+                    forward_to_loro_doc_id,
+                    conflict,
+                }
+            })
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| {
+            a.page_id
+                .to_string()
+                .cmp(&b.page_id.to_string())
+                .then_with(|| a.loro_doc_id.cmp(&b.loro_doc_id))
+        });
+        out
+    }
+
+    /// Resolve an inbound document stream through a converged rename
+    /// forwarding record. A tombstoned source without an unambiguous live
+    /// target is ignored or rejected rather than recreated.
+    async fn import_target_for_directory_binding(
+        &self,
+        note_id: [u8; 16],
+        mode: ImportMode,
+    ) -> SyncResult<Option<[u8; 16]>> {
+        if Self::is_special_doc(&note_id) {
+            return Ok(Some(note_id));
+        }
+
+        let source_doc_id = hex_id(&note_id);
+        let entries = self.page_directory_list().await;
+        let source_entries = entries
+            .iter()
+            .filter(|entry| entry.loro_doc_id == source_doc_id)
+            .collect::<Vec<_>>();
+        if source_entries.is_empty() {
+            return Ok(Some(note_id));
+        }
+        if source_entries.len() != 1 || source_entries[0].conflict {
+            return Err(SyncError::Protocol(format!(
+                "cannot route inbound update for conflicted page-directory binding {source_doc_id}"
+            )));
+        }
+
+        let source = source_entries[0];
+        if !source.deleted {
+            return Ok(Some(note_id));
+        }
+        // A full snapshot contains root metadata from its original document.
+        // In particular, a retry of a tombstoned source carries
+        // `root.deleted = true`; raw-importing that state into a forwarded
+        // target would delete the live target. Only live deltas can be routed
+        // across the document boundary.
+        if mode == ImportMode::Authoritative {
+            return Ok(Some(note_id));
+        }
+        let source_is_deleted = self
+            .lazy_load_doc(note_id)
+            .await
+            .is_some_and(|doc| note_doc_is_deleted(&doc));
+        let Some(_forward_to) = source.forward_to_loro_doc_id.as_deref() else {
+            // The page-directory tombstone and its note-root tombstone are
+            // separate relay documents. If the directory arrives first, this
+            // incoming update may be the note-root delete itself; import it so
+            // every replica converges on the same deleted note. Once the root
+            // is deleted, later source-stream updates cannot resurrect it.
+            return Ok((!source_is_deleted).then_some(note_id));
+        };
+        if !source_is_deleted {
+            // Rename writes the directory forwarding record before it
+            // tombstones the old note root. Preserve that delete's original
+            // stream so it cannot delete the forwarded live target.
+            return Ok(Some(note_id));
+        }
+        // Once the source root is tombstoned, stale source-stream writes are
+        // retained on their original CRDT lineage but never reauthored into
+        // the live target. Repair is explicit and fail-closed.
+        Ok(None)
+    }
+
+    async fn forwarded_target_for_source(
+        &self,
+        source_note_id: [u8; 16],
+    ) -> SyncResult<Option<[u8; 16]>> {
+        let entries = self.page_directory_list().await;
+        let source_doc_id = hex_id(&source_note_id);
+        let source_entries = entries
+            .iter()
+            .filter(|entry| entry.loro_doc_id == source_doc_id)
+            .collect::<Vec<_>>();
+        if source_entries.len() != 1 || source_entries[0].conflict {
+            return Ok(None);
+        }
+        let mut current = source_entries[0];
+        let mut visited = std::collections::HashSet::from([source_doc_id]);
+        while let Some(target_id) = current.forward_to_loro_doc_id.as_deref() {
+            if !visited.insert(target_id.to_string()) {
+                return Err(SyncError::Protocol(
+                    "page-directory forwarding cycle".into(),
+                ));
+            }
+            let targets = entries
+                .iter()
+                .filter(|entry| entry.loro_doc_id == target_id)
+                .collect::<Vec<_>>();
+            if targets.len() != 1 || targets[0].conflict {
+                return Err(SyncError::Protocol(format!(
+                    "page-directory forward target {target_id} is not one unambiguous binding"
+                )));
+            }
+            current = targets[0];
+        }
+        if current.deleted || current.conflict {
+            return Ok(None);
+        }
+        parse_note_id_from_hex(&current.loro_doc_id)
+            .ok_or_else(|| SyncError::Protocol("invalid page-directory forward target".into()))
+            .map(Some)
+    }
+
+    /// Replay state accumulated on a tombstoned rename source into its live
+    /// target. The source and target are different Loro documents: importing
+    /// source bytes into target would also import `root.deleted`. Instead,
+    /// render the source's semantic note state and author it through the
+    /// target's ordinary NoteUpsert path, retaining the target's frontmatter
+    /// (including canonical PageId), slug, and title.
+    ///
+    /// This runs after a source-stream import, not while directory resolution
+    /// chooses its initial destination. Therefore a directory→edit→delete
+    /// delivery order first retains the edit on its source lineage and then
+    /// carries it forward when the tombstone arrives.
+    async fn replay_forwarded_source_after_import(
+        &self,
+        source_note_id: [u8; 16],
+        prior_source_content: Option<&str>,
+        source_content_override: Option<&str>,
+    ) -> SyncResult<Option<[u8; 16]>> {
+        let Some(target_note_id) = self.forwarded_target_for_source(source_note_id).await? else {
+            return Ok(None);
+        };
+        let Some(source_doc) = self.lazy_load_doc(source_note_id).await else {
+            return Ok(None);
+        };
+        if !note_doc_is_deleted(&source_doc) {
+            return Ok(None);
+        }
+        let Some(target_doc) = self.lazy_load_doc(target_note_id).await else {
+            return Err(SyncError::Protocol(format!(
+                "forwarded source {} resolves to unloaded target {}",
+                hex_id(&source_note_id),
+                hex_id(&target_note_id)
+            )));
+        };
+        if note_doc_is_deleted(&target_doc) {
+            return Err(SyncError::Protocol(format!(
+                "forwarded source {} resolves to tombstoned target {}",
+                hex_id(&source_note_id),
+                hex_id(&target_note_id)
+            )));
+        }
+
+        let source_content = source_content_override
+            .map(str::to_owned)
+            .unwrap_or_else(|| doc_full_markdown(&source_doc));
+        let target_content = doc_full_markdown(&target_doc);
+        // The source root captures its pre-tombstone state when a rename
+        // forward is authored. A directory can arrive after the full source
+        // snapshot, so there is otherwise no in-memory "before" document to
+        // discriminate a same-block-id source edit from a concurrent target
+        // edit. Older forwards have no baseline and therefore remain
+        // fail-closed for existing blocks.
+        let persisted_baseline = source_doc
+            .get_map("root")
+            .get("forward_base")
+            .and_then(|value| value.into_value().ok())
+            .and_then(|value| value.into_string().ok())
+            .map(|value| (*value).clone());
+        let source_tree = tesela_core::note_tree::parse_note(&source_content);
+        let prior_source_tree = prior_source_content
+            .or(persisted_baseline.as_deref())
+            .map(tesela_core::note_tree::parse_note);
+        let mut target_tree = tesela_core::note_tree::parse_note(&target_content);
+        let target_before = target_tree.clone();
+        merge_forwarded_source_changes(prior_source_tree.as_ref(), &source_tree, &mut target_tree);
+        target_tree.stamped_any = false;
+        let content = tesela_core::note_tree::serialize_note(&target_tree);
+        if content == target_content {
+            return Ok(None);
+        }
+
+        let root = target_doc.get_map("root");
+        let slug = root
+            .get("slug")
+            .and_then(|value| value.into_value().ok())
+            .and_then(|value| value.into_string().ok())
+            .map(|value| (*value).clone())
+            .unwrap_or_default();
+        let title = root
+            .get("title")
+            .and_then(|value| value.into_value().ok())
+            .and_then(|value| value.into_string().ok())
+            .map(|value| (*value).clone())
+            .or_else(|| frontmatter_title(&target_content))
+            .unwrap_or_else(|| slug.clone());
+        self.record_local(OpPayload::NoteUpsert {
+            note_id: target_note_id,
+            display_alias: (!slug.is_empty()).then_some(slug),
+            title,
+            content,
+            created_at_millis: 0,
+        })
+        .await?;
+        replay_forwarded_property_changes(
+            self,
+            target_note_id,
+            prior_source_tree.as_ref(),
+            &source_tree,
+            &target_before,
+            &target_tree,
+        )
+        .await?;
+        Ok(Some(target_note_id))
+    }
+
+    async fn replay_resident_forwarded_sources_after_directory_import(&self) -> SyncResult<()> {
+        let source_ids = self
+            .inner
+            .docs
+            .read()
+            .await
+            .keys()
+            .copied()
+            .filter(|note_id| !Self::is_special_doc(note_id))
+            .collect::<Vec<_>>();
+        for source_id in source_ids {
+            let source_doc = self.lazy_load_doc(source_id).await;
+            let source_content = source_doc.as_ref().map(doc_full_markdown);
+            let source_page_id = source_doc.as_ref().and_then(|doc| {
+                doc.get_map("root")
+                    .get("page_id")
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .and_then(|value| tesela_core::PageId::parse(&value))
+            });
+            let directory = self.page_directory_list().await;
+            let directory_tombstoned = source_page_id.is_some_and(|page_id| {
+                let matches = directory
+                    .iter()
+                    .filter(|entry| {
+                        entry.loro_doc_id == hex_id(&source_id) && entry.page_id == page_id
+                    })
+                    .collect::<Vec<_>>();
+                matches.len() == 1 && matches[0].deleted && !matches[0].conflict
+            });
+            if directory_tombstoned {
+                if let Some(source_doc) = source_doc.as_ref() {
+                    if !note_doc_is_deleted(source_doc) {
+                        source_doc
+                            .get_map("root")
+                            .insert("deleted", true)
+                            .map_err(|error| {
+                                SyncError::Storage(format!(
+                                    "directory tombstone repair for {}: {error}",
+                                    hex_id(&source_id)
+                                ))
+                            })?;
+                        source_doc.commit();
+                        self.index_remove(source_id);
+                        if let Some(snapshot_dir) = self.inner.snapshot_dir.as_ref() {
+                            self.save_snapshot_checked(snapshot_dir, source_id).await?;
+                        }
+                        if self.inner.materialize_dir.is_some() {
+                            self.materialize_note_checked(source_id).await?;
+                        }
+                    }
+                }
+            }
+            if let Err(error) = self
+                .replay_forwarded_source_after_import(source_id, None, source_content.as_deref())
+                .await
+            {
+                // A merged directory conflict is valid fail-closed authority,
+                // not an import failure. Retain and persist the conflicting
+                // directory snapshot; only semantic forwarding is blocked.
+                if matches!(&error, SyncError::Protocol(message) if message.contains("forwarding") || message.contains("conflict") || message.contains("unloaded target"))
+                {
+                    tracing::warn!(
+                        "tesela-sync/loro: retaining fail-closed page-directory state: {error}"
+                    );
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist canonical PageIds for legacy snapshots before their note
+    /// documents participate in page-directory resolution. A legacy address
+    /// only supplies the UUIDv5 fallback once; after this write the root and
+    /// frontmatter carry the canonical identity permanently.
+    fn merged_page_aliases(existing: &[String], frontmatter: &[String]) -> Vec<String> {
+        let mut aliases = Vec::with_capacity(existing.len() + frontmatter.len());
+        for alias in existing.iter().chain(frontmatter) {
+            if !alias.is_empty()
+                && !aliases
+                    .iter()
+                    .any(|current: &String| current.eq_ignore_ascii_case(alias))
+            {
+                aliases.push(alias.clone());
+            }
+        }
+        aliases
+    }
+
+    async fn backfill_page_directory_from_loaded_docs(&self) -> SyncResult<()> {
+        let existing = self.page_directory_list().await;
+        let note_ids = self
+            .inner
+            .docs
+            .read()
+            .await
+            .keys()
+            .copied()
+            .filter(|note_id| !Self::is_special_doc(note_id))
+            .collect::<Vec<_>>();
+
+        for note_id in note_ids {
+            let Some(doc) = self.lazy_load_doc(note_id).await else {
+                continue;
+            };
+            self.set_doc_peer(&doc);
+            let root = doc.get_map("root");
+            let root_page_id = match root
+                .get("page_id")
+                .and_then(|value| value.into_value().ok())
+                .and_then(|value| value.into_string().ok())
+                .map(|value| (*value).clone())
+            {
+                Some(value) => Some(tesela_core::PageId::parse(&value).ok_or_else(|| {
+                    SyncError::Protocol(format!(
+                        "legacy snapshot {} has malformed root page_id {value:?}",
+                        hex_id(&note_id)
+                    ))
+                })?),
+                None => None,
+            };
+            let content = render::doc_full_markdown(&doc);
+            let frontmatter_page_id =
+                tesela_core::storage::markdown::page_id_from_frontmatter_checked(&content)
+                    .map_err(|error| {
+                        SyncError::Protocol(format!(
+                            "legacy snapshot {} has invalid frontmatter PageId: {error}",
+                            hex_id(&note_id)
+                        ))
+                    })?;
+            if root_page_id.is_some()
+                && frontmatter_page_id.is_some()
+                && root_page_id != frontmatter_page_id
+            {
+                return Err(SyncError::Protocol(format!(
+                    "legacy snapshot {} PageId root/frontmatter disagreement",
+                    hex_id(&note_id)
+                )));
+            }
+            let page_id = root_page_id
+                .or(frontmatter_page_id)
+                .unwrap_or_else(|| tesela_core::PageId::from_legacy_doc_id(&note_id));
+            let loro_doc_id = hex_id(&note_id);
+            let existing_entry = existing
+                .iter()
+                .find(|entry| entry.loro_doc_id == loro_doc_id && entry.page_id == page_id)
+                .cloned();
+            let same_doc_entries = existing
+                .iter()
+                .filter(|entry| entry.loro_doc_id == loro_doc_id)
+                .collect::<Vec<_>>();
+            if same_doc_entries
+                .iter()
+                .any(|entry| entry.page_id != page_id && !entry.conflict)
+            {
+                return Err(SyncError::Protocol(format!(
+                    "legacy snapshot {} PageId directory disagreement",
+                    loro_doc_id
+                )));
+            }
+
+            let stamped =
+                tesela_core::storage::markdown::set_page_id_frontmatter(&content, page_id);
+            let frontmatter_aliases = tesela_core::storage::markdown::parse_frontmatter(&stamped)
+                .map(|(metadata, _)| metadata.aliases)
+                .unwrap_or_default();
+            let frontmatter = tesela_core::note_tree::parse_note(&stamped)
+                .frontmatter
+                .unwrap_or_default();
+            let page_id_string = page_id.to_string();
+            let mut doc_changed = false;
+            let root_string = |key: &str| {
+                root.get(key)
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .map(|value| (*value).clone())
+            };
+            if root_string("page_id").as_deref() != Some(page_id_string.as_str()) {
+                root.insert("page_id", page_id_string.as_str())
+                    .map_err(|error| SyncError::Storage(format!("root PageId insert: {error}")))?;
+                doc_changed = true;
+            }
+            if root_string("frontmatter").as_deref() != Some(frontmatter.as_str()) {
+                root.insert("frontmatter", frontmatter.as_str())
+                    .map_err(|error| {
+                        SyncError::Storage(format!("root frontmatter insert: {error}"))
+                    })?;
+                doc_changed = true;
+            }
+            if root.get("content").is_some()
+                && root_string("content").as_deref() != Some(stamped.as_str())
+            {
+                root.insert("content", stamped.as_str())
+                    .map_err(|error| SyncError::Storage(format!("root content insert: {error}")))?;
+                doc_changed = true;
+            }
+            if doc_changed {
+                doc.commit();
+                if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+                    self.save_snapshot(dir, note_id).await;
+                }
+            }
+
+            let slug = root
+                .get("slug")
+                .and_then(|value| value.into_value().ok())
+                .and_then(|value| value.into_string().ok())
+                .map(|value| (*value).clone())
+                .unwrap_or_default();
+            let has_slug = !slug.is_empty();
+            let title = root
+                .get("title")
+                .and_then(|value| value.into_value().ok())
+                .and_then(|value| value.into_string().ok())
+                .map(|value| (*value).clone())
+                .or_else(|| frontmatter_title(&stamped))
+                .unwrap_or_else(|| slug.clone());
+            let deleted = existing_entry.as_ref().is_some_and(|entry| entry.deleted)
+                || root
+                    .get("deleted")
+                    .and_then(|value| value.into_value().ok())
+                    .is_some_and(|value| matches!(value, loro::LoroValue::Bool(true)));
+            self.page_directory_upsert(crate::engine::PageDirectoryEntry {
+                page_id,
+                loro_doc_id,
+                slug: slug.clone(),
+                title,
+                aliases: Self::merged_page_aliases(
+                    existing_entry
+                        .as_ref()
+                        .map(|entry| entry.aliases.as_slice())
+                        .unwrap_or_default(),
+                    &frontmatter_aliases,
+                ),
+                deleted,
+                forward_to_loro_doc_id: existing_entry
+                    .and_then(|entry| entry.forward_to_loro_doc_id),
+                conflict: false,
+            })
+            .await?;
+
+            if self.inner.materialize_dir.is_some() && has_slug {
+                if deleted {
+                    self.remove_materialized(&slug).await;
+                } else {
+                    self.materialize_note_checked(note_id).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Upsert a flat-scalar page directory record after importing its
+    /// deterministic immutable binding seed.
+    pub async fn page_directory_upsert(
+        &self,
+        record: crate::engine::PageDirectoryEntry,
+    ) -> SyncResult<()> {
+        if record.loro_doc_id.len() != 32
+            || !record
+                .loro_doc_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(SyncError::Protocol(
+                "page directory loro_doc_id must be 32 hex characters".into(),
+            ));
+        }
+        let record_doc_id = parse_note_id_from_hex(&record.loro_doc_id)
+            .ok_or_else(|| SyncError::Protocol("invalid page directory document id".into()))?;
+        if Self::is_special_doc(&record_doc_id) {
+            return Err(SyncError::Protocol(
+                "special documents cannot be page-directory bindings".into(),
+            ));
+        }
+        let validated_forward = record
+            .forward_to_loro_doc_id
+            .as_deref()
+            .filter(|value| !value.is_empty());
+        if let Some(forward_to) = validated_forward {
+            let forward_doc_id = parse_note_id_from_hex(forward_to).ok_or_else(|| {
+                SyncError::Protocol(
+                    "page directory forward target must be 32 hex characters".into(),
+                )
+            })?;
+            if Self::is_special_doc(&forward_doc_id) || forward_doc_id == record_doc_id {
+                return Err(SyncError::Protocol(
+                    "invalid special or self page-directory forward target".into(),
+                ));
+            }
+            let existing = self.page_directory_list().await;
+            if existing
+                .iter()
+                .any(|entry| entry.loro_doc_id == forward_to && entry.page_id != record.page_id)
+            {
+                return Err(SyncError::Protocol(
+                    "page-directory forward target belongs to another PageId".into(),
+                ));
+            }
+            let mut current = forward_to;
+            let mut visited = std::collections::HashSet::from([record.loro_doc_id.as_str()]);
+            loop {
+                if !visited.insert(current) {
+                    return Err(SyncError::Protocol(
+                        "page-directory forwarding cycle".into(),
+                    ));
+                }
+                let targets = existing
+                    .iter()
+                    .filter(|entry| entry.loro_doc_id == current)
+                    .collect::<Vec<_>>();
+                if targets.len() != 1 {
+                    break;
+                }
+                let Some(next) = targets[0].forward_to_loro_doc_id.as_deref() else {
+                    break;
+                };
+                current = next;
+            }
+        }
+        // Freeze the semantic rename baseline when forwarding is established,
+        // before any stale source edit can race the later source tombstone.
+        if record.forward_to_loro_doc_id.as_deref().is_some() {
+            if let Some(source_doc_id) = parse_note_id_from_hex(&record.loro_doc_id) {
+                if let Some(source_doc) = self.lazy_load_doc(source_doc_id).await {
+                    let root = source_doc.get_map("root");
+                    if root.get("forward_base").is_none() {
+                        root.insert("forward_base", doc_full_markdown(&source_doc))
+                            .map_err(|error| {
+                                SyncError::Storage(format!("rename baseline insert: {error}"))
+                            })?;
+                        source_doc.commit();
+                        if let Some(snapshot_dir) = self.inner.snapshot_dir.as_ref() {
+                            self.save_snapshot_checked(snapshot_dir, source_doc_id)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        let doc = self.doc_for_note_mut(PAGE_DIRECTORY_DOC_ID).await;
+        let binding = format!("{}|{}", record.page_id, record.loro_doc_id);
+        doc.import(&page_directory_binding_seed_update(
+            record.page_id,
+            &record.loro_doc_id,
+        )?)
+        .map_err(|error| SyncError::Storage(format!("page-directory seed import: {error}")))?;
+        let directory = doc.get_map("directory");
+        let binding_key = format!("binding|{binding}");
+        let binding_value = directory
+            .get(&binding_key)
+            .and_then(|value| value.into_value().ok())
+            .and_then(|value| value.into_string().ok())
+            .map(|value| (*value).clone());
+        if binding_value.as_deref() != Some(binding.as_str()) {
+            return Err(SyncError::Protocol(format!(
+                "page directory immutable binding conflict for {binding}"
+            )));
+        }
+        let prefix = format!("record|{}|{}|", record.page_id, record.loro_doc_id);
+        let ins = |e: loro::LoroError| SyncError::Storage(format!("page directory insert: {e}"));
+        let string_value = |key: &str| {
+            directory
+                .get(key)
+                .and_then(|value| value.into_value().ok())
+                .and_then(|value| value.into_string().ok())
+                .map(|value| (*value).clone())
+        };
+        let slug_key = format!("{prefix}slug");
+        let title_key = format!("{prefix}title");
+        let aliases_key = format!("{prefix}aliases");
+        let deleted_key = format!("{prefix}deleted");
+        let forward_to_key = format!("{prefix}forward_to");
+        let tombstone_key = format!("tombstone|{binding}");
+        let conflict_key = format!("{prefix}conflict");
+        let aliases = record.aliases.join("\u{1f}");
+        let mut changed = false;
+        for alias in &record.aliases {
+            if alias.is_empty() {
+                continue;
+            }
+            let alias_key = format!("alias|{binding}|{}", hex::encode(alias.as_bytes()));
+            if string_value(&alias_key).as_deref() != Some(alias.as_str()) {
+                directory.insert(&alias_key, alias.as_str()).map_err(ins)?;
+                changed = true;
+            }
+        }
+        if string_value(&slug_key).as_deref() != Some(record.slug.as_str()) {
+            directory
+                .insert(&slug_key, record.slug.as_str())
+                .map_err(ins)?;
+            changed = true;
+        }
+        if string_value(&title_key).as_deref() != Some(record.title.as_str()) {
+            directory
+                .insert(&title_key, record.title.as_str())
+                .map_err(ins)?;
+            changed = true;
+        }
+        if string_value(&aliases_key).as_deref() != Some(aliases.as_str()) {
+            directory
+                .insert(&aliases_key, aliases.as_str())
+                .map_err(ins)?;
+            changed = true;
+        }
+        let bool_is_true = |key: &str| {
+            directory
+                .get(key)
+                .and_then(|value| value.into_value().ok())
+                .is_some_and(|value| matches!(value, loro::LoroValue::Bool(true)))
+        };
+        // Tombstones and forwarding are provenance, not mutable cache. Their
+        // dedicated add-only facts keep a delayed repair/upsert from winning a
+        // scalar LWW register and silently reviving or stranding a PageId.
+        if bool_is_true(&conflict_key) != record.conflict {
+            directory
+                .insert(&conflict_key, record.conflict)
+                .map_err(ins)?;
+            changed = true;
+        }
+        if record.deleted {
+            if !bool_is_true(&deleted_key) {
+                directory.insert(&deleted_key, true).map_err(ins)?;
+                changed = true;
+            }
+            if !bool_is_true(&tombstone_key) {
+                directory.insert(&tombstone_key, true).map_err(ins)?;
+                changed = true;
+            }
+        }
+        if let Some(forward_to) = validated_forward {
+            let forward_key = format!("forward|{binding}|{forward_to}");
+            if !bool_is_true(&forward_key) {
+                directory.insert(&forward_key, true).map_err(ins)?;
+                changed = true;
+            }
+            if string_value(&forward_to_key).as_deref() != Some(forward_to) {
+                directory.insert(&forward_to_key, forward_to).map_err(ins)?;
+                changed = true;
+            }
+        }
+        if changed {
+            doc.commit();
+            if self
+                .inner
+                .page_directory_batch_depth
+                .load(Ordering::Relaxed)
+                == 0
+            {
+                self.persist_page_directory_doc().await?;
+            }
+        }
+        Ok(())
     }
 
     /// All saved views, sorted by `(order, id)` — deterministic across
@@ -1915,7 +3100,7 @@ impl LoroEngine {
                     _ => {
                         return Err(SyncError::Storage(
                             "views: builtin seed import did not materialize the entry".into(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -2080,7 +3265,7 @@ async fn load_snapshots_from_dir(dir: &Path) -> SyncResult<HashMap<[u8; 16], Lor
             return Err(SyncError::Storage(format!(
                 "read snapshot dir {}: {e}",
                 dir.display()
-            )))
+            )));
         }
     };
     while let Some(entry) = entries
@@ -2254,13 +3439,11 @@ fn minimal_utf16_diff(current: &str, target: &str) -> (usize, usize, String) {
 /// Write a block's whole text into its node's nested `text_seq`
 /// [`LoroText`] container — the sequence CRDT that lets concurrent
 /// same-block edits INTERLEAVE instead of clobbering (the LWW map
-/// register `text` did). `get_or_create_container` is idempotent and
-/// returns the existing handler if present, so seed + upsert + heal all
-/// converge on ONE container at the stable `text_seq` key. We never write
-/// the legacy `text` register again — concurrently minting a different
-/// container at the same key can overwrite rather than merge, so a distinct
-/// key + get-or-create is the safe path. The legacy `text` register stays
-/// readable for old snapshots via [`read_block_text`].
+/// register `text` did). Legacy regular containers remain in place; a missing
+/// child is created with Loro's deterministic mergeable identity so concurrent
+/// first writers target the same `text_seq`. We never write the legacy `text`
+/// register again. The legacy register stays readable for old snapshots via
+/// [`read_block_text`].
 ///
 /// CONVERGENCE (2026-06-28): this whole-text authoring path used to call
 /// `LoroText::update`, whose internal Myers diff is convergent for the
@@ -2278,9 +3461,7 @@ fn minimal_utf16_diff(current: &str, target: &str) -> (usize, usize, String) {
 ///    concurrent rewrites char-merge on the shared prefix/suffix instead of
 ///    unioning whole runs into a concatenation.
 fn write_block_text(meta: &loro::LoroMap, text: &str) -> SyncResult<()> {
-    let text_c: LoroText = meta
-        .get_or_create_container("text_seq", LoroText::new())
-        .map_err(|e| SyncError::Storage(format!("loro text_seq get_or_create: {e}")))?;
+    let text_c = text_container_or_ensure(meta, "text_seq")?;
     let current = text_c.to_string();
     // (1) Idempotency guard — identical target ⇒ no write at all.
     if current == text {
@@ -2299,7 +3480,25 @@ fn write_block_text(meta: &loro::LoroMap, text: &str) -> SyncResult<()> {
             .insert_utf16(off16, &ins)
             .map_err(|e| SyncError::Storage(format!("loro text_seq insert_utf16: {e}")))?;
     }
+
     Ok(())
+}
+/// Return an existing text child, including an older regular-op-id child, or
+/// create a deterministic mergeable child for a new key.
+fn text_container_or_ensure(map: &loro::LoroMap, key: &str) -> SyncResult<LoroText> {
+    match map.get(key) {
+        Some(loro::ValueOrContainer::Container(container)) => {
+            container.into_text().map_err(|container| {
+                SyncError::Storage(format!("loro {key} expected text, got {container:?}"))
+            })
+        }
+        Some(loro::ValueOrContainer::Value(loro::LoroValue::Null)) | None => map
+            .ensure_mergeable_text(key)
+            .map_err(|error| SyncError::Storage(format!("loro {key} ensure text: {error}"))),
+        Some(loro::ValueOrContainer::Value(_)) => Err(SyncError::Storage(format!(
+            "loro {key} expected text container"
+        ))),
+    }
 }
 
 /// Read a block's whole text, PREFERRING the nested `text_seq`
@@ -2355,6 +3554,7 @@ use index::{
 mod apply;
 #[cfg(test)]
 use apply::probe_import_poison;
+use apply::ImportMode;
 mod twins;
 #[cfg(test)]
 use twins::duplicate_block_ids;
@@ -2560,6 +3760,233 @@ fn legacy_content_matches_incoming(legacy: &str, incoming: &str) -> bool {
         .iter()
         .zip(incoming_tree.blocks.iter())
         .all(|(left, right)| legacy_minted.contains(&left.id) || left.id == right.id)
+}
+
+fn merge_forwarded_source_changes(
+    prior_source: Option<&tesela_core::note_tree::NoteTree>,
+    source: &tesela_core::note_tree::NoteTree,
+    target: &mut tesela_core::note_tree::NoteTree,
+) {
+    let property_value = |properties: &[(String, String)], key: &str| {
+        properties
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.clone())
+    };
+    let mut property_keys = Vec::new();
+    for (key, _) in source.page_properties.iter().chain(
+        prior_source
+            .into_iter()
+            .flat_map(|tree| tree.page_properties.iter()),
+    ) {
+        if !property_keys
+            .iter()
+            .any(|candidate: &String| candidate == key)
+        {
+            property_keys.push(key.clone());
+        }
+    }
+    for key in property_keys {
+        let source_value = property_value(&source.page_properties, &key);
+        let prior_value = prior_source.and_then(|tree| property_value(&tree.page_properties, &key));
+        if source_value == prior_value {
+            continue;
+        }
+        let target_value = property_value(&target.page_properties, &key);
+        if prior_source.is_some() && target_value != prior_value {
+            continue;
+        }
+        match source_value {
+            Some(value) => {
+                if let Some((_, existing)) = target
+                    .page_properties
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == &key)
+                {
+                    *existing = value;
+                } else {
+                    target.page_properties.push((key, value));
+                }
+            }
+            None => target
+                .page_properties
+                .retain(|(candidate, _)| candidate != &key),
+        }
+    }
+
+    if let Some(prior_source) = prior_source {
+        let deleted_ids = prior_source
+            .blocks
+            .iter()
+            .filter(|prior_block| {
+                !source
+                    .blocks
+                    .iter()
+                    .any(|source_block| source_block.id == prior_block.id)
+            })
+            .filter_map(|prior_block| {
+                target
+                    .blocks
+                    .iter()
+                    .find(|target_block| target_block.id == prior_block.id)
+                    .filter(|target_block| *target_block == prior_block)
+                    .map(|_| prior_block.id)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        target
+            .blocks
+            .retain(|target_block| !deleted_ids.contains(&target_block.id));
+    }
+
+    for (source_index, source_block) in source.blocks.iter().enumerate() {
+        let prior_block = prior_source.and_then(|tree| {
+            tree.blocks
+                .iter()
+                .find(|candidate| candidate.id == source_block.id)
+        });
+        if prior_block == Some(source_block) {
+            continue;
+        }
+        if let Some(target_block) = target
+            .blocks
+            .iter_mut()
+            .find(|candidate| candidate.id == source_block.id)
+        {
+            if prior_block.is_some_and(|prior| target_block == prior) {
+                *target_block = source_block.clone();
+            }
+            continue;
+        }
+        let insertion = source.blocks[..source_index]
+            .iter()
+            .rev()
+            .find_map(|predecessor| {
+                target
+                    .blocks
+                    .iter()
+                    .position(|candidate| candidate.id == predecessor.id)
+            })
+            .map_or(target.blocks.len(), |index| index + 1);
+        target.blocks.insert(insertion, source_block.clone());
+    }
+    // A source-side deletion is a semantic change too. Remove it only when
+    // the target still equals the rename baseline; a concurrent target edit
+    // wins and remains visible.
+    if let Some(prior) = prior_source {
+        for prior_block in &prior.blocks {
+            if source.blocks.iter().any(|block| block.id == prior_block.id) {
+                continue;
+            }
+            target
+                .blocks
+                .retain(|block| block.id != prior_block.id || block != prior_block);
+        }
+    }
+}
+
+async fn replay_forwarded_property_changes(
+    engine: &LoroEngine,
+    target_note_id: [u8; 16],
+    _prior_source: Option<&tesela_core::note_tree::NoteTree>,
+    _source: &tesela_core::note_tree::NoteTree,
+    target_before: &tesela_core::note_tree::NoteTree,
+    target_after: &tesela_core::note_tree::NoteTree,
+) -> SyncResult<()> {
+    let value = |properties: &[(String, String)], key: &str| {
+        properties
+            .iter()
+            .rev()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, value)| value.clone())
+    };
+    let block_properties = |block: &tesela_core::note_tree::FlatBlock| {
+        block
+            .text
+            .lines()
+            .skip(1)
+            .filter_map(tesela_core::lifecycle::property_kv)
+            .collect::<Vec<_>>()
+    };
+
+    let mut page_keys = target_before
+        .page_properties
+        .iter()
+        .chain(target_after.page_properties.iter())
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    page_keys.sort();
+    page_keys.dedup();
+    for key in page_keys {
+        let before = value(&target_before.page_properties, &key);
+        let after = value(&target_after.page_properties, &key);
+        if before == after {
+            continue;
+        }
+        let value = after.map_or(PropOp::Clear, |value| {
+            PropOp::SetScalar(crate::PropScalar::Text(value))
+        });
+        engine
+            .record_local(OpPayload::PagePropertySet {
+                note_id: target_note_id,
+                key,
+                value,
+            })
+            .await?;
+    }
+
+    for before_block in &target_before.blocks {
+        if target_after
+            .blocks
+            .iter()
+            .any(|block| block.id == before_block.id)
+        {
+            continue;
+        }
+        engine
+            .record_local(OpPayload::BlockDelete {
+                block_id: *before_block.id.as_bytes(),
+            })
+            .await?;
+    }
+
+    for after_block in &target_after.blocks {
+        let Some(before_block) = target_before
+            .blocks
+            .iter()
+            .find(|block| block.id == after_block.id)
+        else {
+            continue;
+        };
+        let before_properties = block_properties(before_block);
+        let after_properties = block_properties(after_block);
+        let mut keys = before_properties
+            .iter()
+            .chain(after_properties.iter())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        for key in keys {
+            let before = value(&before_properties, &key);
+            let after = value(&after_properties, &key);
+            if before == after {
+                continue;
+            }
+            let value = after.map_or(PropOp::Clear, |value| {
+                PropOp::SetScalar(crate::PropScalar::Text(value))
+            });
+            engine
+                .record_local(OpPayload::BlockPropertySet {
+                    note_id: target_note_id,
+                    block_id: *after_block.id.as_bytes(),
+                    key,
+                    value,
+                })
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Non-destructive NoteUpsert body reconcile (2026-06-10). Brings the live
@@ -2800,6 +4227,27 @@ impl SyncEngine for LoroEngine {
         self.inner.device
     }
 
+    async fn resolve_note_doc_id(&self, slug: &str) -> SyncResult<[u8; 16]> {
+        let matches = self
+            .page_directory_list()
+            .await
+            .into_iter()
+            .filter(|entry| entry.slug.eq_ignore_ascii_case(slug) && !entry.deleted)
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Ok(tesela_core::stable_uuid_from_slug(slug));
+        }
+        if matches.len() != 1 || matches[0].conflict {
+            return Err(SyncError::Protocol(format!(
+                "slug {slug} has no unique live page-directory binding"
+            )));
+        }
+        parse_note_id_from_hex(&matches[0].loro_doc_id).ok_or_else(|| {
+            SyncError::Protocol(format!(
+                "slug {slug} has invalid page-directory document id"
+            ))
+        })
+    }
     async fn relocate_subtree(
         &self,
         request: BlockRelocationRequest,
@@ -2807,21 +4255,9 @@ impl SyncEngine for LoroEngine {
         self.relocate_subtree_in_memory(request).await
     }
 
-    /// Local-side mutation. Stamps a fresh HLC + content hash, then
-    /// runs the payload through the same per-op logic that
-    /// `apply_changes` uses for peer-originated ops.
-    ///
-    /// Serialized against a concurrent `apply_import` (or another
-    /// `record_local`) for the SAME note (tesela-4ju REVIEW REJECT,
-    /// 2026-07-02): without this, a local edit could land between
-    /// `apply_import`'s props-plan fork and its twin tombstone, and get
-    /// silently dropped by a tombstone pass sized to a plan that predates
-    /// this edit. Takes the note's `apply_locks` guard (see
-    /// `Inner::apply_locks` for the ordering rule) via
-    /// `note_id_for_payload`, then delegates to the lock-free
-    /// `record_local_locked`. Ops with no resolvable note (an unknown
-    /// block, an attachment-only op — see `note_id_for_payload`) skip
-    /// locking; there's no per-note doc mutation to serialize.
+    /// Local-side mutation serialized against imports for the affected note.
+    /// Tombstoned or conflicted rename sources reject stale editor writes;
+    /// retained source history remains available for explicit repair.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
         if matches!(
             payload,
@@ -2833,7 +4269,12 @@ impl SyncEngine for LoroEngine {
             Some(note_id) => {
                 let apply_lock = self.apply_lock_for_note(note_id).await;
                 let _apply_guard = apply_lock.lock().await;
-                self.record_local_locked(payload).await
+                let deleting_note = matches!(payload, OpPayload::NoteDelete { .. });
+                if !deleting_note {
+                    self.ensure_note_writable(note_id).await?;
+                }
+                let hash = self.record_local_locked(payload).await?;
+                Ok(hash)
             }
             None => self.record_local_locked(payload).await,
         }
@@ -2853,6 +4294,9 @@ impl SyncEngine for LoroEngine {
             return results;
         }
 
+        self.inner
+            .page_directory_batch_depth
+            .fetch_add(1, Ordering::Relaxed);
         let results = stream::iter(payloads.into_iter().map(|payload| {
             let engine = self.clone();
             async move {
@@ -2862,6 +4306,9 @@ impl SyncEngine for LoroEngine {
                 };
                 let apply_lock = engine.apply_lock_for_note(note_id).await;
                 let _apply_guard = apply_lock.lock().await;
+                if engine.lazy_load_doc(note_id).await.is_some() {
+                    engine.ensure_note_writable(note_id).await?;
+                }
                 engine.record_import_note_upsert_locked(payload).await
             }
         }))
@@ -2869,6 +4316,26 @@ impl SyncEngine for LoroEngine {
         .collect::<Vec<_>>()
         .await;
 
+        if self
+            .inner
+            .page_directory_batch_depth
+            .fetch_sub(1, Ordering::Relaxed)
+            == 1
+        {
+            if let Err(error) = self.persist_page_directory_doc().await {
+                let message = error.to_string();
+                return results
+                    .into_iter()
+                    .map(|result| {
+                        result.and_then(|_| {
+                            Err(SyncError::Storage(format!(
+                                "page-directory batch persist: {message}"
+                            )))
+                        })
+                    })
+                    .collect();
+            }
+        }
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_index_snapshot(dir).await;
         }
@@ -3038,6 +4505,17 @@ impl SyncEngine for LoroEngine {
     async fn ensure_builtin_views(&self) -> SyncResult<()> {
         LoroEngine::ensure_builtin_views(self).await
     }
+
+    async fn page_directory_list(&self) -> Vec<crate::engine::PageDirectoryEntry> {
+        LoroEngine::page_directory_list(self).await
+    }
+
+    async fn page_directory_upsert(
+        &self,
+        record: crate::engine::PageDirectoryEntry,
+    ) -> SyncResult<()> {
+        LoroEngine::page_directory_upsert(self, record).await
+    }
 }
 
 impl LoroEngine {
@@ -3158,6 +4636,9 @@ impl LoroEngine {
         } else {
             self.apply_payload_inner(payload).await?
         };
+        if touched_note.is_some_and(|note_id| !Self::is_special_doc(&note_id)) {
+            self.backfill_page_directory_from_loaded_docs().await?;
+        }
         if let (Some(dir), Some(note_id)) = (self.inner.snapshot_dir.as_ref(), touched_note) {
             self.save_snapshot(dir, note_id).await;
             // The index only changes on note create/delete; persist it
@@ -3228,7 +4709,7 @@ impl LoroEngine {
             | OpPayload::BlockDelete { .. }
             | OpPayload::AttachmentDelete { .. } => None,
         };
-        if op_target.is_some_and(|id| Self::is_views_doc(&id)) {
+        if op_target.is_some_and(|id| Self::is_special_doc(&id)) {
             tracing::warn!(
                 "tesela-sync/loro: refusing note-shaped op {:?} addressed at the \
                  views registry doc — use the views_* API",
@@ -3244,21 +4725,91 @@ impl LoroEngine {
                 display_alias,
                 ..
             } => {
+                if self
+                    .inner
+                    .page_directory_batch_depth
+                    .load(Ordering::Relaxed)
+                    == 0
+                    && self
+                        .page_directory_list()
+                        .await
+                        .into_iter()
+                        .any(|entry| entry.loro_doc_id == hex_id(note_id) && entry.deleted)
+                {
+                    tracing::warn!(
+                        "tesela-sync/loro: refusing stale NoteUpsert for tombstoned document {}",
+                        hex_id(note_id)
+                    );
+                    return Ok(None);
+                }
+
+                let doc = self.doc_for_note_mut(*note_id).await;
+                let root_meta = doc.get_map("root");
+                let root_page_id = match root_meta
+                    .get("page_id")
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .map(|value| (*value).clone())
+                {
+                    Some(value) => Some(tesela_core::PageId::parse(&value).ok_or_else(|| {
+                        SyncError::Protocol(format!(
+                            "NoteUpsert {} has malformed root page_id {value:?}",
+                            hex_id(note_id)
+                        ))
+                    })?),
+                    None => None,
+                };
+                let frontmatter_page_id =
+                    tesela_core::storage::markdown::page_id_from_frontmatter_checked(content)
+                        .map_err(|error| {
+                            SyncError::Protocol(format!(
+                                "NoteUpsert {} has invalid frontmatter identity: {error}",
+                                hex_id(note_id)
+                            ))
+                        })?;
+                if root_page_id.is_some()
+                    && frontmatter_page_id.is_some()
+                    && root_page_id != frontmatter_page_id
+                {
+                    return Err(SyncError::Protocol(format!(
+                        "NoteUpsert {} root/frontmatter PageId conflict",
+                        hex_id(note_id)
+                    )));
+                }
+                let page_id = root_page_id
+                    .or(frontmatter_page_id)
+                    .unwrap_or_else(|| tesela_core::PageId::from_legacy_doc_id(note_id));
+                if self
+                    .inner
+                    .page_directory_batch_depth
+                    .load(Ordering::Relaxed)
+                    == 0
+                {
+                    for entry in self.page_directory_list().await {
+                        if entry.loro_doc_id == hex_id(note_id) && entry.page_id != page_id {
+                            return Err(SyncError::Protocol(format!(
+                                "NoteUpsert {} directory PageId conflict",
+                                hex_id(note_id)
+                            )));
+                        }
+                    }
+                }
+                let stamped_content =
+                    tesela_core::storage::markdown::set_page_id_frontmatter(content, page_id);
                 let (mut parsed, minted_ids) =
-                    tesela_core::note_tree::parse_note_with_minted_ids(content);
+                    tesela_core::note_tree::parse_note_with_minted_ids(&stamped_content);
                 let minted_ids: std::collections::HashSet<uuid::Uuid> =
                     minted_ids.into_iter().collect();
                 let canonical = tesela_core::note_tree::serialize_note(&parsed);
                 if !tesela_core::note_tree::canonicalization_preserves_structure(
-                    content, &canonical,
+                    &stamped_content,
+                    &canonical,
                 ) {
                     return Err(SyncError::Protocol(format!(
                         "NoteUpsert {} changed structure during canonicalization",
                         hex_id(note_id)
                     )));
                 }
-                let doc = self.doc_for_note_mut(*note_id).await;
-                let root_meta = doc.get_map("root");
                 let legacy_content = root_meta
                     .get("content")
                     .and_then(|value| value.into_value().ok())
@@ -3315,6 +4866,9 @@ impl LoroEngine {
                 root_meta
                     .insert("title", title.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                root_meta
+                    .insert("page_id", page_id.to_string())
+                    .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
 
                 // Page properties are authoritative from the full
                 // content and overwritten wholesale on every NoteUpsert
@@ -3367,6 +4921,46 @@ impl LoroEngine {
                     &indexed_page_properties,
                 );
                 doc.commit();
+                let frontmatter_aliases =
+                    tesela_core::storage::markdown::parse_frontmatter(&stamped_content)
+                        .map(|(metadata, _)| metadata.aliases)
+                        .unwrap_or_default();
+                let directory_entry = self
+                    .page_directory_list()
+                    .await
+                    .into_iter()
+                    .find(|entry| entry.loro_doc_id == hex_id(note_id));
+                // A stale full-content upsert is allowed to update a live
+                // page's repairable display metadata, but it must never
+                // resurrect or clear an already-proven tombstone/conflict.
+                // Rename writes the forwarding record before the source
+                // tombstone, so retaining that exact entry keeps PageId
+                // resolution and relation provenance stable after delivery
+                // reordering.
+                let directory_entry = match directory_entry {
+                    Some(entry) if entry.deleted || entry.conflict => entry,
+                    Some(entry) => crate::engine::PageDirectoryEntry {
+                        page_id,
+                        loro_doc_id: hex_id(note_id),
+                        slug: display_alias.clone().unwrap_or_default(),
+                        title: title.clone(),
+                        aliases: Self::merged_page_aliases(&entry.aliases, &frontmatter_aliases),
+                        deleted: false,
+                        forward_to_loro_doc_id: entry.forward_to_loro_doc_id,
+                        conflict: false,
+                    },
+                    None => crate::engine::PageDirectoryEntry {
+                        page_id,
+                        loro_doc_id: hex_id(note_id),
+                        slug: display_alias.clone().unwrap_or_default(),
+                        title: title.clone(),
+                        aliases: frontmatter_aliases,
+                        deleted: false,
+                        forward_to_loro_doc_id: None,
+                        conflict: false,
+                    },
+                };
+                self.page_directory_upsert(directory_entry).await?;
                 // Register this note's blocks in the block_index.
                 let block_ids: Vec<[u8; 16]> =
                     parsed.blocks.iter().map(|b| *b.id.as_bytes()).collect();
@@ -3564,13 +5158,83 @@ impl LoroEngine {
                 // delete before the next tick (tesela-vuw5).
                 let doc = self.doc_for_note_mut(*note_id).await;
                 let root = doc.get_map("root");
+                let page_id = root
+                    .get("page_id")
+                    .and_then(|value| value.into_value().ok())
+                    .and_then(|value| value.into_string().ok())
+                    .and_then(|value| tesela_core::PageId::parse(&value))
+                    .unwrap_or_else(|| tesela_core::PageId::from_legacy_doc_id(note_id));
+                let read_root = |key: &str| {
+                    root.get(key)
+                        .and_then(|value| value.into_value().ok())
+                        .and_then(|value| value.into_string().ok())
+                        .map(|value| (*value).clone())
+                        .unwrap_or_default()
+                };
+                // A conflicting directory binding is a fail-closed identity
+                // state. Validate it before touching the note root: deleting
+                // one row of a same-document/two-PageId conflict could make
+                // the remaining row appear valid after a partial mutation.
+                let directory = self.page_directory_list().await;
+                let has_conflicting_binding = directory.iter().any(|entry| {
+                    entry.loro_doc_id == hex_id(note_id)
+                        && (entry.page_id != page_id
+                            || (entry.conflict && entry.forward_to_loro_doc_id.is_none()))
+                });
+                if has_conflicting_binding {
+                    return Err(SyncError::Protocol(format!(
+                        "cannot delete {} with a conflicted page-directory binding",
+                        hex_id(note_id)
+                    )));
+                }
+                let prior_directory = directory
+                    .into_iter()
+                    .find(|entry| entry.loro_doc_id == hex_id(note_id) && entry.page_id == page_id);
                 if let Some(slug) = display_alias.as_deref() {
                     root.insert("slug", slug)
                         .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
                 }
+                // Rename records forwarding before the source tombstone. Keep
+                // its exact pre-delete body on the source root as immutable
+                // provenance, so a directory arriving after a source snapshot
+                // can distinguish an offline source edit from an independently
+                // changed target block with the same bid.
+                if prior_directory
+                    .as_ref()
+                    .and_then(|entry| entry.forward_to_loro_doc_id.as_ref())
+                    .is_some()
+                    && root.get("forward_base").is_none()
+                {
+                    root.insert("forward_base", doc_full_markdown(&doc))
+                        .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                }
                 root.insert("deleted", true)
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                root.insert("page_id", page_id.to_string())
+                    .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
                 doc.commit();
+                // Persist the root tombstone before publishing the directory
+                // tombstone. On a crash between them, startup can repair the
+                // directory from the authoritative note root; the reverse
+                // ordering could resurrect a stale live note snapshot.
+                if let Some(snapshot_dir) = self.inner.snapshot_dir.as_ref() {
+                    self.save_snapshot_checked(snapshot_dir, *note_id).await?;
+                }
+                self.page_directory_upsert(crate::engine::PageDirectoryEntry {
+                    page_id,
+                    loro_doc_id: hex_id(note_id),
+                    slug: read_root("slug"),
+                    title: read_root("title"),
+                    aliases: prior_directory
+                        .as_ref()
+                        .map(|entry| entry.aliases.clone())
+                        .unwrap_or_default(),
+                    deleted: true,
+                    forward_to_loro_doc_id: prior_directory
+                        .and_then(|entry| entry.forward_to_loro_doc_id),
+                    conflict: false,
+                })
+                .await?;
                 self.index_remove(*note_id);
                 self.unregister_note_under_ownership(*note_id).await;
                 Some(*note_id)

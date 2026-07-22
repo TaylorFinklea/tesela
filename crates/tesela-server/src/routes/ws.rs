@@ -18,6 +18,7 @@ use tesela_core::{
 };
 use tokio::sync::{broadcast, mpsc};
 
+use crate::routes::notes::{is_property_definition, rebuild_relation_edges_for_materialized_note};
 use crate::state::{AppState, ConnId, GroupScope, WsDelta, WsEvent};
 
 /// Bound the identity read lease held while a group-scoped socket write is
@@ -466,6 +467,32 @@ pub async fn apply_inbound_delta(
         .into_iter()
         .map(|u| (u.doc, u.update_bytes))
         .collect();
+
+    // A Property page can stop being a property in this delta, so sample its
+    // prior materialized definition before the engine applies the update.
+    // A read failure takes the conservative path: rebuild the cache projection
+    // rather than retaining stale relation edges.
+    let mut prior_property_definition_docs = Vec::new();
+    let mut prior_slugs = Vec::new();
+    for (doc, _) in &pairs {
+        let Some(slug) = slug_for_note_id(engine, *doc).await else {
+            continue;
+        };
+        prior_slugs.push((*doc, slug.clone()));
+        match store.get(&NoteId::new(&slug)).await {
+            Ok(Some(note)) if is_property_definition(&note.content) => {
+                prior_property_definition_docs.push(*doc);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    "ws: unable to read {} before applying delta; rebuilding relation projection: {error}",
+                    slug
+                );
+                prior_property_definition_docs.push(*doc);
+            }
+        }
+    }
     let report = engine.apply_relay_updates(&pairs).await;
     let outcome = outcome_for_apply_report(pairs.len(), &report);
 
@@ -518,7 +545,18 @@ pub async fn apply_inbound_delta(
             continue;
         }
         seen.push(*doc);
-        emit_note_updated(engine, store, index, ws_tx, *doc).await;
+        emit_note_updated(
+            engine,
+            store,
+            index,
+            ws_tx,
+            *doc,
+            prior_property_definition_docs.contains(doc),
+            prior_slugs
+                .iter()
+                .find_map(|(prior_doc, slug)| (*prior_doc == *doc).then_some(slug.as_str())),
+        )
+        .await;
     }
     // Re-broadcast the exact applied bytes to the OTHER sockets. The hub
     // forwards what it received — it does not re-`produce` (finding #4-echo)
@@ -545,18 +583,44 @@ fn outcome_for_apply_report(
 
 /// Resolve a 16-byte note id to its slug, re-read the note via the store,
 /// reindex derived projections, and emit `WsEvent::NoteUpdated` so the web
-/// client invalidates and re-renders. Best-effort: a note whose slug can't
-/// be resolved (never indexed, deleted concurrently) is skipped silently.
+/// client invalidates and re-renders. A known pre-apply slug lets a tombstone
+/// remove its cached note/type rows before the cache-only relation projection
+/// is rebuilt.
 pub async fn emit_note_updated(
     engine: &dyn tesela_sync::SyncEngine,
     store: &FsNoteStore,
     index: &SqliteIndex,
     ws_tx: &broadcast::Sender<WsEvent>,
     note_id: [u8; 16],
+    prior_was_property_definition: bool,
+    prior_slug: Option<&str>,
 ) {
     let Some(slug) = slug_for_note_id(engine, note_id).await else {
+        if let Some(slug) = prior_slug {
+            if let Err(error) = index.remove(&NoteId::new(slug)).await {
+                tracing::warn!(
+                    "ws: remove cached tombstone {} after delta apply: {error}",
+                    slug
+                );
+            } else {
+                let _ = ws_tx.send(WsEvent::NoteDeleted {
+                    id: slug.to_string(),
+                });
+            }
+        }
+        // Directory updates and source tombstones are intentionally absent from
+        // the note index. Rebuild the cache-only projection from every live
+        // directory binding so neither one leaves a stale relation backlink.
+        if let Err(error) =
+            crate::rebuild_relation_edges_from_page_directory(store, index, engine).await
+        {
+            tracing::warn!(
+                "ws: rebuild relation edges after non-indexed delta {}: {error}",
+                hex::encode(note_id)
+            );
+        }
         tracing::debug!(
-            "ws: applied delta for unknown note id {} — skipping WsEvent",
+            "ws: applied delta for non-indexed id {} — skipping WsEvent",
             hex::encode(note_id)
         );
         return;
@@ -564,10 +628,26 @@ pub async fn emit_note_updated(
     let id = NoteId::new(&slug);
     match store.get(&id).await {
         Ok(Some(note)) => {
-            // Rebuild the SQL projections (search, tasks view) the same way
-            // the HTTP edit path does, so web reads reflect the merged state.
             if let Err(e) = index.reindex(&note).await {
                 tracing::warn!("ws: reindex after delta apply for {}: {}", slug, e);
+            }
+            if prior_was_property_definition || is_property_definition(&note.content) {
+                if let Err(error) =
+                    crate::rebuild_relation_edges_from_page_directory(store, index, engine).await
+                {
+                    tracing::warn!(
+                        "ws: rebuild relation edges after property definition delta for {}: {error}",
+                        slug
+                    );
+                }
+            } else if let Err(e) =
+                rebuild_relation_edges_for_materialized_note(engine, index, &note).await
+            {
+                tracing::warn!(
+                    "ws: rebuild relation edges after delta apply for {}: {:?}",
+                    slug,
+                    e
+                );
             }
             let _ = ws_tx.send(WsEvent::NoteUpdated { note });
         }
@@ -611,7 +691,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tesela_core::stable_uuid_from_slug as note_id_for;
-    use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
+    use tesela_core::traits::link_graph::LinkGraph;
+    use tesela_sync::{
+        DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, PropOp, PropScalar, SyncEngine,
+    };
 
     fn group_scope(group: u8, key: u8) -> GroupScope {
         GroupScope::capture(&tesela_sync::GroupIdentity {
@@ -981,6 +1064,240 @@ mod tests {
                 "must reject {invalid}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn inbound_property_definition_change_rebuilds_relation_projection() {
+        let h = harness().await;
+        let target_id = note_id_for("remote-relation-target");
+        let property_id = note_id_for("remote-relation-property");
+        let source_id = note_id_for("remote-relation-source");
+        let target_page_id = tesela_core::PageId::from_legacy_doc_id(&target_id).to_string();
+
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: target_id,
+                display_alias: Some("remote-relation-target".into()),
+                title: "Remote relation target".into(),
+                content: "- target <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: property_id,
+                display_alias: Some("remote_relation_project".into()),
+                title: "remote_relation_project".into(),
+                content: "---\ntitle: remote_relation_project\ntype: Property\nvalue_type: node\n---\n- property\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: source_id,
+                display_alias: Some("remote-relation-source".into()),
+                title: "Remote relation source".into(),
+                content: "- source <!-- bid:02020202-0202-0202-0202-020202020202 -->\n".into(),
+                created_at_millis: 3,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: source_id,
+                block_id: [2; 16],
+                key: "remote_relation_project".into(),
+                value: PropOp::SetScalar(PropScalar::Text(target_page_id.clone())),
+            })
+            .await
+            .unwrap();
+
+        let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(16);
+        let (delta_tx, _) = tokio::sync::broadcast::channel::<WsDelta>(16);
+        for note_id in [target_id, property_id, source_id] {
+            let frame = delta_frame(&h.device, note_id).await;
+            apply_inbound_delta(
+                &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the remotely materialized Node property creates an edge"
+        );
+
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: property_id,
+                display_alias: Some("remote_relation_project".into()),
+                title: "remote_relation_project".into(),
+                content: "---\ntitle: remote_relation_project\ntype: Property\nvalue_type: text\n---\n- property\n".into(),
+                created_at_millis: 4,
+            })
+            .await
+            .unwrap();
+        let frame = delta_frame(&h.device, property_id).await;
+        apply_inbound_delta(
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+        )
+        .await;
+
+        assert!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .is_empty(),
+            "a remote Node-to-Text definition change removes stale relation edges"
+        );
+
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: property_id,
+                display_alias: Some("remote_relation_project".into()),
+                title: "remote_relation_project".into(),
+                content: "---\ntitle: remote_relation_project\ntype: Property\nvalue_type: node\n---\n- property\n".into(),
+                created_at_millis: 5,
+            })
+            .await
+            .unwrap();
+        let frame = delta_frame(&h.device, property_id).await;
+        apply_inbound_delta(
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+        )
+        .await;
+        assert_eq!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "restoring a Node definition rebuilds the relation edge"
+        );
+
+        h.device
+            .record_local(OpPayload::NoteDelete {
+                note_id: property_id,
+                display_alias: Some("remote_relation_project".into()),
+            })
+            .await
+            .unwrap();
+        let frame = delta_frame(&h.device, property_id).await;
+        apply_inbound_delta(
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+        )
+        .await;
+        assert!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .is_empty(),
+            "a remote Property tombstone removes stale relation edges"
+        );
+        assert!(
+            h.index.get_all_property_defs().await.unwrap().is_empty(),
+            "a remote Property tombstone removes the stale property definition"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_source_tombstone_clears_relation_backlinks() {
+        let h = harness().await;
+        let target_id = note_id_for("remote-deleted-source-target");
+        let property_id = note_id_for("remote-deleted-source-property");
+        let source_id = note_id_for("remote-deleted-source");
+        let target_page_id = tesela_core::PageId::from_legacy_doc_id(&target_id).to_string();
+
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: target_id,
+                display_alias: Some("remote-deleted-source-target".into()),
+                title: "Remote deleted source target".into(),
+                content: "- target <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: property_id,
+                display_alias: Some("remote_deleted_source_project".into()),
+                title: "remote_deleted_source_project".into(),
+                content: "---\ntitle: remote_deleted_source_project\ntype: Property\nvalue_type: node\n---\n- property\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::NoteUpsert {
+                note_id: source_id,
+                display_alias: Some("remote-deleted-source".into()),
+                title: "Remote deleted source".into(),
+                content: "- source <!-- bid:02020202-0202-0202-0202-020202020202 -->\n".into(),
+                created_at_millis: 3,
+            })
+            .await
+            .unwrap();
+        h.device
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: source_id,
+                block_id: [2; 16],
+                key: "remote_deleted_source_project".into(),
+                value: PropOp::SetScalar(PropScalar::Text(target_page_id.clone())),
+            })
+            .await
+            .unwrap();
+
+        let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(16);
+        let (delta_tx, _) = tokio::sync::broadcast::channel::<WsDelta>(16);
+        for note_id in [target_id, property_id, source_id] {
+            let frame = delta_frame(&h.device, note_id).await;
+            apply_inbound_delta(
+                &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+            )
+            .await;
+        }
+        assert_eq!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the remote live source initially has one relation edge"
+        );
+
+        h.device
+            .record_local(OpPayload::NoteDelete {
+                note_id: source_id,
+                display_alias: Some("remote-deleted-source".into()),
+            })
+            .await
+            .unwrap();
+        let frame = delta_frame(&h.device, source_id).await;
+        apply_inbound_delta(
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, None, None, None,
+        )
+        .await;
+
+        assert!(
+            h.index
+                .get_relation_backlinks(tesela_core::PageId::parse(&target_page_id).unwrap())
+                .await
+                .unwrap()
+                .is_empty(),
+            "a remote source tombstone removes its relation backlink"
+        );
     }
 
     #[test]

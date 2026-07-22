@@ -66,7 +66,7 @@ keyring = { version = "3", features = ["apple-native"] }
 postcard = { version = "1", features = ["alloc"] }
 uhlc = "0.8"
 blake3 = "1"
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 futures = "0.3"
 mdns-sd = { version = "0.13", default-features = false, features = ["async"] }
 base64 = "0.22"

@@ -368,6 +368,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// `indexPageCache` and refreshed on each `.relay` refresh so `[[`
     /// link autocomplete can filter it synchronously per keystroke.
     var onIndexEntries: (() async -> [IndexEntryRecord]?)? = nil
+    /// Canonical identity directory for Node-property selection in relay mode.
+    /// Unlike the materialized note cache, this includes pages never opened on
+    /// this device.
+    var onPageDirectoryList: (() async -> [PageDirectoryEntry]?)? = nil
+    private var pageDirectoryCandidates: [NodePageCandidate] = []
+    private var pageDirectoryEntries: [PageDirectoryEntry] = []
+    /// Set only after the relay engine has supplied a directory snapshot.
+    /// An empty snapshot is authoritative: falling back to local materialized
+    /// files would let a stale cache rebind a relation the directory cannot
+    /// currently resolve.
+    private var hasPageDirectorySnapshot = false
     private var indexPageCache: [Page] = []
     private var indexTagCache: [String] = []
 
@@ -1231,6 +1242,130 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return LinkSuggest.rank(visible, query: q, limit: limit)
     }
 
+    /// Canonical PageId candidates for typed Node properties. Relay mode uses
+    /// the synced page directory so unopened notes remain selectable; other
+    /// modes use the same materialized-note source as their existing picker.
+    func searchableNodePages(_ query: String, limit: Int = 50) -> [NodePageCandidate] {
+        let candidates: [NodePageCandidate]
+        if case .relay = currentBackend, hasPageDirectorySnapshot {
+            candidates = pageDirectoryCandidates
+        } else {
+            candidates = loadAllLocalNotes().compactMap { note -> NodePageCandidate? in
+                guard let pageId = note.metadata.custom["tesela_page_id"] as? String else { return nil }
+                return NodePageCandidate(pageId: pageId, slug: note.id, title: note.title)
+            }
+        }
+        return PropertyEditing.rankNodeCandidates(candidates, query: query, limit: limit)
+    }
+
+    /// Project only unambiguous live bindings. Selecting a stale tombstone,
+    /// an explicitly conflicted record, or two live bindings for one PageId
+    /// could silently write a relation to the wrong page, so all three fail
+    /// closed before the picker sees them.
+    static func nodePageCandidates(from directory: [PageDirectoryEntry]) -> [NodePageCandidate] {
+        let live = directory.filter { !$0.deleted && !$0.conflict }
+        let groups = Dictionary(grouping: live) { $0.pageId.lowercased() }
+        return groups.values.compactMap { records in
+            guard records.count == 1, let entry = records.first else { return nil }
+            return NodePageCandidate(
+                pageId: entry.pageId,
+                slug: entry.slug,
+                title: entry.title,
+                aliases: entry.aliases
+            )
+        }
+        .sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+    }
+
+    /// Resolve a PageId only from a single live directory binding. The
+    /// directory's historical tombstones distinguish a deleted relation from
+    /// an unknown legacy string; malformed duplicate live bindings remain a
+    /// conflict rather than selecting an arbitrary page.
+    static func nodePageResolution(
+        for pageId: String,
+        directory: [PageDirectoryEntry],
+        directoryIsAuthoritative: Bool = true
+    ) -> NodePageResolution? {
+        let records = directory.filter {
+            $0.pageId.caseInsensitiveCompare(pageId) == .orderedSame
+        }
+        guard !records.isEmpty else {
+            return directoryIsAuthoritative ? .unresolved : nil
+        }
+        if records.contains(where: \.conflict) { return .conflict }
+        let live = records.filter { !$0.deleted }
+        guard live.count == 1, let record = live.first else {
+            return live.isEmpty ? .deleted : .conflict
+        }
+        return .resolved(title: record.title, slug: record.slug)
+    }
+
+    func nodePageResolution(for pageId: String) -> NodePageResolution {
+        if let resolution = Self.nodePageResolution(
+            for: pageId,
+            directory: pageDirectoryEntries,
+            directoryIsAuthoritative: hasPageDirectorySnapshot
+        ) {
+            return resolution
+        }
+        if case .relay = currentBackend, hasPageDirectorySnapshot {
+            return .unresolved
+        }
+        let matches = loadAllLocalNotes().filter {
+            guard let candidate = $0.metadata.custom["tesela_page_id"] as? String else { return false }
+            return candidate.caseInsensitiveCompare(pageId) == .orderedSame
+        }
+        guard matches.count == 1, let note = matches.first else { return .unresolved }
+        return .resolved(title: note.title, slug: note.id)
+    }
+
+    /// Resolve a canonical Node value to its current page slug. Conflicts and
+    /// legacy non-UUID text return nil rather than guessing a destination.
+    func nodePageSlug(_ pageId: String) -> String? {
+        guard case let .resolved(_, slug) = nodePageResolution(for: pageId) else {
+            return nil
+        }
+        return slug
+    }
+
+    func nodePageId(for slug: String) -> String? {
+        loadAllLocalNotes().first(where: { $0.id == slug })?.metadata.custom["tesela_page_id"] as? String
+    }
+
+    /// Additive backlink projection for local Node properties; wiki backlinks
+    /// remain in `loadedBacklinks` and callers merge both lists.
+    func relationBacklinks(for targetPageId: String) -> [Backlink] {
+        loadAllLocalNotes().flatMap { note in
+            let pageRelations = note.metadata.custom.compactMap { key, raw -> Backlink? in
+                guard propertyRegistry.properties[key.lowercased()]?.valueType == .node,
+                      let value = raw as? String,
+                      value.caseInsensitiveCompare(targetPageId) == .orderedSame
+                else { return nil }
+                return Backlink(
+                    id: UUID(),
+                    from: note.title,
+                    snippet: "\(key) relation · page",
+                    pageId: note.id
+                )
+            }
+            let blockRelations: [Backlink] = parseBlocks(from: note.body, noteId: note.id).compactMap { block in
+                guard let property = block.properties.first(where: {
+                    propertyRegistry.properties[$0.key.lowercased()]?.valueType == .node
+                        && $0.value.caseInsensitiveCompare(targetPageId) == .orderedSame
+                }) else { return nil }
+                return Backlink(
+                    id: UUID(),
+                    from: note.title,
+                    snippet: "\(property.key) relation · block \(block.id)",
+                    pageId: note.id
+                )
+            }
+            return pageRelations + blockRelations
+        }
+    }
+
     func blockMoveDestinations(
         query: String,
         excluding sourceSlug: String
@@ -1325,21 +1460,41 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let expectedGeneration = generation ?? backendGeneration
         let backend = currentBackend
         guard case .relay = backend,
-              isCurrentBackend(generation: expectedGeneration, backend: backend),
-              let load = onIndexEntries
+              isCurrentBackend(generation: expectedGeneration, backend: backend)
         else { return }
-        guard let entries = await load() else { return }
-        guard isCurrentBackend(generation: expectedGeneration, backend: backend) else { return }
-        let today = dailyId(daysAgo: 0)
-        indexPageCache = entries.compactMap { e in
-            let slug = e.slug.isEmpty ? e.noteIdHex : e.slug
-            guard slug != today else { return nil }
-            return Page(id: slug, title: e.title.isEmpty ? slug : e.title,
-                        slug: slug, type: "note", edited: "", blocks: 0, refs: 0)
+
+        if let load = onIndexEntries,
+           let entries = await load(),
+           isCurrentBackend(generation: expectedGeneration, backend: backend) {
+            let today = dailyId(daysAgo: 0)
+            indexPageCache = entries.compactMap { entry in
+                let slug = entry.slug.isEmpty ? entry.noteIdHex : entry.slug
+                guard slug != today else { return nil }
+                return Page(
+                    id: slug,
+                    title: entry.title.isEmpty ? slug : entry.title,
+                    slug: slug,
+                    type: "note",
+                    edited: "",
+                    blocks: 0,
+                    refs: 0
+                )
+            }
+            var tagSet = Set<String>()
+            for entry in entries {
+                for tag in entry.tags where !tag.isEmpty {
+                    tagSet.insert(tag)
+                }
+            }
+            indexTagCache = tagSet.sorted()
         }
-        var tagSet = Set<String>()
-        for e in entries { for t in e.tags where !t.isEmpty { tagSet.insert(t) } }
-        indexTagCache = tagSet.sorted()
+        if let loadDirectory = onPageDirectoryList,
+           let directory = await loadDirectory(),
+           isCurrentBackend(generation: expectedGeneration, backend: backend) {
+            pageDirectoryCandidates = Self.nodePageCandidates(from: directory)
+            pageDirectoryEntries = directory
+            hasPageDirectorySnapshot = true
+        }
     }
 
     func capture(_ text: String) {
@@ -2608,6 +2763,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
         inMemoryLoadedAt = [:]
         todayLoadedAt = nil
         indexPageCache = []
+        pageDirectoryCandidates = []
+        pageDirectoryEntries = []
+        hasPageDirectorySnapshot = false
         indexTagCache = []
         propertyRegistry = PropertyRegistry()
         materializedDailySlugCache = nil
@@ -5257,6 +5415,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // matcher compares typed values (number/date/checkbox) instead of
         // guessing from strings. Mirrors the web QueryBlock's buildRegistry.
         let propertyTypes = buildPropertyTypeRegistry(allNotes)
+        let nodeContext = localNodeQueryContext(from: allNotes)
         var items: [QueryItem] = []
         switch parsed.kind {
         case .block:
@@ -5268,7 +5427,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     noteTitle: note.title,
                     pageNoteType: note.metadata.note_type,
                     dsl: parsed,
-                    propertyTypes: propertyTypes
+                    propertyTypes: propertyTypes,
+                    nodeContext: nodeContext
                 )
             }
         case .page:
@@ -5308,7 +5468,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 guard LocalQueryEngine.evalExpr(
                     parsed.expr,
                     ctx: context,
-                    propertyTypes: propertyTypes
+                    propertyTypes: propertyTypes,
+                    nodeContext: nodeContext
                 ) else { continue }
                 items.append(QueryItem(
                     block_id: nil,
@@ -5375,6 +5536,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
         default:
             return item.properties.first { $0.key.lowercased() == field.lowercased() }?.value
         }
+    }
+
+    /// The synced directory is authoritative after the relay supplies even
+    /// an empty snapshot. Local frontmatter is only a pre-snapshot fallback:
+    /// it cannot safely resolve aliases, tombstones, or identity conflicts.
+    private func localNodeQueryContext(
+        from notes: [APINote]
+    ) -> LocalQueryEngine.NodeQueryContext {
+        if hasPageDirectorySnapshot {
+            let conflictedPageIds = Set(
+                pageDirectoryEntries
+                    .filter(\.conflict)
+                    .map { $0.pageId.lowercased() }
+            )
+            return LocalQueryEngine.NodeQueryContext(pages: pageDirectoryEntries.map { entry in
+                LocalQueryEngine.NodeQueryPage(
+                    pageId: entry.pageId,
+                    slug: entry.slug,
+                    title: entry.title,
+                    aliases: entry.aliases,
+                    deleted: entry.deleted || conflictedPageIds.contains(entry.pageId.lowercased())
+                )
+            })
+        }
+        return LocalQueryEngine.NodeQueryContext(pages: notes.compactMap { note in
+            guard let pageId = note.metadata.custom["tesela_page_id"] as? String else { return nil }
+            return LocalQueryEngine.NodeQueryPage(
+                pageId: pageId,
+                slug: note.id,
+                title: note.title,
+                aliases: [],
+                deleted: false
+            )
+        })
     }
 
     /// `lowercased property name → value_type` from the local Property pages,

@@ -371,6 +371,10 @@ struct PropertyChip: View {
     var onEdit: (() -> Void)? = nil
     /// Checkbox-only immediate toggle.
     var onToggle: (() -> Void)? = nil
+    /// Navigate a resolved Node PageId. Nil keeps legacy/non-resolved values visible.
+    var onOpenNode: (() -> Void)? = nil
+    /// Resolved title or explicit failure state for a Node property.
+    var nodeDisplayValue: String? = nil
 
     @Environment(\.theme) private var theme
 
@@ -383,7 +387,9 @@ struct PropertyChip: View {
     private var bgColor: Color { (tint ?? theme.fgMuted).opacity(tint == nil ? 0.10 : 0.16) }
 
     private var labelMode: ChipLabelMode { ChipFormat.labelMode(for: def) }
-    private var formattedValue: String { ChipFormat.formattedValue(value, def: def) }
+    private var formattedValue: String {
+        nodeDisplayValue ?? ChipFormat.formattedValue(value, def: def)
+    }
     private var labelText: String? { ChipFormat.labelText(for: def, fallbackKey: key) }
     private var icon: (symbol: String?, emoji: String?) {
         ChipIconRegistry.resolve(def?.chipIcon)
@@ -409,6 +415,10 @@ struct PropertyChip: View {
                     .accessibilityLabel("Edit \(def?.name ?? key)")
                 }
             }
+        } else if def?.valueType == .node, let onOpenNode {
+            Button(action: onOpenNode) { chipLabel }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(def?.name ?? key): \(value)")
         } else if def?.valueType == .checkbox, let onToggle {
             Button(action: onToggle) { chipLabel }
                 .buttonStyle(.plain)

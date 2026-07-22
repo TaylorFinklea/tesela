@@ -62,6 +62,8 @@ pub struct PropOverride {
     hide_choices: Vec<String>,
 }
 
+pub type PropertyOverrideRow = (String, Vec<(String, Vec<String>)>);
+
 /// Parse one override object (`{choices: [...], show: "on_new", default: "todo",
 /// hide_choices: [...]}`) from a JSON value. Unknown/malformed fields are
 /// ignored rather than erroring — a Tag page is user content.
@@ -81,7 +83,9 @@ fn parse_prop_override(v: &serde_json::Value) -> PropOverride {
     };
     PropOverride {
         choices: obj.get("choices").map(str_array),
-        default: obj.get("default").and_then(|d| d.as_str().map(String::from)),
+        default: obj
+            .get("default")
+            .and_then(|d| d.as_str().map(String::from)),
         show: obj
             .get("show")
             .and_then(|s| s.as_str())
@@ -91,10 +95,7 @@ fn parse_prop_override(v: &serde_json::Value) -> PropOverride {
                 "hidden" => Some(crate::types::Visibility::Hidden),
                 _ => None,
             }),
-        hide_choices: obj
-            .get("hide_choices")
-            .map(str_array)
-            .unwrap_or_default(),
+        hide_choices: obj.get("hide_choices").map(str_array).unwrap_or_default(),
     }
 }
 
@@ -107,10 +108,9 @@ fn parse_prop_override(v: &serde_json::Value) -> PropOverride {
 /// walk order (child first). Each `hidden_{Prop}` legacy key is folded into
 /// the same property's `hide_choices` subtract list.
 pub fn build_overrides(
-    rows: &[(String, Vec<(String, Vec<String>)>)],
+    rows: &[PropertyOverrideRow],
 ) -> std::collections::HashMap<String, PropOverride> {
-    let mut map: std::collections::HashMap<String, PropOverride> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, PropOverride> = std::collections::HashMap::new();
     for (overrides_json, hidden_pairs) in rows {
         // property_overrides.{Prop}
         if let Ok(serde_json::Value::Object(obj)) =
@@ -627,6 +627,65 @@ impl SqliteIndex {
         Ok(())
     }
 
+    /// Refresh the rebuildable typed-relation projection for a note that the
+    /// caller has already resolved to a live, non-conflicting PageId directory
+    /// binding. `reindex` deliberately does not invoke this: an index rebuild
+    /// has no authority to invent relation identity from frontmatter alone.
+    pub async fn rebuild_relation_edges_from_authoritative_note(
+        &self,
+        note: &Note,
+        source_page_id: crate::PageId,
+    ) -> Result<()> {
+        self.remove_relation_edges_for_note(note.id.as_str())
+            .await?;
+        let types = self.property_type_map().await?;
+        let is_node = |key: &str| {
+            types.get(&key.to_ascii_lowercase()) == Some(&crate::property::ValueType::Node)
+        };
+
+        for (key, value) in crate::note_tree::parse_note(&note.content).page_properties {
+            if is_node(&key) {
+                if let Some(target_page_id) = crate::PageId::parse(&value) {
+                    self.upsert_relation_edge(&crate::RelationEdge {
+                        source_page_id,
+                        source_note_id: note.id.as_str().to_owned(),
+                        source_block_id: None,
+                        property_key: key,
+                        target_page_id,
+                    })
+                    .await?;
+                }
+            }
+        }
+        for block in crate::block::parse_blocks(note.id.as_str(), &note.body) {
+            for (key, value) in block.properties {
+                if is_node(&key) {
+                    if let Some(target_page_id) = crate::PageId::parse(&value) {
+                        self.upsert_relation_edge(&crate::RelationEdge {
+                            source_page_id,
+                            source_note_id: note.id.as_str().to_owned(),
+                            source_block_id: block.bid.clone(),
+                            property_key: key,
+                            target_page_id,
+                        })
+                        .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Clear the rebuildable typed-relation projection without touching the
+    /// independent note, link, or type-definition caches.
+    pub async fn clear_relation_edges(&self) -> Result<()> {
+        sqlx::query("DELETE FROM relation_edges")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to clear relation edges", e))?;
+        Ok(())
+    }
+
     /// Take a consistent snapshot of the database into `target` via
     /// SQLite's `VACUUM INTO`. Unlike a raw `fs::copy` of `tesela.db`,
     /// this is safe while the database is open in WAL mode — `VACUUM
@@ -665,6 +724,11 @@ impl SqliteIndex {
     /// This is used when the database is lost or out of sync with the filesystem.
     pub async fn rebuild_from_notes(&self, notes: &[Note]) -> Result<usize> {
         // Clear existing data
+        sqlx::query("DELETE FROM relation_edges")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to clear relation edges", e))?;
+
         sqlx::query("DELETE FROM links")
             .execute(&self.pool)
             .await
@@ -806,7 +870,7 @@ impl SqliteIndex {
         // Collect properties by walking the extends chain (child → parent → root)
         let mut all_property_names: Vec<String> = Vec::new();
         // Per-row override JSON in child→parent order, fed to build_overrides.
-        let mut override_rows: Vec<(String, Vec<(String, Vec<String>)>)> = Vec::new();
+        let mut override_rows: Vec<PropertyOverrideRow> = Vec::new();
         let mut current_name = name.to_string();
         let mut icon = "📄".to_string();
         let mut color = "#808080".to_string();
@@ -946,8 +1010,7 @@ impl SqliteIndex {
             // override merge over just this row's overrides — consistent
             // child-wins semantics, just with a single-element chain.
             let overrides_json: String = row.get("property_overrides_json");
-            let overrides =
-                build_overrides(&[(overrides_json, legacy_hidden_pairs())]);
+            let overrides = build_overrides(&[(overrides_json, legacy_hidden_pairs())]);
 
             // Resolve each property name against property_defs for full schema
             let mut resolved_props = Vec::new();
@@ -1148,19 +1211,7 @@ impl SearchIndex for SqliteIndex {
         group: Option<&str>,
         sort: Option<&str>,
     ) -> Result<crate::query::QueryResult> {
-        use crate::query::{Kind, QueryResult};
-        let mut items = match query.kind {
-            Kind::Block => self.execute_block_query(query).await?,
-            Kind::Page => self.execute_page_query(query).await?,
-        };
-        // DSL-embedded `ORDER BY` wins over the external param so a
-        // saved-query note can carry its own sort spec; the external
-        // `sort` arg remains the fallback for ad-hoc callers that
-        // want to override without modifying the DSL.
-        let effective_sort = query.sort.as_deref().or(sort);
-        apply_sort(&mut items, effective_sort);
-        let groups = apply_group(items, group);
-        Ok(QueryResult { groups })
+        self.execute_query_inner(query, group, sort, None).await
     }
 
     async fn record_version(
@@ -1581,14 +1632,53 @@ impl SearchIndex for SqliteIndex {
 // ---------------------------------------------------------------------------
 
 impl SqliteIndex {
+    /// Execute a query with page-directory resolution for Node predicates.
+    /// Existing callers without synced directory authority retain the legacy
+    /// matcher through [`SearchIndex::execute_query`].
+    pub async fn execute_query_with_context(
+        &self,
+        query: &crate::query::ParsedQuery,
+        group: Option<&str>,
+        sort: Option<&str>,
+        context: &crate::query::QueryContext,
+    ) -> Result<crate::query::QueryResult> {
+        self.execute_query_inner(query, group, sort, Some(context))
+            .await
+    }
+
+    async fn execute_query_inner(
+        &self,
+        query: &crate::query::ParsedQuery,
+        group: Option<&str>,
+        sort: Option<&str>,
+        context: Option<&crate::query::QueryContext>,
+    ) -> Result<crate::query::QueryResult> {
+        use crate::query::{Kind, QueryResult};
+        let mut items = match query.kind {
+            Kind::Block => self.execute_block_query(query, context).await?,
+            Kind::Page => self.execute_page_query(query, context).await?,
+        };
+        // DSL-embedded `ORDER BY` wins over the external param so a
+        // saved-query note can carry its own sort spec; the external
+        // `sort` arg remains the fallback for ad-hoc callers that
+        // want to override without modifying the DSL.
+        let effective_sort = query.sort.as_deref().or(sort);
+        apply_sort(&mut items, effective_sort);
+        let groups = apply_group(items, group);
+        Ok(QueryResult { groups })
+    }
+
     /// Execute a `kind:block` query. Strategy: pull a candidate set of notes
     /// from SQL using the most selective tag filter (or all notes if none),
     /// parse blocks, then refine in-memory with [`crate::query::block_matches`].
     async fn execute_block_query(
         &self,
         query: &crate::query::ParsedQuery,
+        context: Option<&crate::query::QueryContext>,
     ) -> Result<Vec<crate::query::QueryItem>> {
-        use crate::query::{block_matches_typed, Kind, QueryItem, QueryOp};
+        use crate::query::{
+            block_matches_typed, block_matches_typed_with_context, Kind, QueryItem, QueryOp,
+        };
 
         // L5: typed-comparison registry — built once, consulted per block.
         let types = self.property_type_map().await?;
@@ -1656,7 +1746,13 @@ impl SqliteIndex {
             }
             // Refine each block in-memory.
             for (idx, block) in blocks.iter().enumerate() {
-                if !block_matches_typed(block, query, &types) {
+                let matched = match context {
+                    Some(context) => {
+                        block_matches_typed_with_context(block, query, &types, context).matched
+                    }
+                    None => block_matches_typed(block, query, &types),
+                };
+                if !matched {
                     continue;
                 }
                 // Walk back through earlier blocks at lower indent_level to
@@ -1760,8 +1856,11 @@ impl SqliteIndex {
     async fn execute_page_query(
         &self,
         query: &crate::query::ParsedQuery,
+        context: Option<&crate::query::QueryContext>,
     ) -> Result<Vec<crate::query::QueryItem>> {
-        use crate::query::{block_matches_typed, Kind, QueryItem};
+        use crate::query::{
+            block_matches_typed, block_matches_typed_with_context, Kind, QueryItem,
+        };
         use std::collections::HashMap;
 
         // L5: typed-comparison registry — built once, consulted per page-block.
@@ -1802,6 +1901,12 @@ impl SqliteIndex {
                     }
                 }
             }
+            // Canonical page-owned values render as `key:: value` lines
+            // immediately after frontmatter. They are authoritative over a
+            // legacy YAML custom field of the same name.
+            for (key, value) in crate::note_tree::parse_note(&content).page_properties {
+                props.insert(key, value);
+            }
             if let Some(nt) = &note_type {
                 props.insert("note_type".to_string(), nt.clone());
             }
@@ -1826,7 +1931,13 @@ impl SqliteIndex {
                 // on this field don't make sense for page queries.
                 parent_note_type: None,
             };
-            if !block_matches_typed(&pseudo, query, &types) {
+            let matched = match context {
+                Some(context) => {
+                    block_matches_typed_with_context(&pseudo, query, &types, context).matched
+                }
+                None => block_matches_typed(&pseudo, query, &types),
+            };
+            if !matched {
                 continue;
             }
             out.push(QueryItem {
@@ -2067,6 +2178,114 @@ impl LinkGraph for SqliteIndex {
 
         Ok(())
     }
+
+    async fn upsert_relation_edge(&self, edge: &crate::link::RelationEdge) -> Result<()> {
+        sqlx::query(
+            r#"INSERT OR REPLACE INTO relation_edges
+               (source_page_id, source_note_id, source_block_id, property_key, target_page_id)
+               VALUES (?, ?, ?, ?, ?)"#,
+        )
+        .bind(edge.source_page_id.to_string())
+        .bind(&edge.source_note_id)
+        .bind(&edge.source_block_id)
+        .bind(&edge.property_key)
+        .bind(edge.target_page_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_err("Failed to upsert relation edge", error))?;
+        Ok(())
+    }
+
+    async fn remove_relation_edge(
+        &self,
+        source_page_id: crate::PageId,
+        source_block_id: Option<&str>,
+        property_key: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"DELETE FROM relation_edges
+               WHERE source_page_id = ? AND property_key = ?
+                 AND ((source_block_id IS NULL AND ? IS NULL) OR source_block_id = ?)"#,
+        )
+        .bind(source_page_id.to_string())
+        .bind(property_key)
+        .bind(source_block_id)
+        .bind(source_block_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_err("Failed to remove relation edge", error))?;
+        Ok(())
+    }
+
+    async fn remove_relation_edges_for_note(&self, source_note_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM relation_edges WHERE source_note_id = ?")
+            .bind(source_note_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_err("Failed to remove relation edges for note", error))?;
+        Ok(())
+    }
+
+    async fn get_relation_backlinks(
+        &self,
+        target: crate::PageId,
+    ) -> Result<Vec<crate::link::RelationBacklink>> {
+        let rows = sqlx::query(
+            r#"SELECT r.source_page_id, r.source_note_id, r.source_block_id,
+                      r.property_key, r.target_page_id,
+                      COALESCE(n.id, r.source_note_id) AS source_slug,
+                      COALESCE(n.title, r.source_note_id) AS source_title
+               FROM relation_edges r
+               LEFT JOIN notes n ON n.id = r.source_note_id
+               WHERE r.target_page_id = ?
+               ORDER BY source_title, r.source_block_id, r.property_key"#,
+        )
+        .bind(target.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| db_err("Failed to get relation backlinks", error))?;
+        rows.into_iter()
+            .map(|row| {
+                let source_page_id: String = row
+                    .try_get("source_page_id")
+                    .map_err(|error| db_err("Invalid relation source PageId column", error))?;
+                let target_page_id: String = row
+                    .try_get("target_page_id")
+                    .map_err(|error| db_err("Invalid relation target PageId column", error))?;
+                let source_page_id =
+                    crate::PageId::parse(&source_page_id).ok_or_else(|| TeselaError::Database {
+                        message: "invalid relation source PageId".into(),
+                        source: None,
+                    })?;
+                let target_page_id =
+                    crate::PageId::parse(&target_page_id).ok_or_else(|| TeselaError::Database {
+                        message: "invalid relation target PageId".into(),
+                        source: None,
+                    })?;
+                Ok(crate::link::RelationBacklink {
+                    edge: crate::link::RelationEdge {
+                        source_page_id,
+                        source_note_id: row.try_get("source_note_id").map_err(|error| {
+                            db_err("Invalid relation source note column", error)
+                        })?,
+                        source_block_id: row.try_get("source_block_id").map_err(|error| {
+                            db_err("Invalid relation source block column", error)
+                        })?,
+                        property_key: row
+                            .try_get("property_key")
+                            .map_err(|error| db_err("Invalid relation property column", error))?,
+                        target_page_id,
+                    },
+                    source_slug: row
+                        .try_get("source_slug")
+                        .map_err(|error| db_err("Invalid relation source slug column", error))?,
+                    source_title: row
+                        .try_get("source_title")
+                        .map_err(|error| db_err("Invalid relation source title column", error))?,
+                })
+            })
+            .collect()
+    }
 }
 
 /// Map a link row to a Link struct.
@@ -2223,6 +2442,139 @@ mod tests {
         // Verify it is gone
         let results = index.search("Removable", 10, 0).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reindex_does_not_project_relations_without_directory_authority() {
+        use crate::traits::search_index::SearchIndex as _;
+
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let target = crate::PageId::from_legacy_doc_id(&[2; 16]);
+        let source_page_id = crate::PageId::from_legacy_doc_id(&[1; 16]);
+
+        let mut property = make_test_note("project", "Project", "- definition\n", &[]);
+        property.metadata.note_type = Some("Property".into());
+        property.metadata.custom.insert(
+            "value_type".into(),
+            serde_json::Value::String("node".into()),
+        );
+        index.reindex(&property).await.unwrap();
+
+        let mut source = make_test_note(
+            "source",
+            "Source",
+            &format!("- Related\n  project:: {target}\n"),
+            &[],
+        );
+        source.content =
+            crate::storage::markdown::set_page_id_frontmatter(&source.content, source_page_id);
+        index.reindex(&source).await.unwrap();
+
+        assert!(
+            index
+                .get_relation_backlinks(target)
+                .await
+                .unwrap()
+                .is_empty(),
+            "only a directory-authorized source can project relations"
+        );
+    }
+
+    #[tokio::test]
+    async fn reindex_rebuilds_block_node_relation_edges_from_authority() {
+        use crate::traits::search_index::SearchIndex as _;
+
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let target = crate::PageId::from_legacy_doc_id(&[2; 16]);
+        let source_page_id = crate::PageId::from_legacy_doc_id(&[1; 16]);
+
+        let mut property = make_test_note("project", "Project", "- definition\n", &[]);
+        property.metadata.note_type = Some("Property".into());
+        property.metadata.custom.insert(
+            "value_type".into(),
+            serde_json::Value::String("node".into()),
+        );
+        index.reindex(&property).await.unwrap();
+
+        let mut source = make_test_note(
+            "source",
+            "Source",
+            &format!("- Related\n  project:: {target}\n"),
+            &[],
+        );
+        source.content =
+            crate::storage::markdown::set_page_id_frontmatter(&source.content, source_page_id);
+        index.reindex(&source).await.unwrap();
+        index
+            .rebuild_relation_edges_from_authoritative_note(&source, source_page_id)
+            .await
+            .unwrap();
+
+        let backlinks = index.get_relation_backlinks(target).await.unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].edge.source_page_id, source_page_id);
+        assert_eq!(backlinks[0].edge.source_note_id, "source");
+        assert_eq!(backlinks[0].edge.property_key, "project");
+    }
+
+    #[tokio::test]
+    async fn reindex_rebuilds_page_node_relation_edges_from_authority() {
+        use crate::traits::search_index::SearchIndex as _;
+
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let target = crate::PageId::from_legacy_doc_id(&[4; 16]);
+        let source_page_id = crate::PageId::from_legacy_doc_id(&[3; 16]);
+
+        let mut property = make_test_note("project", "Project", "- definition\n", &[]);
+        property.metadata.note_type = Some("Property".into());
+        property.metadata.custom.insert(
+            "value_type".into(),
+            serde_json::Value::String("node".into()),
+        );
+        index.reindex(&property).await.unwrap();
+
+        let mut source = make_test_note("source", "Source", "", &[]);
+        source.body = format!("project:: {target}\n\n- Related\n");
+        source.content =
+            crate::storage::markdown::set_page_id_frontmatter(&source.body, source_page_id);
+        index.reindex(&source).await.unwrap();
+        index
+            .rebuild_relation_edges_from_authoritative_note(&source, source_page_id)
+            .await
+            .unwrap();
+
+        let backlinks = index.get_relation_backlinks(target).await.unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].edge.source_page_id, source_page_id);
+        assert_eq!(backlinks[0].edge.source_block_id, None);
+        assert_eq!(backlinks[0].edge.property_key, "project");
+    }
+
+    #[tokio::test]
+    async fn relation_edges_can_be_rebuilt_by_replacing_one_note_projection() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let source = crate::PageId::from_legacy_doc_id(&[1; 16]);
+        let target = crate::PageId::from_legacy_doc_id(&[2; 16]);
+        index
+            .upsert_relation_edge(&crate::RelationEdge {
+                source_page_id: source,
+                source_note_id: "source".into(),
+                source_block_id: Some("bid".into()),
+                property_key: "project".into(),
+                target_page_id: target,
+            })
+            .await
+            .unwrap();
+        assert_eq!(index.get_relation_backlinks(target).await.unwrap().len(), 1);
+        index
+            .remove_relation_edges_for_note("source")
+            .await
+            .unwrap();
+        assert!(index
+            .get_relation_backlinks(target)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -2811,7 +3163,11 @@ mod tests {
         assert_eq!(defs[0].value_type, "number");
 
         let tags = index.get_all_tag_defs().await.unwrap();
-        assert_eq!(tags.len(), 1, "rebuild must register the Tag page; got {tags:?}");
+        assert_eq!(
+            tags.len(),
+            1,
+            "rebuild must register the Tag page; got {tags:?}"
+        );
         assert_eq!(tags[0].name, "Task");
     }
 
@@ -2929,9 +3285,7 @@ mod tests {
         note
     }
 
-    fn status_of<'a>(
-        def: &'a crate::types::TypeDefinition,
-    ) -> &'a crate::types::PropertyDef {
+    fn status_of<'a>(def: &'a crate::types::TypeDefinition) -> &'a crate::types::PropertyDef {
         def.properties
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("Status"))
@@ -2983,7 +3337,11 @@ mod tests {
         assert_eq!(ts.show, Some(crate::types::Visibility::OnNew));
         assert_eq!(ts.default.as_deref(), Some("todo"));
 
-        let proj_def = index.get_resolved_tag_def("Project").await.unwrap().unwrap();
+        let proj_def = index
+            .get_resolved_tag_def("Project")
+            .await
+            .unwrap()
+            .unwrap();
         let ps = status_of(&proj_def);
         assert_eq!(
             ps.values.as_deref(),
@@ -3075,7 +3433,12 @@ mod tests {
     async fn override_applies_regardless_of_listing_ancestor() {
         let index = SqliteIndex::open_in_memory().await.unwrap();
         index
-            .reindex(&make_select_prop("status", "Status", &["a", "b", "c"], None))
+            .reindex(&make_select_prop(
+                "status",
+                "Status",
+                &["a", "b", "c"],
+                None,
+            ))
             .await
             .unwrap();
 
@@ -3152,7 +3515,10 @@ mod tests {
 
         let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
         let s = status_of(&def);
-        assert_eq!(s.value_type, "text", "stub keeps text type (no Property page)");
+        assert_eq!(
+            s.value_type, "text",
+            "stub keeps text type (no Property page)"
+        );
         assert_eq!(
             s.values.as_deref(),
             Some(&["todo", "done"].map(String::from)[..]),
@@ -3189,7 +3555,11 @@ mod tests {
             Some(&["backlog", "todo", "done"].map(String::from)[..]),
             "no override → global choices unchanged"
         );
-        assert_eq!(s.default.as_deref(), Some("todo"), "global default unchanged");
+        assert_eq!(
+            s.default.as_deref(),
+            Some("todo"),
+            "global default unchanged"
+        );
         assert_eq!(
             s.show,
             Some(crate::types::Visibility::OnNew),
@@ -3311,6 +3681,59 @@ mod tests {
              stale cache served the pre-edit parse: {:?}",
             item_texts(&result)
         );
+    }
+
+    #[tokio::test]
+    async fn node_query_context_filters_block_and_page_owned_properties() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let target = crate::PageId::from_legacy_doc_id(&[9; 16]);
+        let source = make_test_note(
+            "source",
+            "Source",
+            &format!("- Related\n  project:: {target}"),
+            &[],
+        );
+        let mut page = make_test_note("page-source", "Page source", "", &[]);
+        page.content = format!("---\ntitle: Page source\n---\nproject:: {target}\n");
+        page.body = format!("project:: {target}\n");
+        let mut definition = make_test_note("project-property", "Project", "", &[]);
+        definition.metadata.note_type = Some("Property".into());
+        definition.metadata.custom.insert(
+            "value_type".into(),
+            serde_json::Value::String("node".into()),
+        );
+        index.reindex(&source).await.unwrap();
+        index.reindex(&page).await.unwrap();
+        index.reindex(&definition).await.unwrap();
+        let context = crate::query::QueryContext {
+            pages: vec![crate::query::QueryPage {
+                page_id: target,
+                slug: "target".into(),
+                title: "Target page".into(),
+                aliases: Vec::new(),
+                deleted: false,
+            }],
+        };
+        let block = index
+            .execute_query_with_context(
+                &crate::query::parse_query("project = [[target]]"),
+                None,
+                None,
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(item_texts(&block), vec!["Related"]);
+        let page_result = index
+            .execute_query_with_context(
+                &crate::query::parse_query("kind:page project = [[target]]"),
+                None,
+                None,
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(item_texts(&page_result), vec!["Page source"]);
     }
 
     /// A deleted note's blocks must never resurface from the cache. Also

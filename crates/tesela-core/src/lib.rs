@@ -27,6 +27,6 @@ pub use config::Config;
 pub use db::SqliteIndex;
 pub use error::{Result, TeselaError};
 pub use indexer::{Indexer, IndexerHandle, NoteEvent};
-pub use link::{GraphEdge, Link, LinkType};
-pub use note::{stable_uuid_from_slug, Note, NoteId, NoteMetadata, SearchHit};
+pub use link::{GraphEdge, Link, LinkType, RelationBacklink, RelationEdge};
+pub use note::{stable_uuid_from_slug, Note, NoteId, NoteMetadata, PageId, SearchHit};
 pub use tag::Tag;

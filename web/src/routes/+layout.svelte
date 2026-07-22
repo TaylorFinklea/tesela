@@ -98,6 +98,12 @@
         queryClient.invalidateQueries({ queryKey: ["agenda"] });
         queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
         queryClient.invalidateQueries({ queryKey: ["rail-projection"] });
+        // Page identity and relation projections are derived from synced CRDT
+        // state too. A remote rename, tombstone, property-definition change,
+        // or Node-property edit must not leave mounted chips/backlinks using
+        // the previous directory snapshot.
+        queryClient.invalidateQueries({ queryKey: ["page-directory"] });
+        queryClient.invalidateQueries({ queryKey: ["relation-backlinks"] });
       }
       // Targeted `["note", id]` refetches feed the page/editor buffer
       // directly. Own-echo ids were already filtered out upstream
@@ -155,6 +161,8 @@
         queryClient.invalidateQueries({ queryKey: ["note"] });
         // A views_changed event may have fired during the gap too.
         queryClient.invalidateQueries({ queryKey: ["views"] });
+        queryClient.invalidateQueries({ queryKey: ["page-directory"] });
+        queryClient.invalidateQueries({ queryKey: ["relation-backlinks"] });
         queryClient.invalidateQueries({ queryKey: ["rail-projection"] });
         flushNoteRefreshNow();
       },

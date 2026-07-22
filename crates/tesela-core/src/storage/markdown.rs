@@ -8,6 +8,8 @@ use gray_matter::engine::YAML;
 use gray_matter::Matter;
 use std::collections::HashMap;
 
+pub const TESELA_PAGE_ID_KEY: &str = "tesela_page_id";
+
 /// Parse frontmatter from markdown content.
 /// Returns (metadata, body) where body is the content without frontmatter.
 pub fn parse_frontmatter(content: &str) -> Result<(NoteMetadata, String)> {
@@ -150,6 +152,72 @@ pub fn generate_frontmatter(
     fm
 }
 
+/// Read Tesela's reserved immutable page identity from YAML frontmatter.
+pub fn page_id_from_frontmatter(content: &str) -> Option<crate::PageId> {
+    page_id_from_frontmatter_checked(content).ok().flatten()
+}
+
+/// Checked variant used by authority code. A present malformed identity is an
+/// explicit conflict, not equivalent to an old note that has no identity yet.
+pub fn page_id_from_frontmatter_checked(
+    content: &str,
+) -> std::result::Result<Option<crate::PageId>, String> {
+    let (metadata, _) = parse_frontmatter(content).map_err(|error| error.to_string())?;
+    let Some(value) = metadata.custom.get(TESELA_PAGE_ID_KEY) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err("tesela_page_id must be a UUID string".into());
+    };
+    crate::PageId::parse(value)
+        .map(Some)
+        .ok_or_else(|| format!("invalid tesela_page_id {value:?}"))
+}
+
+/// Insert or replace the reserved immutable page identity while preserving the
+/// body and every unrelated frontmatter line byte-for-byte.
+pub fn set_page_id_frontmatter(content: &str, page_id: crate::PageId) -> String {
+    let Some((header_end, body_start)) = locate_frontmatter_block(content) else {
+        return format!("---\n{TESELA_PAGE_ID_KEY}: {page_id}\n---\n{content}");
+    };
+    let newline = if content[..header_end].ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let line = format!("{TESELA_PAGE_ID_KEY}: {page_id}{newline}");
+    let frontmatter = &content[header_end..body_start];
+    let mut replaced = false;
+    let mut updated = String::with_capacity(frontmatter.len() + line.len());
+    for existing in frontmatter.split_inclusive('\n') {
+        let bare = existing.trim_end_matches('\n').trim_end_matches('\r');
+        let is_top_level_page_id = !bare.starts_with([' ', '\t'])
+            && bare
+                .split_once(':')
+                .is_some_and(|(key, _)| key.trim_end() == TESELA_PAGE_ID_KEY);
+        if is_top_level_page_id {
+            if !replaced {
+                updated.push_str(&line);
+                replaced = true;
+            }
+        } else {
+            updated.push_str(existing);
+        }
+    }
+    if !replaced {
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push_str(newline);
+        }
+        updated.push_str(&line);
+    }
+    format!(
+        "{}{}{}",
+        &content[..header_end],
+        updated,
+        &content[body_start..]
+    )
+}
+
 /// Add `tag` to the YAML frontmatter's `tags:` array. Returns `Some(updated_content)`
 /// if a change was made, or `None` if the tag was already present (or the input is
 /// unparseable / the tag is empty).
@@ -203,20 +271,23 @@ pub fn add_tag_to_frontmatter(content: &str, tag: &str) -> Option<String> {
 }
 
 /// Returns `(header_end, body_start)` byte indices into `content` such that:
-/// - `content[..header_end]` is the opening `---\n`
+/// - `content[..header_end]` is the opening frontmatter marker and newline
 /// - `content[header_end..body_start]` is the frontmatter body
 /// - `content[body_start..]` is the closing `---` line and the rest of the file
 fn locate_frontmatter_block(content: &str) -> Option<(usize, usize)> {
-    const OPEN: &str = "---\n";
-    if !content.starts_with(OPEN) {
+    let open_len = if content.starts_with("---\r\n") {
+        "---\r\n".len()
+    } else if content.starts_with("---\n") {
+        "---\n".len()
+    } else {
         return None;
-    }
-    let rest = &content[OPEN.len()..];
+    };
+    let rest = &content[open_len..];
     let mut consumed = 0usize;
     for line in rest.split_inclusive('\n') {
         let stripped = line.trim_end_matches('\n').trim_end_matches('\r');
         if stripped == "---" {
-            return Some((OPEN.len(), OPEN.len() + consumed));
+            return Some((open_len, open_len + consumed));
         }
         consumed += line.len();
     }
@@ -585,5 +656,26 @@ aliases: [\"journal-2026-06-10\"]
         let once = add_tag_to_frontmatter(content, "daily").unwrap();
         let twice = add_tag_to_frontmatter(&once, "daily");
         assert!(twice.is_none(), "second run is a no-op: got {twice:?}");
+    }
+
+    #[test]
+    fn set_page_id_frontmatter_replaces_crlf_frontmatter_without_a_second_header() {
+        let page_id = crate::PageId::from_legacy_doc_id(&[0x11; 16]);
+        let content = "---\r\ntitle: CRLF\r\n---\r\n- body\r\n";
+        let updated = set_page_id_frontmatter(content, page_id);
+
+        assert_eq!(updated.matches("---").count(), 2);
+        assert!(updated.contains(&format!("tesela_page_id: {page_id}\r\n")));
+        assert!(updated.ends_with("---\r\n- body\r\n"));
+    }
+
+    #[test]
+    fn set_page_id_frontmatter_preserves_indented_yaml_key() {
+        let page_id = crate::PageId::from_legacy_doc_id(&[0x12; 16]);
+        let content = "---\nmetadata:\n  tesela_page_id: nested-value\n---\n- body\n";
+        let updated = set_page_id_frontmatter(content, page_id);
+
+        assert!(updated.contains("  tesela_page_id: nested-value\n"));
+        assert!(updated.contains(&format!("tesela_page_id: {page_id}\n---\n")));
     }
 }

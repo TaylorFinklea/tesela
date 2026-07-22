@@ -222,6 +222,10 @@ pub trait SyncEngine: Send + Sync {
     /// here when sync is enabled. The engine appends an oplog row and
     /// returns the resulting content hash.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash>;
+    /// Resolve a public slug to its current immutable page document.
+    async fn resolve_note_doc_id(&self, slug: &str) -> SyncResult<[u8; 16]> {
+        Ok(tesela_core::stable_uuid_from_slug(slug))
+    }
 
     /// Relocate one complete stable-id block subtree within or across notes.
     async fn relocate_subtree(
@@ -534,6 +538,43 @@ pub trait SyncEngine: Send + Sync {
     async fn ensure_builtin_views(&self) -> SyncResult<()> {
         Ok(())
     }
+
+    /// Rebuildable synced page-identity directory entries. Special documents
+    /// are never returned as pages.
+    async fn page_directory_list(&self) -> Vec<PageDirectoryEntry> {
+        Vec::new()
+    }
+
+    /// Upsert one flat-scalar directory record for a note document.
+    async fn page_directory_upsert(&self, _record: PageDirectoryEntry) -> SyncResult<()> {
+        Ok(())
+    }
+}
+
+/// One immutable page binding as projected from the synced directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageDirectoryEntry {
+    /// Immutable canonical identity of the page.
+    pub page_id: tesela_core::PageId,
+    /// Legacy Loro stream/document address, encoded as 32 lowercase hex chars.
+    pub loro_doc_id: String,
+    /// Current slug for this stream binding.
+    pub slug: String,
+    /// Current human-readable title.
+    pub title: String,
+    /// Case-insensitive alternate names resolving to this live binding.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Whether this stream binding has been tombstoned.
+    pub deleted: bool,
+    /// During identity-preserving rename, an old tombstoned document points at
+    /// the new legacy address without remapping either relay stream.
+    #[serde(default)]
+    pub forward_to_loro_doc_id: Option<String>,
+    /// True when more than one live document claims this PageId. Callers must
+    /// fail closed instead of choosing an LWW winner.
+    #[serde(default)]
+    pub conflict: bool,
 }
 
 /// One saved view in the synced views registry doc (saved-views spec,

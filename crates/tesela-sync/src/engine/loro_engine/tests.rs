@@ -2,6 +2,7 @@ use super::*;
 
 mod convergence;
 mod ops;
+mod page_directory;
 mod relocation;
 mod views_and_races;
 

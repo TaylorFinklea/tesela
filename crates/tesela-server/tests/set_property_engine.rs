@@ -45,7 +45,7 @@ fn spawn_server_child(mosaic: &Path, addr: &str) -> Child {
         .env("TESELA_SERVER_BIND", addr)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn tesela-server")
 }

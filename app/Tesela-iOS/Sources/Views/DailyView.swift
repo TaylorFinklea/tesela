@@ -206,6 +206,11 @@ struct DailyView: View {
                     let newId = mosaic.appendTodayBlock(kind: .note)
                     editingBlockId = newId
                 },
+                nodeSearch: { mosaic.searchableNodePages($0) },
+                onOpenNode: { pageId in
+                    if let slug = mosaic.nodePageSlug(pageId) { pushPage(slug: slug) }
+                },
+                nodeResolution: { mosaic.nodePageResolution(for: $0) },
                 onIndent: { delta in
                     mosaic.indentTodayBlock(id: block.id, by: delta)
                 },
@@ -305,6 +310,11 @@ struct DailyView: View {
                     let newId = mosaic.appendYesterdayBlock(kind: .note)
                     editingBlockId = newId
                 },
+                nodeSearch: { mosaic.searchableNodePages($0) },
+                onOpenNode: { pageId in
+                    if let slug = mosaic.nodePageSlug(pageId) { pushPage(slug: slug) }
+                },
+                nodeResolution: { mosaic.nodePageResolution(for: $0) },
                 onIndent: { delta in
                     mosaic.indentYesterdayBlock(id: block.id, by: delta)
                 },
@@ -404,6 +414,11 @@ struct DailyView: View {
                         let newId = mosaic.appendPastDailyBlock(dayId: day.id, kind: .note)
                         editingBlockId = newId
                     },
+                    nodeSearch: { mosaic.searchableNodePages($0) },
+                    onOpenNode: { pageId in
+                        if let slug = mosaic.nodePageSlug(pageId) { pushPage(slug: slug) }
+                    },
+                    nodeResolution: { mosaic.nodePageResolution(for: $0) },
                     onIndent: { delta in
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
                     },

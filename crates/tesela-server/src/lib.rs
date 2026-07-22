@@ -16,6 +16,7 @@ pub mod sync_relay;
 
 use anyhow::Result;
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -330,6 +331,21 @@ pub async fn serve(
         }
         Arc::new(loro)
     };
+    // `with_dirs` can materialize authoritative snapshots into an empty
+    // notes directory. The first index build above runs before that side
+    // effect, so rebuild synchronously here instead of relying on the
+    // asynchronous filesystem watcher to discover both property definitions
+    // and Node values in time for the relation projection below.
+    let indexed_after_loro = rebuild_query_index_from_files(&store, &index).await?;
+    info!(
+        "Post-Loro materialization index complete: {} notes indexed",
+        indexed_after_loro
+    );
+    if let Err(error) =
+        rebuild_relation_edges_from_page_directory(&store, &index, sync_engine.as_ref()).await
+    {
+        warn!("relations: startup projection rebuild failed: {error}");
+    }
 
     let addr = resolve_bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -445,7 +461,6 @@ pub async fn serve(
         .await?;
 
     indexer_handle.stop().await;
-
     // Phase 13.A.4 — auto-backup on clean shutdown. Runs after axum has
     // drained in-flight requests and the indexer has stopped, so the
     // mosaic is in a quiescent state. We deliberately do NOT block
@@ -463,7 +478,6 @@ pub async fn serve(
             Err(e) => warn!("Auto-backup on shutdown failed: {}", e),
         }
     }
-
     Ok(())
 }
 
@@ -675,35 +689,49 @@ pub fn spawn_parent_death_watchdog() {
     });
 }
 
+/// Installs the OS shutdown listeners before returning the future that awaits
+/// them. Call this before startup reaches a ready state so an immediate SIGTERM
+/// cannot take the process down with its default action.
+pub fn install_shutdown_signal() -> impl Future<Output = ()> + Send {
+    #[cfg(unix)]
+    let terminate = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate())
+    };
+
+    async move {
+        let ctrl_c = async {
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                warn!("Failed to install ctrl_c handler: {}", e);
+            }
+        };
+        #[cfg(unix)]
+        let terminate = async {
+            match terminate {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                }
+                Err(e) => {
+                    warn!("Failed to install SIGTERM handler: {}", e);
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+        info!("Shutdown signal received");
+    }
+}
+
 /// Resolves when the OS asks us to shut down (SIGINT or SIGTERM). On
 /// non-Unix only ctrl_c is wired; SIGTERM-equivalent handling would
 /// need platform-specific code we don't ship.
 pub async fn wait_for_shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            warn!("Failed to install ctrl_c handler: {}", e);
-        }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                warn!("Failed to install SIGTERM handler: {}", e);
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-    info!("Shutdown signal received");
+    install_shutdown_signal().await;
 }
 
 /// Resolve the address the HTTP server binds to. Precedence:
@@ -826,6 +854,15 @@ async fn bring_up_relay_if_configured(
             Ok(n) => tracing::info!("relay bootstrap: rebuilt query index from {n} file(s)"),
             Err(e) => tracing::warn!("relay bootstrap: query index rebuild failed: {e}"),
         }
+        if let Err(error) = rebuild_relation_edges_from_page_directory(
+            &state.store,
+            &state.index,
+            state.sync_engine.as_ref(),
+        )
+        .await
+        {
+            tracing::warn!("relay bootstrap: relation projection rebuild failed: {error}");
+        }
     }
 
     // Spawn the periodic tick. Single task; runs alongside the LAN
@@ -874,12 +911,19 @@ async fn bring_up_relay_if_configured(
                             for note_id in &outcome.applied_note_ids {
                                 // Notify web that this remote-originated edit landed
                                 // (drives query invalidation — list/agenda/inbox).
+                                // The relay tick has already applied its bytes,
+                                // so it cannot inspect the pre-apply Property
+                                // definition. Rebuild conservatively to avoid
+                                // retaining a stale Node edge after a remote
+                                // definition is removed or retagged.
                                 routes::ws::emit_note_updated(
                                     &*tick_engine,
                                     &tick_store,
                                     &tick_index,
                                     &tick_ws_tx,
                                     *note_id,
+                                    true,
+                                    None,
                                 )
                                 .await;
                             }
@@ -959,6 +1003,35 @@ async fn rebuild_query_index_from_files(store: &FsNoteStore, index: &SqliteIndex
         index.update_links(&note.id, &links).await?;
     }
     Ok(notes.len())
+}
+
+/// Rebuild the cache-only Node relation projection from materialized notes,
+/// but only for their authoritative live PageId directory bindings.
+pub(crate) async fn rebuild_relation_edges_from_page_directory(
+    store: &FsNoteStore,
+    index: &SqliteIndex,
+    engine: &dyn SyncEngine,
+) -> Result<usize> {
+    let bindings = engine
+        .page_directory_list()
+        .await
+        .into_iter()
+        .filter(|entry| !entry.deleted && !entry.conflict)
+        .map(|entry| (entry.slug.to_ascii_lowercase(), entry.page_id))
+        .collect::<std::collections::HashMap<_, _>>();
+    let notes = store.list(None, usize::MAX, 0).await?;
+    index.clear_relation_edges().await?;
+    let mut rebuilt = 0;
+    for note in &notes {
+        let Some(source_page_id) = bindings.get(&note.id.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        index
+            .rebuild_relation_edges_from_authoritative_note(note, *source_page_id)
+            .await?;
+        rebuilt += 1;
+    }
+    Ok(rebuilt)
 }
 
 fn find_mosaic() -> Result<PathBuf> {

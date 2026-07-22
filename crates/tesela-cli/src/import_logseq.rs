@@ -28,14 +28,9 @@ pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
 
     let (_lock, engine) = open_locked_engine(mosaic).await?;
     let mut writer = EngineImportNoteWriter::new(&engine);
-    let outcome = apply_plan_with_writer(
-        &plan,
-        &ApplyDecisions::default(),
-        mosaic,
-        &mut writer,
-    )
-    .await
-    .context("apply logseq import through engine")?;
+    let outcome = apply_plan_with_writer(&plan, &ApplyDecisions::default(), mosaic, &mut writer)
+        .await
+        .context("apply logseq import through engine")?;
     println!("  Imported: {}", outcome.imported);
     println!("  Overwritten: {}", outcome.overwritten);
     println!("  Renamed: {}", outcome.renamed);

@@ -1570,4 +1570,187 @@ final class MockMosaicServiceTests: XCTestCase {
         // A leading `::` with empty key is NOT a property → kept.
         XCTAssertEqual(MockMosaicService.stripPropertyLines(":: orphan"), ":: orphan")
     }
+
+    func testNodeCandidatesUseLiveNonConflictingPageDirectoryBindings() {
+        let entries = [
+            PageDirectoryEntry(
+                pageId: "11111111-1111-5111-8111-111111111111",
+                loroDocId: "live",
+                slug: "roadmap",
+                title: "Roadmap",
+                aliases: ["Plan"],
+                deleted: false,
+                forwardToLoroDocId: nil,
+                conflict: false
+            ),
+            PageDirectoryEntry(
+                pageId: "11111111-1111-5111-8111-111111111111",
+                loroDocId: "old",
+                slug: "old-roadmap",
+                title: "Old roadmap",
+                aliases: [],
+                deleted: true,
+                forwardToLoroDocId: "live",
+                conflict: false
+            ),
+            PageDirectoryEntry(
+                pageId: "22222222-2222-5222-8222-222222222222",
+                loroDocId: "conflict",
+                slug: "conflicted",
+                title: "Conflicted",
+                aliases: [],
+                deleted: false,
+                forwardToLoroDocId: nil,
+                conflict: true
+            ),
+            PageDirectoryEntry(
+                pageId: "33333333-3333-5333-8333-333333333333",
+                loroDocId: "a",
+                slug: "duplicate-a",
+                title: "Duplicate A",
+                aliases: [],
+                deleted: false,
+                forwardToLoroDocId: nil,
+                conflict: false
+            ),
+            PageDirectoryEntry(
+                pageId: "33333333-3333-5333-8333-333333333333",
+                loroDocId: "b",
+                slug: "duplicate-b",
+                title: "Duplicate B",
+                aliases: [],
+                deleted: false,
+                forwardToLoroDocId: nil,
+                conflict: false
+            ),
+        ]
+
+        XCTAssertEqual(
+            MockMosaicService.nodePageCandidates(from: entries),
+            [NodePageCandidate(
+                pageId: "11111111-1111-5111-8111-111111111111",
+                slug: "roadmap",
+                title: "Roadmap",
+                aliases: ["Plan"]
+            )]
+        )
+    }
+
+    func testRelayNodePickerLoadsDirectoryWithoutIndexCallback() async {
+        let pageId = "44444444-4444-5444-8444-444444444444"
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        service.onPageDirectoryList = {
+            [PageDirectoryEntry(
+                pageId: pageId,
+                loroDocId: "directory-only",
+                slug: "directory-only",
+                title: "Directory only",
+                aliases: [],
+                deleted: false,
+                forwardToLoroDocId: nil,
+                conflict: false
+            )]
+        }
+
+        await service.refreshIndexPages()
+
+        XCTAssertEqual(service.searchableNodePages("").map(\.pageId), [pageId])
+    }
+
+    func testRelayNodePickerDoesNotFallBackWhenDirectoryIsAuthoritativelyEmpty() async throws {
+        let id = "node-directory-empty-test"
+        let notesDir = localFixtureNotesDir()
+        let path = notesDir.appendingPathComponent("\(id).md")
+        try FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let pageId = "11111111-1111-5111-8111-111111111111"
+        try """
+        ---
+        title: Local fallback
+        note_type: Property
+        tesela_page_id: \(pageId)
+        ---
+        - body
+        """.write(to: path, atomically: true, encoding: .utf8)
+
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        service.onIndexEntries = { [] }
+        service.onPageDirectoryList = { [] }
+        await service.refreshIndexPages()
+
+        XCTAssertTrue(
+            service.searchableNodePages("").isEmpty,
+            "a loaded empty directory is authoritative; local frontmatter must not repopulate it"
+        )
+        XCTAssertEqual(service.nodePageResolution(for: pageId), .unresolved)
+    }
+
+    func testRelayNodeQueryUsesDirectoryAliasesAndRejectsConflict() async throws {
+        let notesDir = localFixtureNotesDir()
+        try FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        let propertyPath = notesDir.appendingPathComponent("node-query-project.md")
+        let sourcePath = notesDir.appendingPathComponent("node-query-source.md")
+        defer {
+            try? FileManager.default.removeItem(at: propertyPath)
+            try? FileManager.default.removeItem(at: sourcePath)
+        }
+        let targetPageId = "11111111-1111-5111-8111-111111111111"
+        try """
+        ---
+        title: project
+        type: Property
+        value_type: node
+        ---
+        - property
+        """.write(to: propertyPath, atomically: true, encoding: .utf8)
+        try """
+        ---
+        title: Node query source
+        ---
+        - Relation
+          project:: \(targetPageId)
+        """.write(to: sourcePath, atomically: true, encoding: .utf8)
+
+        let live = PageDirectoryEntry(
+            pageId: targetPageId,
+            loroDocId: "target",
+            slug: "target",
+            title: "Target",
+            aliases: ["Old target"],
+            deleted: false,
+            forwardToLoroDocId: nil,
+            conflict: false
+        )
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        service.onIndexEntries = { [] }
+        service.onPageDirectoryList = { [live] }
+        await service.refreshIndexPages()
+
+        let liveResult = await service.executeQuery("project = [[Old target]]")
+        XCTAssertTrue(
+            liveResult.groups.flatMap(\.items).contains { $0.page_id == "node-query-source" },
+            "a relation query resolves an alias from the authoritative directory"
+        )
+
+        service.onPageDirectoryList = { [PageDirectoryEntry(
+            pageId: targetPageId,
+            loroDocId: "target",
+            slug: "target",
+            title: "Target",
+            aliases: ["Old target"],
+            deleted: false,
+            forwardToLoroDocId: nil,
+            conflict: true
+        )] }
+        await service.refreshIndexPages()
+
+        let conflictedResult = await service.executeQuery("project = [[Old target]]")
+        XCTAssertFalse(
+            conflictedResult.groups.flatMap(\.items).contains { $0.page_id == "node-query-source" },
+            "a conflicted directory target fails closed"
+        )
+    }
 }

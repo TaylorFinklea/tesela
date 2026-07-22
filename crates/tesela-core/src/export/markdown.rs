@@ -326,6 +326,8 @@ fn is_tesela_internal_key(key: &str) -> bool {
         | "source_org_path"
         // Phase 12.2 recurring last-completed audit trail
         | "last_completed"
+        // Tesela's persisted internal page identity
+        | "tesela_page_id"
         // Tesela's tracking / housekeeping
         | "checksum"
         // Frontmatter timestamps — Obsidian/Logseq use file mtime, not

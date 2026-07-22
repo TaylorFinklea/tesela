@@ -26,17 +26,48 @@ pub(super) enum ResolvedValue {
     List(Vec<PropScalar>),
 }
 
-/// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
+/// Resolve or create the `props` + `prop_keys` containers on a block node's
+/// meta map. Existing regular containers remain compatible; new children use
+/// Loro's deterministic mergeable identity.
 pub(super) fn node_prop_containers(
     meta: &loro::LoroMap,
 ) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
-    let props = meta
-        .get_or_create_container("props", loro::LoroMap::new())
-        .map_err(|e| SyncError::Storage(format!("loro props get_or_create: {e}")))?;
-    let prop_keys = meta
-        .get_or_create_container("prop_keys", loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop_keys get_or_create: {e}")))?;
-    Ok((props, prop_keys))
+    Ok((
+        map_container_or_ensure(meta, "props")?,
+        list_container_or_ensure(meta, "prop_keys")?,
+    ))
+}
+
+fn map_container_or_ensure(map: &loro::LoroMap, key: &str) -> SyncResult<loro::LoroMap> {
+    match map.get(key) {
+        Some(loro::ValueOrContainer::Container(container)) => {
+            container.into_map().map_err(|container| {
+                SyncError::Storage(format!("loro {key} expected map, got {container:?}"))
+            })
+        }
+        Some(loro::ValueOrContainer::Value(loro::LoroValue::Null)) | None => map
+            .ensure_mergeable_map(key)
+            .map_err(|error| SyncError::Storage(format!("loro {key} ensure map: {error}"))),
+        Some(loro::ValueOrContainer::Value(_)) => Err(SyncError::Storage(format!(
+            "loro {key} expected map container"
+        ))),
+    }
+}
+
+fn list_container_or_ensure(map: &loro::LoroMap, key: &str) -> SyncResult<loro::LoroList> {
+    match map.get(key) {
+        Some(loro::ValueOrContainer::Container(container)) => {
+            container.into_list().map_err(|container| {
+                SyncError::Storage(format!("loro {key} expected list, got {container:?}"))
+            })
+        }
+        Some(loro::ValueOrContainer::Value(loro::LoroValue::Null)) | None => map
+            .ensure_mergeable_list(key)
+            .map_err(|error| SyncError::Storage(format!("loro {key} ensure list: {error}"))),
+        Some(loro::ValueOrContainer::Value(_)) => Err(SyncError::Storage(format!(
+            "loro {key} expected list container"
+        ))),
+    }
 }
 
 /// The page-level `props` + `prop_keys` containers live at the doc root.
@@ -168,37 +199,17 @@ fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> Sy
     r.map_err(|e| SyncError::Storage(format!("loro props insert: {e}")))
 }
 
-/// Property-representation-collision guard (tesela-ows.1 step 2, round 3).
+/// Property-representation-collision guard.
 ///
-/// A `props` map key can hold EITHER a primitive scalar (`SetScalar`) OR a
-/// nested child container — a `LoroText` (free text) or a `LoroList`
-/// (multi-value). The three lifecycle writers (the engine hook + the two
-/// HTTP roll persisters) historically authored scalars, while the route's
-/// free-text write authors a `LoroText`. When those representations collide
-/// at one key, `get_or_create_container` HARD-ERRORS ("Expected value type
-/// Text but found Value(String(..))") — surfacing as an HTTP 500 that turns
-/// a recurring completion into a one-shot.
+/// A `props` key holds either a primitive scalar or a nested text/list
+/// container. A typed writer must not fail merely because a prior writer chose
+/// a different representation. If the existing child is incompatible, remove
+/// it before creating the requested kind; retain `prop_keys` so render order
+/// remains stable.
 ///
-/// The invariant this restores: WRITING A PROPERTY VALUE MUST NEVER FAIL
-/// BECAUSE OF THE PRIOR REPRESENTATION OF THAT KEY. If `key` currently holds
-/// an occupant that is NOT a child container of `want`'s kind (a scalar, or
-/// a container of a different kind), delete it from `props` so the caller's
-/// `get_or_create_container` mints a fresh child of the right kind. A
-/// same-kind child, an absent key, or a `Null` are left untouched — the
-/// caller adopts / creates them (`get_or_create_container` treats `Null` as
-/// absent). Only `props` is touched; the key stays in `prop_keys`, so
-/// first-seen render order is preserved across a representation switch.
-///
-/// `SetText` keeps the regular-op-id-child discipline because
-/// `ensure_mergeable_text` rejects the regular text children already shipped
-/// in the fleet. Lists have an explicit migrate-and-replay path in
-/// [`prop_ensure_list`], where a deterministic container id is required for
-/// concurrent first-touch union semantics.
-///
-/// Concurrent convergence: two peers each clearing a scalar and creating a
-/// regular child at the same key produce two op-id children; map conflict
-/// resolution deterministically picks one (both peers agree) — it CONVERGES
-/// without error, matching the existing `write_block_text`/prop discipline.
+/// Existing same-kind regular containers remain writable. Fresh containers use
+/// deterministic mergeable identities, so concurrent first writers target the
+/// same child.
 fn clear_incompatible_child(
     props: &loro::LoroMap,
     key: &str,
@@ -243,9 +254,7 @@ pub(super) fn prop_set_text(
     text: &str,
 ) -> SyncResult<()> {
     clear_incompatible_child(props, key, loro::ContainerType::Text)?;
-    let t: LoroText = props
-        .get_or_create_container(key, LoroText::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop text get_or_create: {e}")))?;
+    let t = text_container_or_ensure(props, key)?;
     t.update(text, UpdateOptions::default())
         .map_err(|e| SyncError::Storage(format!("loro prop text update: {e}")))?;
     prop_keys_ensure(prop_keys, key)
@@ -622,9 +631,7 @@ mod prop_helper_tests {
         // Simulate a post-merge list where a value appears at more than one
         // position: [A, B, A, C, B]. The stable dedup keeps the FIRST sighting
         // of each value, preserving merged order: [A, B, C].
-        let list: loro::LoroList = props
-            .get_or_create_container("tags", loro::LoroList::new())
-            .unwrap();
+        let list = props.ensure_mergeable_list("tags").unwrap();
         for v in ["A", "B", "A", "C", "B"] {
             list.push(v).unwrap();
         }

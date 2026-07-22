@@ -68,6 +68,10 @@ pub struct ParsedBlock {
 /// are continuation lines (properties or multi-line text) belonging to the
 /// previous block. Child blocks inherit the tags of their ancestors.
 pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
+    // Block ids are body-relative. Strip only an actual frontmatter block:
+    // blank lines that remain belong to the body and therefore retain their
+    // legacy `note:line` offsets.
+    let body = body_after_frontmatter(body);
     // Pass 1: collect raw block data (line_num, indent, text)
     struct RawBlock {
         line_num: usize,
@@ -194,6 +198,24 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
     }
 
     blocks
+}
+
+fn body_after_frontmatter(markdown: &str) -> &str {
+    let mut lines = markdown.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return markdown;
+    };
+    if first.trim() != "---" {
+        return markdown;
+    }
+    let mut offset = first.len();
+    for line in lines {
+        offset += line.len();
+        if line.trim() == "---" {
+            return &markdown[offset..];
+        }
+    }
+    markdown
 }
 
 fn make_block(
@@ -403,6 +425,13 @@ mod tests {
         let blocks = parse_blocks("test", body);
         assert_eq!(blocks[0].tags, vec!["Task", "urgent"]);
         assert_eq!(blocks[0].text, "Buy groceries");
+    }
+
+    #[test]
+    fn leading_blank_lines_preserve_legacy_body_relative_block_address() {
+        let blocks = parse_blocks("note", "\n\r\n- first\n");
+
+        assert_eq!(blocks[0].id, "note:2");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use super::*;
 /// used when a poison frame is skipped — captured here so that body lives once
 /// (ADR-1, decisions.md 2026-07-01).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ImportMode {
+pub(super) enum ImportMode {
     /// Live WS delta. The heal plan is gated on the note ALREADY carrying
     /// genuine local history before this apply (post-tesela-qql: sampled from
     /// the doc's `len_changes()` AFTER lazy-load, not in-memory residency —
@@ -59,6 +59,31 @@ impl LoroEngine {
         bytes: &[u8],
         mode: ImportMode,
     ) -> SyncResult<ImportOutcome> {
+        let source_note_id = note_id;
+        let Some(resolved_target) = self
+            .import_target_for_directory_binding(note_id, mode)
+            .await?
+        else {
+            tracing::warn!(
+                "tesela-sync/loro: ignoring inbound update for tombstoned document {} without a forwarding target",
+                hex_id(&source_note_id)
+            );
+            return Ok(ImportOutcome { pending: false });
+        };
+        // Never raw-import a source stream into a different target document:
+        // first-send relay frames and snapshot retries both use this delta
+        // path and can carry the source root tombstone. Keep the source
+        // lineage, then transfer only changed semantic blocks/properties to
+        // its resolved target below.
+        let note_id = source_note_id;
+        if resolved_target != source_note_id {
+            tracing::info!(
+                "tesela-sync/loro: retaining inbound renamed source {} before semantic replay to {}",
+                hex_id(&source_note_id),
+                hex_id(&resolved_target)
+            );
+        }
+
         // Serialize the WHOLE plan→import→tombstone sequence per note_id
         // (tesela-4ju): held until this fn returns, so a concurrent
         // `apply_import` for the SAME note can't interleave its import
@@ -70,7 +95,14 @@ impl LoroEngine {
         let _apply_guard = apply_lock.lock().await;
 
         let doc = self.doc_for_note_mut(note_id).await;
-        let is_views = Self::is_views_doc(&note_id);
+        let is_special = Self::is_special_doc(&note_id);
+        // Capture a source document's visible state before import. A
+        // source→target replay is required only when this frame changes the
+        // source body or flips its root tombstone; replaying an unchanged
+        // retried snapshot would overwrite a newer target-local edit with
+        // stale source content.
+        let forwarded_source_before = (note_id == source_note_id && !is_special)
+            .then(|| (doc_full_markdown(&doc), note_doc_is_deleted(&doc)));
 
         // Sample "does this doc already carry genuine local history" AFTER
         // `doc_for_note_mut` (which may have just lazy-loaded an on-disk
@@ -114,6 +146,68 @@ impl LoroEngine {
                 hex_id(&note_id)
             )));
         }
+        if !is_special {
+            let bindings = self
+                .page_directory_list()
+                .await
+                .into_iter()
+                .filter(|entry| entry.loro_doc_id == hex_id(&note_id))
+                .collect::<Vec<_>>();
+            let probe = LoroDoc::new();
+            let snapshot = doc
+                .export(ExportMode::Snapshot)
+                .map_err(|error| SyncError::Storage(format!("identity probe snapshot: {error}")))?;
+            probe
+                .import(&snapshot)
+                .map_err(|error| SyncError::Storage(format!("identity probe baseline: {error}")))?;
+            probe
+                .import(bytes)
+                .map_err(|error| SyncError::Storage(format!("identity probe import: {error}")))?;
+            let root_page_id = match probe
+                .get_map("root")
+                .get("page_id")
+                .and_then(|value| value.into_value().ok())
+                .and_then(|value| value.into_string().ok())
+            {
+                Some(value) => Some(tesela_core::PageId::parse(&value).ok_or_else(|| {
+                    SyncError::Protocol(format!(
+                        "inbound {} has invalid root PageId",
+                        hex_id(&note_id)
+                    ))
+                })?),
+                None => None,
+            };
+            let content = doc_full_markdown(&probe);
+            let frontmatter_page_id =
+                tesela_core::storage::markdown::page_id_from_frontmatter_checked(&content)
+                    .map_err(|error| {
+                        SyncError::Protocol(format!(
+                            "inbound {} has invalid frontmatter PageId: {error}",
+                            hex_id(&note_id)
+                        ))
+                    })?;
+            if root_page_id.is_some()
+                && frontmatter_page_id.is_some()
+                && root_page_id != frontmatter_page_id
+            {
+                return Err(SyncError::Protocol(format!(
+                    "inbound {} root/frontmatter PageId disagreement",
+                    hex_id(&note_id)
+                )));
+            }
+            let page_id = root_page_id
+                .or(frontmatter_page_id)
+                .unwrap_or_else(|| tesela_core::PageId::from_legacy_doc_id(&note_id));
+            if !bindings.is_empty()
+                && (bindings.iter().any(|entry| entry.conflict)
+                    || !bindings.iter().any(|entry| entry.page_id == page_id))
+            {
+                return Err(SyncError::Protocol(format!(
+                    "inbound {} disagrees with immutable page-directory binding",
+                    hex_id(&note_id)
+                )));
+            }
+        }
 
         // Compute the disjoint-twin PROPS plan BEFORE mutating the doc: the
         // per-key union of every twin block's props, re-asserted onto the
@@ -125,8 +219,8 @@ impl LoroEngine {
         // import without per-block prop protection, never panic — but the Delta
         // path additionally warns.
         let plan_gate = match mode {
-            ImportMode::Delta => has_local_state && !is_views,
-            ImportMode::Authoritative => !is_views,
+            ImportMode::Delta => has_local_state && !is_special,
+            ImportMode::Authoritative => !is_special,
         };
         let plan = if plan_gate {
             match peer_import_plan(&doc, bytes) {
@@ -152,6 +246,19 @@ impl LoroEngine {
         // disjoint-twin blocks is healed below. Surface Loro's PENDING status (a
         // causal gap) for the `apply_doc_update_status` caller; the other two
         // publics discard it.
+        // Preserve the peer-visible source projection before the disjoint-twin
+        // heal. A source replica may have edited an old stream without first
+        // receiving its tombstone; importing that frame into the tombstoned
+        // resident can legitimately keep the resident twin, but forwarding
+        // still needs the peer's semantic edit.
+        let forwarded_peer_content = (resolved_target != source_note_id)
+            .then(|| -> SyncResult<String> {
+                let peer = doc.fork();
+                peer.import(bytes)
+                    .map_err(|e| SyncError::Storage(format!("forward source delta import: {e}")))?;
+                Ok(doc_full_markdown(&peer))
+            })
+            .transpose()?;
         let ownership_guard = self.inner.ownership_transition.lock().await;
         let status = doc
             .import(bytes)
@@ -169,7 +276,7 @@ impl LoroEngine {
         // dependence on emptiness/staleness. Shared-lineage blocks need no heal
         // (their splices already merged). The `plan` carries only the props
         // union, re-asserted below onto whichever node survives.
-        if !is_views {
+        if !is_special {
             tombstone_duplicate_twins(&doc, note_id);
         }
         // Props half of the heal: re-assert each tombstoned twin's resolved props
@@ -205,7 +312,7 @@ impl LoroEngine {
         // already rolls there (zero-behavior-change requirement) and hooking it
         // would double-fire; a locally-authored FFI flip rolls once a peer
         // imports it (matches the acceptance test's "author does not self-roll").
-        if !is_views {
+        if !is_special {
             if let Some(prev_md) = plan.as_ref().and_then(|p| p.lifecycle_prev.as_deref()) {
                 self.apply_block_lifecycle_under_ownership(note_id, prev_md, &doc)
                     .await?;
@@ -213,13 +320,71 @@ impl LoroEngine {
         }
 
         drop(ownership_guard);
-
-        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
-            self.save_snapshot(dir, note_id).await;
+        if !is_special {
+            self.backfill_page_directory_from_loaded_docs().await?;
         }
-        // Authoritative-writer mode: a peer's edit must land on disk too.
-        if self.inner.materialize_dir.is_some() {
-            self.materialize_note(note_id).await;
+        // Directory tombstones are monotonic authority. An authoritative
+        // retry may carry a stale pre-delete source root; retain its semantic
+        // body for forwarding, but never let it revive the source document.
+        if !is_special
+            && self
+                .page_directory_list()
+                .await
+                .iter()
+                .any(|entry| entry.loro_doc_id == hex_id(&source_note_id) && entry.deleted)
+            && !note_doc_is_deleted(&doc)
+        {
+            doc.get_map("root")
+                .insert("deleted", true)
+                .map_err(|error| {
+                    SyncError::Storage(format!("directory tombstone repair: {error}"))
+                })?;
+            doc.commit();
+            self.refresh_note_derived(note_id, &doc).await;
+        }
+        if !pending {
+            if let Some((before_content, was_deleted)) = forwarded_source_before {
+                let after_content = forwarded_peer_content
+                    .clone()
+                    .unwrap_or_else(|| doc_full_markdown(&doc));
+                let source_changed = before_content != after_content;
+                let source_became_deleted = !was_deleted && note_doc_is_deleted(&doc);
+                if source_changed || source_became_deleted {
+                    // A frame that introduces the source tombstone must diff from
+                    // the persisted pre-rename baseline, not from its immediate
+                    // pre-delete state: the latter may already contain an offline
+                    // edit delivered before the directory/forwarding record.
+                    let prior = (!source_became_deleted).then_some(before_content.as_str());
+                    self.replay_forwarded_source_after_import(
+                        source_note_id,
+                        prior,
+                        forwarded_peer_content.as_deref(),
+                    )
+                    .await?;
+                }
+            }
+        }
+        // A directory or ordinary target import can satisfy a deferred edge.
+        // Do not immediately rescan after importing an already-forwarded
+        // source: its precise in-memory pre-frame baseline above is stronger
+        // than the persisted rename baseline used by deferred replay.
+        if source_note_id == PAGE_DIRECTORY_DOC_ID || resolved_target == source_note_id {
+            self.replay_resident_forwarded_sources_after_directory_import()
+                .await?;
+        }
+        // An imported CRDT state is authoritative just like a local mutation:
+        // durable snapshot first, then its Markdown projection. Without this
+        // tail, a clean restart reopens the last local snapshot and silently
+        // loses every remote peer operation applied since it was written.
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot_checked(dir, note_id).await?;
+        }
+        // A causal-gap frame leaves Loro's buffer pending without a renderable
+        // note. Persist it for snapshot catch-up, but do not manufacture a
+        // materialized file or turn the expected pending outcome into an
+        // apply failure.
+        if !pending && self.inner.materialize_dir.is_some() {
+            self.materialize_note_checked(note_id).await?;
         }
         Ok(ImportOutcome { pending })
     }

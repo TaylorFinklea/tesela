@@ -33,9 +33,23 @@ final class QueryConformanceTests: XCTestCase {
         let dsl: String
         let block: FixtureBlock
         let expect: Bool
+        let expectDiagnostics: Bool?
         /// L5 optional registry: property name → value_type. Absent ⇒ the
         /// registry-free heuristic; present ⇒ the typed matcher.
         let propertyTypes: [String: String]?
+        let nodeContext: NodeContext?
+    }
+
+    private struct NodeContext: Decodable {
+        let pages: [NodePage]
+    }
+
+    private struct NodePage: Decodable {
+        let page_id: String
+        let slug: String
+        let title: String
+        let aliases: [String]
+        let deleted: Bool
     }
 
     private struct FixtureBlock: Decodable {
@@ -93,12 +107,38 @@ final class QueryConformanceTests: XCTestCase {
         let fixture = try loadFixture()
         var failures: [String] = []
         for c in fixture.cases {
-            let dsl = LocalQueryEngine.parseSimpleDsl(c.dsl)
+            let parsed = LocalQueryEngine.parseSimpleDslWithDiagnostics(c.dsl)
+            let dsl = parsed.parsed
+            if c.expectDiagnostics == true {
+                XCTAssertFalse(parsed.diagnostics.isEmpty, "case \(c.name) expected parser diagnostics")
+            }
             // L5: build the lowercased name → value_type registry; absent ⇒ empty
             // ⇒ the registry-free heuristic (existing cases unchanged).
             var types: [String: String] = [:]
             for (k, v) in (c.propertyTypes ?? [:]) { types[k.lowercased()] = v }
-            let got = LocalQueryEngine.blockMatches(dsl, ctx: context(for: c.block), propertyTypes: types)
+            let isNodeCase = types.values.contains { $0.lowercased() == "node" }
+            XCTAssertTrue(!isNodeCase || c.nodeContext != nil, "Node case \(c.name) is missing nodeContext")
+            XCTAssertFalse(
+                isNodeCase && (c.nodeContext?.pages.isEmpty ?? true),
+                "Node case \(c.name) has an undecoded nodeContext"
+            )
+            let nodeContext = c.nodeContext.map {
+                LocalQueryEngine.NodeQueryContext(pages: $0.pages.map {
+                    LocalQueryEngine.NodeQueryPage(
+                        pageId: $0.page_id,
+                        slug: $0.slug,
+                        title: $0.title,
+                        aliases: $0.aliases,
+                        deleted: $0.deleted
+                    )
+                })
+            }
+            let got = LocalQueryEngine.blockMatches(
+                dsl,
+                ctx: context(for: c.block),
+                propertyTypes: types,
+                nodeContext: nodeContext
+            )
             if got != c.expect {
                 failures.append("  \(c.name) — dsl \"\(c.dsl)\": expected \(c.expect), got \(got)")
             }

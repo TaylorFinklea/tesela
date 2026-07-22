@@ -26,6 +26,7 @@ import { noteId, noteIdHex } from "./note-id";
 import { apiBase } from "$lib/runtime-base";
 import type { LoroDocUpdate } from "./tlr2";
 import type { LoroDoc, LoroText, LoroTreeNode, UndoManager, VersionVector } from "loro-crdt";
+import type { PageDirectoryEntry } from "$lib/node-relations";
 
 /** Base URL for the tesela-server REST/Loro endpoints — shared with
  *  `api-client.ts` via `runtime-base.ts`: `/api` in vite-dev / hosted web
@@ -91,6 +92,35 @@ export class NoteDoc {
     return this.#doc;
   }
 
+  async #resolveNoteId(slug: string): Promise<{ hex: string; bytes: Uint8Array }> {
+    try {
+      const response = await fetch(`${this.#base}/loro/page-directory`);
+      if (response.ok) {
+        const entries = (await response.json()) as PageDirectoryEntry[];
+        const matches = entries.filter(
+          (entry) => !entry.deleted && entry.slug.toLowerCase() === slug.toLowerCase(),
+        );
+        if (matches.length > 1 || matches.some((entry) => entry.conflict)) {
+          throw new Error(`slug ${slug} has no unique live page-directory binding`);
+        }
+        if (matches.length === 1) {
+          const hex = matches[0].loro_doc_id.toLowerCase();
+          if (!/^[0-9a-f]{32}$/.test(hex)) {
+            throw new Error(`slug ${slug} has an invalid page-directory document id`);
+          }
+          return {
+            hex,
+            bytes: Uint8Array.from(hex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16)),
+          };
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("page-directory")) throw error;
+      console.debug(`[note-doc] page directory ${slug} fetch failed`, error);
+    }
+    return { hex: noteIdHex(slug), bytes: noteId(slug) };
+  }
+
   /**
    * Open the doc for `slug`: compute its note id, create a fresh `LoroDoc`,
    * wire the change subscription, and bootstrap from the server snapshot. A
@@ -100,9 +130,11 @@ export class NoteDoc {
   async open(slug: string): Promise<void> {
     this.close();
     const gen = ++this.#generation;
+    const identity = await this.#resolveNoteId(slug);
+    if (gen !== this.#generation) return;
     this.slug = slug;
-    this.noteIdHex = noteIdHex(slug);
-    this.noteId16 = noteId(slug);
+    this.noteIdHex = identity.hex;
+    this.noteId16 = identity.bytes;
 
     const doc = await createLoroDoc();
     // A newer open() (or a close()) raced ahead while wasm/loro initialized —

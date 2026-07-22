@@ -32,6 +32,8 @@
   } from "$lib/block-ops-saver";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
+  import type { RelationBacklink } from "$lib/types/RelationBacklink";
+  import type { PageDirectoryEntry } from "$lib/node-relations";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
@@ -48,6 +50,8 @@
   import PageTagsChips from "$lib/components/PageTagsChips.svelte";
   import GrTypeTag from "$lib/graphite/GrTypeTag.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
+  import PropertyEditor from "$lib/components/PropertyEditor.svelte";
+  import { buildRegistry } from "$lib/property-registry";
 
   let { pageId, paneId }: { pageId: string; paneId?: string } = $props();
 
@@ -69,6 +73,26 @@
     enabled: !!pageId,
   }));
   const backlinks = $derived((backlinksQuery.data ?? []) as Link[]);
+  const pageDirectoryQuery = createQuery(() => ({
+    queryKey: ["page-directory"] as const,
+    queryFn: () => api.getPageDirectory(),
+  }));
+  const pageDirectory = $derived((pageDirectoryQuery.data ?? []) as PageDirectoryEntry[]);
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
+  }));
+  const propertyRegistry = $derived(buildRegistry((allNotesQuery.data ?? []) as Note[]));
+  let editingPageProperty = $state<{ key: string; value: string; x: number; y: number } | null>(null);
+  const currentPageIdentity = $derived(
+    pageDirectory.find((entry) => entry.slug === pageId && !entry.deleted && !entry.conflict)?.page_id ?? null,
+  );
+  const relationBacklinksQuery = createQuery(() => ({
+    queryKey: ["relation-backlinks", currentPageIdentity] as const,
+    queryFn: () => api.getRelationBacklinks(currentPageIdentity as string),
+    enabled: currentPageIdentity !== null,
+  }));
+  const relationBacklinks = $derived((relationBacklinksQuery.data ?? []) as RelationBacklink[]);
 
   // ── frontmatter / body split (mirrors NoteRenderer.splitContent) ───────
   function splitContent(content: string): { frontmatter: string; body: string } {
@@ -268,6 +292,22 @@
   function openRef(target: string) {
     openPageInFocused(asPageId(target));
   }
+
+  function openPagePropertyEditor(event: MouseEvent, key: string, value: string) {
+    const definition = propertyRegistry.get(key.toLowerCase());
+    if (definition?.value_type !== "node") return;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    editingPageProperty = { key, value, x: rect.left, y: rect.bottom + 2 };
+  }
+
+  async function savePageProperty(value: string) {
+    const editing = editingPageProperty;
+    if (!editing) return;
+    await api.setPageProperty(pageId, editing.key, value || null);
+    editingPageProperty = null;
+    await queryClient.invalidateQueries({ queryKey: ["note", pageId] });
+    await queryClient.invalidateQueries({ queryKey: ["relation-backlinks"] });
+  }
 </script>
 
 <div class="gr-pane focus">
@@ -349,10 +389,10 @@
     <div class="gr-pane-head">
       <span class="ttl side-ttl">References</span>
       <span class="sp"></span>
-      <span class="meta">{backlinks.length}</span>
+      <span class="meta">{backlinks.length + relationBacklinks.length}</span>
     </div>
     <div class="gr-side-body">
-      {#if backlinks.length === 0}
+      {#if backlinks.length === 0 && relationBacklinks.length === 0}
         <div class="gr-empty">No linked references</div>
       {:else}
         {#each backlinks as ref (ref.target + ":" + ref.position)}
@@ -367,21 +407,49 @@
           </div>
         {/each}
       {/if}
+      {#if relationBacklinks.length > 0}
+        {#each relationBacklinks as relation (relation.edge.source_page_id + ":" + (relation.edge.source_block_id ?? "page") + ":" + relation.edge.property_key)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="gr-refcard" onclick={() => openRef(relation.source_slug)}>
+            <div class="src">
+              <GrIcon name="share-2" size={13} />
+              <span>{relation.source_title}</span>
+            </div>
+            <div class="snip">{relation.edge.property_key}</div>
+          </div>
+        {/each}
+      {/if}
 
       {#if pageProps.length > 0}
         <div class="gr-proplist">
           <div class="ph">Properties</div>
           {#each pageProps as p (p.k)}
-            <div class="gr-prow">
+            <button type="button" class="gr-prow" onclick={(event) => openPagePropertyEditor(event, p.k, p.v)}>
               <span class="chord"></span>
               <span class="k">{p.k}</span>
               <span class="v">{p.v}</span>
-            </div>
+            </button>
           {/each}
         </div>
       {/if}
     </div>
   </div>
+{/if}
+
+{#if editingPageProperty}
+  {@const definition = propertyRegistry.get(editingPageProperty.key.toLowerCase())}
+  {#if definition}
+    <PropertyEditor
+      propertyName={definition.name}
+      currentValue={editingPageProperty.value}
+      valueType={definition.value_type}
+      choices={definition.choices}
+      position={{ x: editingPageProperty.x, y: editingPageProperty.y }}
+      onselect={(value) => void savePageProperty(value)}
+      onclose={() => (editingPageProperty = null)}
+    />
+  {/if}
 {/if}
 
 <style>

@@ -427,6 +427,21 @@ enum LocalQueryEngine {
         return false
     }
 
+    /// One synced page-directory candidate used by Node query predicates.
+    struct NodeQueryPage: Equatable {
+        let pageId: String
+        let slug: String
+        let title: String
+        let aliases: [String]
+        let deleted: Bool
+    }
+
+    /// Additive resolver context for Node predicates; ordinary saved views
+    /// keep their existing matcher behavior when it is absent.
+    struct NodeQueryContext: Equatable {
+        let pages: [NodeQueryPage]
+    }
+
     /// One authoring-UI hint about a span the parser silently dropped or
     /// left dangling during its re-sync (tesela-vp9.4). `got` is the raw
     /// UTF-8 source slice at `[start, end)` — byte offsets, the same space
@@ -453,6 +468,8 @@ enum LocalQueryEngine {
     enum DslToken: Equatable {
         case word(String)
         case quoted(String)
+        case wikiLink(String)
+        case unterminatedWikiLink(String)
         case lparen, rparen, comma, colon, minus
         case op(SimpleDsl.Op)
     }
@@ -484,6 +501,17 @@ enum LocalQueryEngine {
             let start = i
             let tok: DslToken
             switch b {
+            case UInt8(ascii: "[") where i + 1 < bytes.count && bytes[i + 1] == UInt8(ascii: "["):
+                let valueStart = i + 2
+                var j = valueStart
+                while j + 1 < bytes.count && !(bytes[j] == UInt8(ascii: "]") && bytes[j + 1] == UInt8(ascii: "]")) { j += 1 }
+                if j + 1 < bytes.count {
+                    tok = .wikiLink(String(decoding: bytes[valueStart..<j], as: UTF8.self))
+                    i = j + 2
+                } else {
+                    tok = .unterminatedWikiLink(String(decoding: bytes[valueStart..<bytes.count], as: UTF8.self))
+                    i = bytes.count
+                }
             case UInt8(ascii: "("): tok = .lparen; i += 1
             case UInt8(ascii: ")"): tok = .rparen; i += 1
             case UInt8(ascii: ","): tok = .comma; i += 1
@@ -537,11 +565,13 @@ enum LocalQueryEngine {
         let bytes: [UInt8]
         var pos = 0
         var kind: SimpleDsl.Kind = .block
-        /// tesela-vp9.4 authoring-only diagnostics sink. `nil` for the
-        /// plain `parseSimpleDsl` path — every `recordDrop` call below is
-        /// then a no-op `?.append`, so parsing behavior is provably
-        /// unchanged. Non-nil only under `parseSimpleDslWithDiagnostics`.
+        /// Authoring-only diagnostics. Every parse records these so a
+        /// malformed-only expression can distinguish the bare wiki-link
+        /// diagnostic from legacy clauses that intentionally drop.
         var diagnostics: [QueryDiagnostic]? = nil
+        /// A bare `[[...]]` at predicate position is the sole fatal
+        /// no-predicate parse, matching Rust's parser diagnostics.
+        var hasBareWikiLinkPredicate = false
 
         var peek: DslToken? { pos < tokens.count ? tokens[pos].tok : nil }
 
@@ -551,8 +581,7 @@ enum LocalQueryEngine {
             String(decoding: bytes[start..<end], as: UTF8.self)
         }
 
-        /// Record one dropped/dangling span. No-op when `diagnostics` is
-        /// nil (the plain `parseSimpleDsl` path).
+        /// Record one dropped/dangling span.
         mutating func recordDrop(_ start: Int, _ end: Int, _ got: String, _ hint: String) {
             diagnostics?.append(QueryDiagnostic(start: start, end: end, got: got, hint: hint))
         }
@@ -580,7 +609,7 @@ enum LocalQueryEngine {
         /// isn't the `or`/`and` keyword.
         var peekStartsUnary: Bool {
             switch peek {
-            case .lparen, .minus: return true
+            case .lparen, .minus, .wikiLink, .unterminatedWikiLink: return true
             case .word: return !peekKeyword("or") && !peekKeyword("and")
             default: return false
             }
@@ -700,6 +729,26 @@ enum LocalQueryEngine {
             let keySpanned = tokens[pos]
             let keyTok = keySpanned.tok
             pos += 1
+            if case .wikiLink(_) = keyTok {
+                hasBareWikiLinkPredicate = true
+                recordDrop(
+                    keySpanned.start,
+                    keySpanned.end,
+                    rawSlice(keySpanned.start, keySpanned.end),
+                    "bare wikilink is not a predicate; use a Node property comparison"
+                )
+                return nil
+            }
+            if case .unterminatedWikiLink(_) = keyTok {
+                hasBareWikiLinkPredicate = true
+                recordDrop(
+                    keySpanned.start,
+                    keySpanned.end,
+                    rawSlice(keySpanned.start, keySpanned.end),
+                    "unterminated wikilink"
+                )
+                return nil
+            }
             guard case .word(let rawKey) = keyTok else {
                 recordDrop(
                     keySpanned.start,
@@ -871,6 +920,22 @@ enum LocalQueryEngine {
                 pos += 1
                 return s
             }
+            if case .wikiLink(let s)? = peek {
+                pos += 1
+                return "[[\(s)]]"
+            }
+            if case .unterminatedWikiLink(_) = peek {
+                let malformed = tokens[pos]
+                pos += 1
+                hasBareWikiLinkPredicate = true
+                recordDrop(
+                    malformed.start,
+                    malformed.end,
+                    rawSlice(malformed.start, malformed.end),
+                    "unterminated wikilink"
+                )
+                return nil
+            }
             guard pos < tokens.count else { return nil }
             let first = tokens[pos]
             pos += 1
@@ -903,7 +968,7 @@ enum LocalQueryEngine {
             let next = tokens[pos + 1]
             guard next.start == comma.end else { return false }
             switch next.tok {
-            case .word, .quoted: return true
+            case .word, .quoted, .wikiLink, .unterminatedWikiLink: return true
             default: return false
             }
         }
@@ -944,7 +1009,7 @@ enum LocalQueryEngine {
             var out: [String] = []
             loop: while pos < tokens.count {
                 switch tokens[pos].tok {
-                case .word, .quoted:
+                case .word, .quoted, .wikiLink, .unterminatedWikiLink:
                     if let v = parseValue() { out.append(v) }
                 case .comma:
                     pos += 1
@@ -971,7 +1036,7 @@ enum LocalQueryEngine {
                     break loop
                 case .comma:
                     pos += 1
-                case .word, .quoted:
+                case .word, .quoted, .wikiLink, .unterminatedWikiLink:
                     if let v = parseValue() { out.append(v) }
                 default:
                     break loop
@@ -1008,25 +1073,21 @@ enum LocalQueryEngine {
 
     /// Shared parse path for `parseSimpleDsl` / `parseSimpleDslWithDiagnostics`
     /// (tesela-vp9.4) — mirror of web's `parseQueryInternal`.
-    /// `collectDiagnostics` gates whether the diagnostics sink threaded
-    /// through `DslParser` is non-nil; every `recordDrop` call becomes a
-    /// no-op `?.append` when it's nil, so `parseSimpleDsl`'s behavior is
-    /// provably unchanged by this refactor.
+    /// Both paths collect syntax drops so malformed-only input fails closed;
+    /// the plain path simply omits those diagnostics from its return value.
     private static func parseSimpleDslInternal(
         _ dsl: String,
         collectDiagnostics: Bool
     ) -> (parsed: SimpleDsl, diagnostics: [QueryDiagnostic]?) {
         let (tokens, bytes) = tokenizeDsl(dsl)
-        var diagnostics: [QueryDiagnostic]? = nil
-        if collectDiagnostics {
-            var quoteDiagnostics: [QueryDiagnostic] = []
-            recordUnclosedQuotes(tokens: tokens, bytes: bytes, diagnostics: &quoteDiagnostics)
-            diagnostics = quoteDiagnostics
-        }
+        var diagnostics: [QueryDiagnostic]? = []
+        var quoteDiagnostics: [QueryDiagnostic] = []
+        recordUnclosedQuotes(tokens: tokens, bytes: bytes, diagnostics: &quoteDiagnostics)
+        diagnostics = quoteDiagnostics
         var parser = DslParser(tokens: tokens, bytes: bytes, diagnostics: diagnostics)
-        // Empty / all-dropped input → the identity `.and([])` (match-all),
-        // mirroring Rust `parse_or().unwrap_or_default()`.
-        let expr = parser.parseOr() ?? .and([])
+        // Empty input remains the identity `.and([])`, while malformed-only
+        // input matches Rust's empty `.or([])` and therefore fails closed.
+        let parsedExpr = parser.parseOr()
         // Same top-level sequencing as Rust `parse_query`: the sort is
         // parsed at wherever expression parsing stopped.
         let sort = parser.parseOrderBy()
@@ -1035,7 +1096,11 @@ enum LocalQueryEngine {
             let end = parser.tokens[parser.tokens.count - 1].end
             parser.recordDrop(start, end, parser.rawSlice(start, end), "unexpected trailing input")
         }
-        return (SimpleDsl(kind: parser.kind, expr: expr, sort: sort), parser.diagnostics)
+        let expr = parsedExpr ?? (parser.hasBareWikiLinkPredicate ? .or([]) : .and([]))
+        return (
+            SimpleDsl(kind: parser.kind, expr: expr, sort: sort),
+            collectDiagnostics ? parser.diagnostics : nil
+        )
     }
 
     /// Parse a DSL string into the `BoolExpr` tree the local matcher
@@ -1302,24 +1367,142 @@ enum LocalQueryEngine {
         }
     }
 
-    /// Mirror of `eval_expr` (query.rs) / `evalExpr` (query-language.ts):
-    /// walk the `BoolExpr` tree, short-circuiting. Empty `.and([])` is the
-    /// identity (matches everything); `.or([])` matches nothing (the
-    /// parser never produces one).
+    private static func resolveNodeRhs(_ value: String, context: NodeQueryContext) -> String? {
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let uuid = UUID(uuidString: raw) {
+            let pageId = uuid.uuidString.lowercased()
+            let matches = context.pages.filter { !$0.deleted && $0.pageId.lowercased() == pageId }
+            return matches.count == 1 ? pageId : nil
+        }
+        let name: String
+        if raw.hasPrefix("[["), raw.hasSuffix("]]"), raw.count >= 4 {
+            name = String(raw.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            name = raw
+        }
+        let live = context.pages.filter { !$0.deleted }
+        let slugMatches = live.filter { $0.slug.caseInsensitiveCompare(name) == .orderedSame }
+        if slugMatches.count == 1 { return slugMatches[0].pageId.lowercased() }
+        if slugMatches.count > 1 { return nil }
+        let displayMatches = live.filter {
+            $0.title.caseInsensitiveCompare(name) == .orderedSame
+                || $0.aliases.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        return displayMatches.count == 1 ? displayMatches[0].pageId.lowercased() : nil
+    }
+    private struct ContextEvaluation {
+        let matched: Bool
+        let valid: Bool
+    }
+
+
+    private static func nodePredicateEvaluation(
+        _ pred: SimpleDsl.Predicate,
+        ctx: BlockContext,
+        context: NodeQueryContext
+    ) -> ContextEvaluation {
+        let key: String
+        switch pred {
+        case .cmp(let value, _, _), .inList(let value, _, _): key = value
+        }
+        let actual = ctx.properties.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
+        switch pred {
+        case .cmp(_, let op, let value):
+            guard let target = resolveNodeRhs(value, context: context) else {
+                return ContextEvaluation(matched: false, valid: false)
+            }
+            guard let actual else { return ContextEvaluation(matched: op == .ne, valid: true) }
+            let equal = actual.lowercased() == target
+            if op == .eq { return ContextEvaluation(matched: equal, valid: true) }
+            if op == .ne { return ContextEvaluation(matched: !equal, valid: true) }
+            return ContextEvaluation(matched: false, valid: true)
+        case .inList(_, let values, let negated):
+            let targets = values.compactMap { resolveNodeRhs($0, context: context) }
+            guard targets.count == values.count else {
+                return ContextEvaluation(matched: false, valid: false)
+            }
+            guard let actual else { return ContextEvaluation(matched: negated, valid: true) }
+            let contained = targets.contains(actual.lowercased())
+            return ContextEvaluation(matched: negated ? !contained : contained, valid: true)
+        }
+    }
+
+    /// Mirror of `eval_expr` (query.rs) / `evalExpr` (query-language.ts).
+    /// An unresolved Node predicate remains false under negation, while a valid
+    /// disjunct can still satisfy an OR expression.
     static func evalExpr(
         _ expr: SimpleDsl.BoolExpr,
         ctx: BlockContext,
-        propertyTypes: [String: String] = [:]
+        propertyTypes: [String: String] = [:],
+        nodeContext: NodeQueryContext? = nil
     ) -> Bool {
+        let evaluation = evalExprWithContext(
+            expr,
+            ctx: ctx,
+            propertyTypes: propertyTypes,
+            nodeContext: nodeContext
+        )
+        return evaluation.matched
+    }
+
+    private static func evalExprWithContext(
+        _ expr: SimpleDsl.BoolExpr,
+        ctx: BlockContext,
+        propertyTypes: [String: String],
+        nodeContext: NodeQueryContext?
+    ) -> ContextEvaluation {
         switch expr {
         case .and(let args):
-            return args.allSatisfy { evalExpr($0, ctx: ctx, propertyTypes: propertyTypes) }
+            var matched = true
+            var valid = true
+            for arg in args {
+                let evaluation = evalExprWithContext(
+                    arg,
+                    ctx: ctx,
+                    propertyTypes: propertyTypes,
+                    nodeContext: nodeContext
+                )
+                matched = matched && evaluation.matched
+                valid = valid && evaluation.valid
+            }
+            return ContextEvaluation(matched: matched, valid: valid)
         case .or(let args):
-            return args.contains { evalExpr($0, ctx: ctx, propertyTypes: propertyTypes) }
+            var matched = false
+            var valid = true
+            for arg in args {
+                let evaluation = evalExprWithContext(
+                    arg,
+                    ctx: ctx,
+                    propertyTypes: propertyTypes,
+                    nodeContext: nodeContext
+                )
+                matched = matched || evaluation.matched
+                valid = valid && evaluation.valid
+            }
+            return ContextEvaluation(matched: matched, valid: valid)
         case .not(let inner):
-            return !evalExpr(inner, ctx: ctx, propertyTypes: propertyTypes)
+            let evaluation = evalExprWithContext(
+                inner,
+                ctx: ctx,
+                propertyTypes: propertyTypes,
+                nodeContext: nodeContext
+            )
+            return ContextEvaluation(
+                matched: evaluation.valid && !evaluation.matched,
+                valid: evaluation.valid
+            )
         case .atom(let pred):
-            return predMatches(pred, ctx: ctx, propertyTypes: propertyTypes)
+            let key: String
+            switch pred {
+            case .cmp(let value, _, _), .inList(let value, _, _): key = value
+            }
+            if propertyTypes[key.lowercased()]?.lowercased() == "node", let nodeContext {
+                return nodePredicateEvaluation(pred, ctx: ctx, context: nodeContext)
+            }
+            return ContextEvaluation(
+                matched: predMatches(pred, ctx: ctx, propertyTypes: propertyTypes),
+                valid: true
+            )
         }
     }
 
@@ -1330,8 +1513,16 @@ enum LocalQueryEngine {
     static func predMatches(
         _ pred: SimpleDsl.Predicate,
         ctx: BlockContext,
-        propertyTypes: [String: String] = [:]
+        propertyTypes: [String: String] = [:],
+        nodeContext: NodeQueryContext? = nil
     ) -> Bool {
+        let key: String
+        switch pred {
+        case .cmp(let value, _, _), .inList(let value, _, _): key = value
+        }
+        if propertyTypes[key.lowercased()]?.lowercased() == "node", let nodeContext {
+            return nodePredicateEvaluation(pred, ctx: ctx, context: nodeContext).matched
+        }
         switch pred {
         case .cmp(let key, let op, let value):
             return cmpMatches(key: key, op: op, value: value, ctx: ctx, propertyTypes: propertyTypes)
@@ -1420,9 +1611,10 @@ enum LocalQueryEngine {
     static func blockMatches(
         _ dsl: SimpleDsl,
         ctx: BlockContext,
-        propertyTypes: [String: String] = [:]
+        propertyTypes: [String: String] = [:],
+        nodeContext: NodeQueryContext? = nil
     ) -> Bool {
-        evalExpr(dsl.expr, ctx: ctx, propertyTypes: propertyTypes)
+        evalExpr(dsl.expr, ctx: ctx, propertyTypes: propertyTypes, nodeContext: nodeContext)
     }
 
     /// Extract a Property page's declared `value_type` from its YAML
@@ -1461,12 +1653,13 @@ enum LocalQueryEngine {
         noteTitle: String,
         pageNoteType: String?,
         dsl: SimpleDsl,
-        propertyTypes: [String: String] = [:]
+        propertyTypes: [String: String] = [:],
+        nodeContext: NodeQueryContext? = nil
     ) -> [QueryItem] {
         let ctxs = contexts(blocks: blocks, noteId: noteId, pageNoteType: pageNoteType)
         var out: [QueryItem] = []
         for (idx, ctx) in ctxs.enumerated() {
-            guard blockMatches(dsl, ctx: ctx, propertyTypes: propertyTypes) else { continue }
+            guard blockMatches(dsl, ctx: ctx, propertyTypes: propertyTypes, nodeContext: nodeContext) else { continue }
 
             var breadcrumb = [noteTitle]
             var crumbs: [String] = []

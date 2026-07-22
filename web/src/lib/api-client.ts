@@ -17,6 +17,8 @@ import type { TableColumnConfig } from "$lib/table/table-config";
 import type { KeymapConfig } from "$lib/stores/keybindings.svelte";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
+import type { PageDirectoryEntry } from "$lib/node-relations";
+import type { RelationBacklink } from "$lib/types/RelationBacklink";
 import {
   executeBlockSubtreeRelocation,
   type BlockMoveRequest,
@@ -282,6 +284,9 @@ export const api = {
     noteId,
     () => del(`/notes/${encodeURIComponent(noteId)}/blocks/${encodeURIComponent(bid)}`),
   ),
+  getPageDirectory: () => get<PageDirectoryEntry[]>("/loro/page-directory"),
+  getRelationBacklinks: (pageId: string) =>
+    get<RelationBacklink[]>(`/relations/${encodeURIComponent(pageId)}/backlinks`),
   getBacklinks: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/backlinks`),
   getForwardLinks: (id: string) =>
@@ -373,6 +378,12 @@ export const api = {
     };
     return noteId ? propertyMutationBarrier.track(noteId, mutation) : mutation();
   },
+  setPageProperty: (noteId: string, key: string, value: string | null) =>
+    post<{ ok: boolean }>("/pages/set-property", {
+      note_id: noteId,
+      key,
+      value,
+    }),
   /** Apply independent member operations to a multi-select LoroList. Unlike
    *  `setBlockProperty`, this never clears/replaces the collection. */
   updateBlockPropertyList: (

@@ -9,7 +9,10 @@
    * Phase 12.2 — when `propKey === "recurring"`, value is formatted via
    * `formatRecurrence` and clicking the chip opens a minimal skip menu.
    */
+  import { onMount } from "svelte";
   import type { PropertyDefinition } from "$lib/property-registry";
+  import { api } from "$lib/api-client";
+  import { resolveNodeValue, type PageDirectoryEntry, type ResolvedNode } from "$lib/node-relations";
   import { resolveChipIcon } from "$lib/icon-registry";
   import { formatRecurrence } from "$lib/recurrence-format";
   import { skipRecurrence } from "$lib/recurrence-actions";
@@ -45,6 +48,14 @@
   const isCheckbox = $derived(def.value_type === "checkbox");
   const isMultiSelect = $derived(isMultiSelectType(def.value_type));
   const linkTarget = $derived(propertyLinkTarget(def.value_type, value));
+  let nodeDirectory = $state<PageDirectoryEntry[]>([]);
+  const nodeResolution = $derived<ResolvedNode | null>(
+    def.value_type === "node" ? resolveNodeValue(value, nodeDirectory) : null,
+  );
+  const nodeHref = $derived(
+    nodeResolution?.state === "resolved" ? `/g/${encodeURIComponent(nodeResolution.slug)}` : null,
+  );
+  const effectiveLinkTarget = $derived(linkTarget ?? nodeHref);
 
   /** Popover open state for the skip menu. */
   let skipMenuOpen = $state(false);
@@ -126,6 +137,9 @@
 
   const formattedValue = $derived.by((): string => {
     const v = (value ?? "").trim();
+    if (def.value_type === "node") {
+      return nodeResolution?.state === "resolved" ? nodeResolution.title : v;
+    }
     if (isCheckbox) return checkboxIsChecked(v) ? "☑" : "☐";
     // Recurring chips always route through the recurrence formatter regardless
     // of chip_value_format so users see "Daily, 10×" instead of raw grammar.
@@ -181,6 +195,12 @@
         `border: 1px solid color-mix(in srgb, ${choiceColor} 32%, transparent);`
       : "",
   );
+
+  onMount(() => {
+    if (def.value_type === "node") {
+      void api.getPageDirectory().then((entries) => (nodeDirectory = entries));
+    }
+  });
 </script>
 
 <svelte:window onclick={handleClickOutside} />
@@ -200,12 +220,12 @@
 {/snippet}
 
 <span class="relative">
-  {#if linkTarget}
+  {#if effectiveLinkTarget}
     <a
       class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium hover:underline {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'}"
       style={chipStyle}
-      title="Open {def.name}: {value}"
-      href={linkTarget}
+      title="Open {def.name}: {formattedValue}"
+      href={effectiveLinkTarget}
       target={def.value_type === "url" ? "_blank" : undefined}
       rel={def.value_type === "url" ? "noopener noreferrer" : undefined}
       onclick={(event) => event.stopPropagation()}

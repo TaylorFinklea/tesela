@@ -154,9 +154,11 @@ pub(super) struct RelocationReceipt {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum RelocationRecord {
-    Intent(RelocationIntent),
+    Intent(Box<RelocationIntent>),
     Receipt(RelocationReceipt),
 }
+
+type RelocatedSnapshotAncestry = (Vec<u16>, Vec<Option<[u8; 16]>>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RelocatedBlockSnapshot {
@@ -605,7 +607,7 @@ fn relocated_snapshot_ancestry(
     blocks: &[RelocatedBlockSnapshot],
     new_root_indent: u16,
     new_root_parent: Option<[u8; 16]>,
-) -> SyncResult<(Vec<u16>, Vec<Option<[u8; 16]>>)> {
+) -> SyncResult<RelocatedSnapshotAncestry> {
     let old_root_indent = blocks
         .first()
         .ok_or_else(|| rejected("relocation subtree is empty"))?
@@ -839,7 +841,7 @@ impl LoroEngine {
                 return Err(SyncError::Storage(format!(
                     "read relocation record {}: {error}",
                     path.display()
-                )))
+                )));
             }
         };
         postcard::from_bytes(&bytes).map(Some).map_err(|error| {
@@ -866,7 +868,7 @@ impl LoroEngine {
                 return Err(SyncError::Storage(format!(
                     "read relocation directory {}: {error}",
                     dir.display()
-                )))
+                )));
             }
         };
         let mut records = Vec::new();
@@ -936,13 +938,13 @@ impl LoroEngine {
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Default::default())
+                return Ok(Default::default());
             }
             Err(error) => {
                 return Err(SyncError::Storage(format!(
                     "read relocation tombstones {}: {error}",
                     path.display()
-                )))
+                )));
             }
         };
         postcard::from_bytes(&bytes).map_err(|error| {
@@ -1036,7 +1038,7 @@ impl LoroEngine {
                         return Err(SyncError::Storage(format!(
                             "prune relocation receipt {}: {error}",
                             path.display()
-                        )))
+                        )));
                     }
                 }
             } else {
@@ -1056,7 +1058,7 @@ impl LoroEngine {
         let mut active = self.inner.active_relocations.lock().await;
         active.insert(move_id, RelocationReservation::from_intent(intent));
         if let Err(error) = self
-            .persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
+            .persist_relocation_record(move_id, &RelocationRecord::Intent(Box::new(intent.clone())))
             .await
         {
             active.remove(&move_id);
@@ -1561,9 +1563,11 @@ impl LoroEngine {
             (_, Some(_)) => {}
             (_, None) => return Err(rejected("target-relative placement requires a target bid")),
         }
-        if request.source_note_id == VIEWS_DOC_ID || request.destination_note_id == VIEWS_DOC_ID {
+        if super::is_special_doc(&request.source_note_id)
+            || super::is_special_doc(&request.destination_note_id)
+        {
             return Err(rejected(
-                "the views registry cannot participate in relocation",
+                "synced registry documents cannot participate in relocation",
             ));
         }
         if request.source_note_id == request.destination_note_id
@@ -1911,7 +1915,7 @@ impl LoroEngine {
                     return Err(recovery_required(
                         prepared.request.move_id,
                         format!("inspect captured source node deletion: {error}"),
-                    ))
+                    ));
                 }
             }
         }
@@ -2034,9 +2038,12 @@ impl LoroEngine {
                 .await
                 .map_err(|error| preserve_recovery_error(move_id, error))?;
             intent.phase = RelocationPhase::DestinationDurable;
-            self.persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
-                .await
-                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            self.persist_relocation_record(
+                move_id,
+                &RelocationRecord::Intent(Box::new(intent.clone())),
+            )
+            .await
+            .map_err(|error| preserve_recovery_error(move_id, error))?;
             self.checkpoint_after_destination_durable(move_id).await?;
         }
 
@@ -2067,9 +2074,12 @@ impl LoroEngine {
                 }
             }
             intent.phase = RelocationPhase::SourceDurable;
-            self.persist_relocation_record(move_id, &RelocationRecord::Intent(intent.clone()))
-                .await
-                .map_err(|error| preserve_recovery_error(move_id, error))?;
+            self.persist_relocation_record(
+                move_id,
+                &RelocationRecord::Intent(Box::new(intent.clone())),
+            )
+            .await
+            .map_err(|error| preserve_recovery_error(move_id, error))?;
             self.checkpoint_after_source_durable(move_id).await?;
         }
 
@@ -2187,7 +2197,7 @@ impl LoroEngine {
                             "move id has a pending relocation with different arguments".into(),
                         ))
                     } else {
-                        self.complete_intent_under_locks(intent, true).await
+                        self.complete_intent_under_locks(*intent, true).await
                     }
                 }
             };
@@ -2258,7 +2268,9 @@ impl LoroEngine {
     ) -> LockedRelocationAttempt {
         match self.read_relocation_record(request.move_id).await {
             Ok(Some(_)) => {
-                return LockedRelocationAttempt::Completed(self.relocate_under_locks(request).await)
+                return LockedRelocationAttempt::Completed(
+                    self.relocate_under_locks(request).await,
+                );
             }
             Err(error) => return LockedRelocationAttempt::Completed(Err(error)),
             Ok(None) => {}
@@ -2323,7 +2335,7 @@ impl LoroEngine {
                         "pending relocation changed while recovery waited for its locks",
                     ));
                 }
-                self.complete_intent_under_locks(current, true).await?;
+                self.complete_intent_under_locks(*current, true).await?;
             }
             Some(RelocationRecord::Receipt(receipt)) => {
                 if receipt.move_id != move_id || receipt.request_hash != expected.request_hash {
@@ -2354,7 +2366,7 @@ impl LoroEngine {
 
     async fn recover_pending_move(&self, move_id: [u8; 16]) -> SyncResult<()> {
         match self.read_relocation_record(move_id).await? {
-            Some(RelocationRecord::Intent(intent)) => self.recover_intent_with_locks(intent).await,
+            Some(RelocationRecord::Intent(intent)) => self.recover_intent_with_locks(*intent).await,
             Some(RelocationRecord::Receipt(receipt)) if receipt.move_id == move_id => {
                 self.inner.active_relocations.lock().await.remove(&move_id);
                 Ok(())
@@ -2467,7 +2479,7 @@ impl LoroEngine {
         let mut intents: Vec<RelocationIntent> = records
             .into_iter()
             .filter_map(|record| match record {
-                RelocationRecord::Intent(intent) => Some(intent),
+                RelocationRecord::Intent(intent) => Some(*intent),
                 RelocationRecord::Receipt(_) => None,
             })
             .collect();
@@ -2483,11 +2495,7 @@ impl LoroEngine {
                 // whole app down (tesela-73b). Drop it from the in-memory active
                 // set too, so it can't keep blocking overlapping moves.
                 self.quarantine_relocation_record(move_id, error).await;
-                self.inner
-                    .active_relocations
-                    .lock()
-                    .await
-                    .remove(&move_id);
+                self.inner.active_relocations.lock().await.remove(&move_id);
             }
         }
         self.prune_relocation_receipts().await

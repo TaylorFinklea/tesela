@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { api } from "$lib/api-client";
+  import { rankPageCandidates, type PageDirectoryEntry } from "$lib/node-relations";
   import {
     checkboxIsChecked,
     isMultiSelectType,
@@ -32,7 +34,11 @@
   let selectedIndex = $state(0);
   let textValue = $state("");
   let selectedValues = $state<string[]>([]);
+  let directory = $state<PageDirectoryEntry[]>([]);
+  let nodeFilter = $state("");
+  let nodeIndex = $state(0);
   const isMultiSelect = $derived(isMultiSelectType(valueType));
+  const nodeCandidates = $derived(rankPageCandidates(directory, nodeFilter));
 
   // For select types, find current selection
   $effect(() => {
@@ -91,6 +97,26 @@
         e.preventDefault();
         onclose();
       }
+    } else if (valueType === "node") {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        nodeIndex = Math.min(nodeCandidates.length - 1, nodeIndex + 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        nodeIndex = Math.max(0, nodeIndex - 1);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const selected = nodeCandidates[nodeIndex];
+        if (selected) {
+          textValue = selected.page_id;
+          nodeFilter = selected.title || selected.slug;
+        } else if (textValue) {
+          onselect(textValue);
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onclose();
+      }
     } else if (valueType === "checkbox") {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
@@ -111,6 +137,13 @@
   }
 
   onMount(() => {
+    if (valueType === "node") {
+      void api.getPageDirectory().then((entries) => {
+        directory = entries;
+        const current = entries.find((entry) => entry.page_id === currentValue);
+        if (current) nodeFilter = current.title || current.slug;
+      });
+    }
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest(".property-editor")) onclose();
@@ -130,7 +163,42 @@
     <span class="text-[10px] text-muted-foreground/60 uppercase tracking-widest">{propertyName}</span>
   </div>
 
-  {#if isMultiSelect && choices}
+  {#if valueType === "node"}
+    <div class="p-2 space-y-2">
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        bind:value={nodeFilter}
+        oninput={() => (nodeIndex = 0)}
+        onkeydown={handleKeydown}
+        placeholder="Search pages…"
+        class="w-full text-[12px] bg-muted/50 rounded px-2 py-1 text-foreground outline-none border border-transparent focus:border-ring/30"
+        autofocus
+      />
+      <div class="max-h-40 overflow-y-auto" aria-label="{propertyName} pages">
+        {#each nodeCandidates as page, i (page.page_id)}
+          <button
+            type="button"
+            class="w-full rounded px-2 py-1 text-left text-[12px] hover:bg-accent"
+            class:bg-accent={i === nodeIndex || textValue === page.page_id}
+            onclick={() => {
+              textValue = page.page_id;
+              nodeFilter = page.title || page.slug;
+              nodeIndex = i;
+            }}
+          >
+            <span class="block truncate">{page.title || page.slug}</span>
+            <span class="block truncate text-[10px] text-muted-foreground">{page.slug}</span>
+          </button>
+        {:else}
+          <p class="px-2 py-1 text-[11px] text-muted-foreground">No matching pages</p>
+        {/each}
+      </div>
+    </div>
+    <div class="flex justify-end gap-1 border-t border-border p-1.5">
+      <button type="button" class="rounded px-2 py-1 text-[11px] hover:bg-muted" onclick={onclose}>Cancel</button>
+      <button type="button" class="rounded bg-primary px-2 py-1 text-[11px] text-primary-foreground" disabled={!textValue} onclick={() => onselect(textValue)}>Save</button>
+    </div>
+  {:else if isMultiSelect && choices}
     <div class="py-1 max-h-52 overflow-y-auto" aria-label="{propertyName} choices">
       {#each choices as choice (choice)}
         <button

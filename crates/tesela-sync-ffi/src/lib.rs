@@ -14,10 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use rand::RngCore;
-use tesela_core::{
-    property::{parse_scalar, ValueType},
-    stable_uuid_from_slug,
-};
+use tesela_core::property::{parse_scalar, ValueType};
+#[cfg(test)]
+use tesela_core::stable_uuid_from_slug;
 use tesela_sync::crypto::aead::{open as aead_open, presence_aad, seal as aead_seal};
 use tesela_sync::crypto::relay_auth::{
     canonical_request, compute_request_mac, derive_relay_auth_key,
@@ -32,8 +31,9 @@ use tesela_sync::{
     },
     oplog::op::OpPayload,
     transport::relay::RelayClient,
-    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode,
-    PropOp, PropScalar, SyncEnvelope, TableColumnConfig as InnerTableColumnConfig,
+    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine,
+    PageDirectoryEntry as InnerPageDirectoryEntry, PairingCode as InnerPairingCode, PropOp,
+    PropScalar, SyncEnvelope, TableColumnConfig as InnerTableColumnConfig,
     ViewRecord as InnerViewRecord,
 };
 use tokio::sync::Mutex;
@@ -279,6 +279,34 @@ pub struct PresenceWsHeaders {
     pub ts: i64,
     /// STANDARD-base64 of the HMAC-SHA256 request MAC (`x-tesela-mac`).
     pub mac_b64: String,
+}
+
+/// Swift-friendly immutable page-directory record.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PageDirectoryEntry {
+    pub page_id: String,
+    pub loro_doc_id: String,
+    pub slug: String,
+    pub title: String,
+    pub aliases: Vec<String>,
+    pub deleted: bool,
+    pub forward_to_loro_doc_id: Option<String>,
+    pub conflict: bool,
+}
+
+impl From<InnerPageDirectoryEntry> for PageDirectoryEntry {
+    fn from(value: InnerPageDirectoryEntry) -> Self {
+        Self {
+            page_id: value.page_id.to_string(),
+            loro_doc_id: value.loro_doc_id,
+            slug: value.slug,
+            title: value.title,
+            aliases: value.aliases,
+            deleted: value.deleted,
+            forward_to_loro_doc_id: value.forward_to_loro_doc_id,
+            conflict: value.conflict,
+        }
+    }
 }
 
 /// One saved view from the synced views registry (saved-views spec,
@@ -810,7 +838,7 @@ impl SyncEngineHandle {
         content: String,
         created_at_millis: i64,
     ) -> Result<String, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let payload = OpPayload::NoteUpsert {
             note_id,
             display_alias: Some(slug.clone()),
@@ -866,7 +894,7 @@ impl SyncEngineHandle {
         use tesela_core::note_tree::parse_note;
         use tesela_sync::diff::diff_note_trees;
 
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
 
         // Previous content is whatever the engine last materialized
         // for this note. Read it straight from disk — `record_local`
@@ -999,8 +1027,11 @@ impl SyncEngineHandle {
             ),
             None => None,
         };
-        let source_note_id = stable_uuid_from_slug(&request.source_slug);
-        let destination_note_id = stable_uuid_from_slug(&request.destination_slug);
+        let source_note_id = self.inner.resolve_note_doc_id(&request.source_slug).await?;
+        let destination_note_id = self
+            .inner
+            .resolve_note_doc_id(&request.destination_slug)
+            .await?;
         let placement = match request.placement {
             BlockMovePlacement::Before => MovePlacement::Before,
             BlockMovePlacement::Inside => MovePlacement::Inside,
@@ -1097,7 +1128,7 @@ impl SyncEngineHandle {
         slug: String,
         since_vv: Option<Vec<u8>>,
     ) -> Result<Option<Vec<u8>>, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let Some(update_bytes) = self
             .inner
             .export_doc_update(note_id, since_vv.as_deref())
@@ -1130,7 +1161,7 @@ impl SyncEngineHandle {
         let mut slugs_by_id = HashMap::with_capacity(requests.len());
         let mut engine_requests = Vec::with_capacity(requests.len());
         for request in requests {
-            let note_id = stable_uuid_from_slug(&request.slug);
+            let note_id = self.inner.resolve_note_doc_id(&request.slug).await?;
             if !seen.insert(note_id) {
                 return Err(FfiSyncError::Other {
                     message: format!("duplicate delta note {}", request.slug),
@@ -1232,7 +1263,8 @@ impl SyncEngineHandle {
     /// resident (nothing to catch up on). Cursor-free — see
     /// [`Self::produce_note_delta`].
     pub async fn note_version(&self, slug: String) -> Option<Vec<u8>> {
-        self.inner.doc_version(stable_uuid_from_slug(&slug)).await
+        let note_id = self.inner.resolve_note_doc_id(&slug).await.ok()?;
+        self.inner.doc_version(note_id).await
     }
 
     /// Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -1264,7 +1296,7 @@ impl SyncEngineHandle {
         utf16_delete_len: u32,
         insert: String,
     ) -> Result<u32, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
             message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
         })?;
@@ -1293,7 +1325,7 @@ impl SyncEngineHandle {
         slug: String,
         block_id_hex: String,
     ) -> Result<Option<String>, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let Some(block_id) = parse_block_id_hex(&block_id_hex) else {
             return Ok(None);
         };
@@ -1312,7 +1344,7 @@ impl SyncEngineHandle {
         block_id_hex: String,
         utf16_offset: u32,
     ) -> Result<Option<Vec<u8>>, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let Some(block_id) = parse_block_id_hex(&block_id_hex) else {
             return Ok(None);
         };
@@ -1331,7 +1363,7 @@ impl SyncEngineHandle {
         slug: String,
         cursor_bytes: Vec<u8>,
     ) -> Result<Option<u32>, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         Ok(self
             .inner
             .resolve_block_cursor(note_id, &cursor_bytes)
@@ -1400,6 +1432,11 @@ impl SyncEngineHandle {
     ) -> Result<u32, FfiSyncError> {
         let key = normalize_prop_key(&key)?;
         let value_type = ValueType::parse(value_type.trim());
+        if value_type == ValueType::Node && tesela_core::PageId::parse(&value).is_none() {
+            return Err(FfiSyncError::Other {
+                message: "node properties require a canonical PageId".into(),
+            });
+        }
         let ops = match value_type {
             ValueType::Text => vec![PropOp::SetText(value)],
             ValueType::MultiSelect => list_set_ops(&value),
@@ -1407,6 +1444,45 @@ impl SyncEngineHandle {
         };
         self.record_block_property_ops(&slug, &block_id_hex, &key, ops)
             .await
+    }
+
+    /// Set or clear a page-owned typed property through the same root
+    /// container used by the server. Node values require canonical PageIds.
+    pub async fn set_page_property_typed(
+        &self,
+        slug: String,
+        key: String,
+        value_type: String,
+        value: Option<String>,
+    ) -> Result<(), FfiSyncError> {
+        let key = normalize_prop_key(&key)?;
+        let value_type = ValueType::parse(value_type.trim());
+        if value_type == ValueType::Node
+            && value
+                .as_deref()
+                .is_some_and(|value| tesela_core::PageId::parse(value).is_none())
+        {
+            return Err(FfiSyncError::Other {
+                message: "node properties require a canonical PageId".into(),
+            });
+        }
+        let op = match value {
+            None => PropOp::Clear,
+            Some(value) => match value_type {
+                ValueType::Text => PropOp::SetText(value),
+                other => PropOp::SetScalar(parse_scalar(other, &value)),
+            },
+        };
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
+        self.inner
+            .record_local(OpPayload::PagePropertySet {
+                note_id,
+                key,
+                value: op,
+            })
+            .await
+            .map(|_| ())
+            .map_err(FfiSyncError::from)
     }
 
     /// Apply independent add/remove operations to a multi-value property's
@@ -1464,7 +1540,7 @@ impl SyncEngineHandle {
         block_id_hex: String,
         key: String,
     ) -> Result<u32, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
             message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
         })?;
@@ -1500,7 +1576,7 @@ impl SyncEngineHandle {
         slug: String,
         bytes: Vec<u8>,
     ) -> Result<(), FfiSyncError> {
-        let note_id = stable_uuid_from_slug(&slug);
+        let note_id = self.inner.resolve_note_doc_id(&slug).await?;
         // AUTHORITATIVE re-base: a disjoint device that already authored this
         // note unions in the server's lineage and collapses each same-bid twin
         // to the global-max `TreeID` node (pure rule, tesela-fte) — both sides
@@ -1591,6 +1667,16 @@ impl SyncEngineHandle {
             .await;
     }
 
+    /// Immutable page identities and their current resolution metadata.
+    pub async fn page_directory_list(&self) -> Vec<PageDirectoryEntry> {
+        self.inner
+            .page_directory_list()
+            .await
+            .into_iter()
+            .map(PageDirectoryEntry::from)
+            .collect()
+    }
+
     /// All saved views from the synced views registry, sorted by
     /// `(order, id)` — deterministic across devices. Empty on a fresh
     /// device that has neither seeded nor synced yet. The registry doc
@@ -1673,7 +1759,7 @@ impl SyncEngineHandle {
         key: &str,
         ops: Vec<PropOp>,
     ) -> Result<u32, FfiSyncError> {
-        let note_id = stable_uuid_from_slug(slug);
+        let note_id = self.inner.resolve_note_doc_id(slug).await?;
         let block_id = parse_block_id_hex(block_id_hex).ok_or_else(|| FfiSyncError::Other {
             message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
         })?;
@@ -3676,6 +3762,50 @@ mod tests {
         assert!(rendered.contains("archived:: true"), "{rendered:?}");
     }
 
+    #[tokio::test]
+    async fn typed_page_node_property_requires_page_id_and_materializes() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "typed-page-node".to_string();
+        let target = "11111111-1111-5111-8111-111111111111".to_string();
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Typed page property".into(),
+            "- body\n".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        h.set_page_property_typed(
+            slug.clone(),
+            "project".into(),
+            "node".into(),
+            Some(target.clone()),
+        )
+        .await
+        .unwrap();
+        let rendered = h
+            .inner
+            .render_note(stable_uuid_from_slug(&slug))
+            .await
+            .unwrap();
+        assert!(
+            rendered.contains(&format!("project:: {target}")),
+            "{rendered:?}"
+        );
+
+        let err = h
+            .set_page_property_typed(
+                slug,
+                "project".into(),
+                "node".into(),
+                Some("legacy title".into()),
+            )
+            .await
+            .expect_err("Node properties must never accept mutable titles");
+        assert!(err.to_string().contains("canonical PageId"));
+    }
     #[tokio::test]
     async fn list_delta_promotes_legacy_members_then_adds_and_removes() {
         let dir = tempfile::tempdir().unwrap();

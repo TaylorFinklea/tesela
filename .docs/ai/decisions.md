@@ -966,3 +966,13 @@ user-selected views, Lock Screen families, and controls remain explicit future
 product work. Full contract and evidence:
 `phases/2026-07-19-ios-home-screen-widgets-spec.md` and
 `phases/2026-07-19-ios-home-screen-widgets-report.md`.
+
+### 2026-07-21 — Node relations bind immutable PageId, not slug or document address
+
+**Decision:** every note owns one immutable UUID `PageId`, persisted in its Loro root and mirrored as reserved `tesela_page_id` frontmatter. Legacy notes derive it once from their current 16-byte Loro document address under Tesela's fixed UUIDv5 namespace. Slugs, filenames, public routes, relay stream IDs, and `NoteStore` keys remain legacy addressing. Root/frontmatter/directory disagreement is a repair conflict and fails closed.
+
+A reserved synced Loro page-directory maps PageId to current legacy document state using deterministic binding seeds plus flat scalar facts. Directory state resolves identity but never overwrites note-root content. Tombstones, aliases, and forwarding provenance remain durable. Special documents use the extensible `SPECIAL_DOC_IDS` boundary and never enter note materialization, indexing, counts, note operations, twin healing, or relocation.
+
+Rename remains create-copy/delete. It writes a restartable forwarding intent, copies the original PageId to the new document, publishes aliases/forwarding before tombstoning the source, and retains stale source-stream edits on their original lineage. Semantic replay forwards only changes relative to the frozen pre-rename baseline; uncontested edits/additions/deletions reach the live target, while conflicting target edits win and incompatible renames remain explicit conflicts.
+
+Node properties store exactly one canonical PageId through existing typed property containers. A rebuildable `relation_edges` projection is separate from wiki-link `links`; backlinks combine both additively. Legacy strings and deleted/unresolved/conflicted targets remain visible but non-navigable. JQL resolves Node RHS values through explicit page-directory context, with exact slug precedence and fail-closed diagnostics for unresolved or ambiguous values.

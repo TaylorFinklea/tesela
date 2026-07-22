@@ -57,8 +57,13 @@ pub fn build(state: AppState) -> Router {
             axum::routing::delete(notes::delete_block),
         )
         .route("/loro/index", get(notes::get_loro_index))
+        .route("/loro/page-directory", get(notes::get_page_directory))
         .route("/loro/notes/{id}/snapshot", get(notes::get_loro_snapshot))
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
+        .route(
+            "/relations/{page_id}/backlinks",
+            get(notes::get_relation_backlinks),
+        )
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/notes/{id}/unlinked", get(notes::get_unlinked))
         .route("/tags/rename", post(notes::rename_tag))
@@ -77,6 +82,7 @@ pub fn build(state: AppState) -> Router {
         .route("/blocks/move-subtree", post(notes::move_block_subtree))
         .route("/blocks/recur-bump", post(notes::recur_bump))
         .route("/blocks/set-property", post(notes::set_block_property))
+        .route("/pages/set-property", post(notes::set_page_property))
         .route(
             "/blocks/update-property-list",
             post(notes::update_block_property_list),

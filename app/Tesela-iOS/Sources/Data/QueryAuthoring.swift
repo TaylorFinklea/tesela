@@ -68,7 +68,7 @@ enum QueryAuthoring {
             case .minus:
                 out.append(ClassifiedToken(span: sp, role: state == .key ? .keyword : .operatorRole, key: activeKey))
                 continue
-            case .quoted:
+            case .quoted, .wikiLink, .unterminatedWikiLink:
                 out.append(ClassifiedToken(span: sp, role: .value, key: activeKey))
                 state = .key
                 continue
@@ -500,7 +500,7 @@ enum QueryAuthoring {
                 // Prefix negation — state stays `.key` so the operand
                 // right after it is still read as the predicate's key.
                 current.append(sp)
-            case .quoted:
+            case .quoted, .wikiLink, .unterminatedWikiLink:
                 current.append(sp)
                 state = .key
                 unaryOpen = false

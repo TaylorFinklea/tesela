@@ -81,6 +81,13 @@ struct BlockRow: View {
     /// inactive and the toolbar's link button just inserts `[[`. Declared
     /// here (before `onIndent`) to match the call-site argument order.
     var pageSearch: ((String) -> [Page])? = nil
+    /// Supplies canonical PageId candidates for a Node-property picker.
+    var nodeSearch: ((String) -> [NodePageCandidate])? = nil
+    /// Navigate a resolved canonical Node PageId; legacy text stays inert.
+    var onOpenNode: ((String) -> Void)? = nil
+    /// Resolve the display and navigation state of a Node value. A nil
+    /// resolver preserves existing raw-value rendering for legacy callers.
+    var nodeResolution: ((String) -> NodePageResolution)? = nil
     /// Supplies `#` tag suggestions for `query` (wired to the service's
     /// `searchableTags`). nil → no tag suggestions.
     var tagSearch: ((String) -> [String])? = nil
@@ -376,6 +383,9 @@ struct BlockRow: View {
                         if visibleChips.props {
                             ForEach(displayProperties, id: \.key) { prop in
                                 let definition = propertyDef(for: prop.key)
+                                let resolution = definition?.valueType == .node
+                                    ? nodeResolution?(prop.value)
+                                    : nil
                                 PropertyChip(
                                     key: prop.key,
                                     value: prop.value,
@@ -393,7 +403,11 @@ struct BlockRow: View {
                                             key: prop.key,
                                             value: PropertyEditing.toggledCheckboxValue(prop.value)
                                         )
-                                    } : nil
+                                    } : nil,
+                                    onOpenNode: resolution?.isResolved == true ? {
+                                        onOpenNode?(prop.value)
+                                    } : nil,
+                                    nodeDisplayValue: resolution?.label(for: prop.value)
                                 )
                             }
                         }
@@ -458,7 +472,8 @@ struct BlockRow: View {
                 },
                 onSaveList: { delta in
                     writePropertyList(key: target.key, delta: delta)
-                }
+                },
+                nodeSearch: nodeSearch
             )
         }
     }

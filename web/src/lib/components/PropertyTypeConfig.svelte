@@ -34,7 +34,7 @@
 
   const ALL_TYPES: PropertyType[] = [
     "text", "number", "select", "multi-select",
-    "date", "checkbox", "url", "email", "phone", "object",
+    "date", "datetime", "checkbox", "url", "email", "phone", "object", "node",
   ];
 
   const valueType = $derived<PropertyType>((note.metadata.custom.value_type as PropertyType) ?? "text");

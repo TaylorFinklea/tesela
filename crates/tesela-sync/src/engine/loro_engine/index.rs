@@ -123,16 +123,14 @@ impl LoroEngine {
         let docs = self.inner.docs.read().await;
         let note_count = docs
             .iter()
-            .filter(|(note_id, doc)| {
-                !Self::is_views_doc(note_id) && !note_doc_is_deleted(doc)
-            })
+            .filter(|(note_id, doc)| !Self::is_special_doc(note_id) && !note_doc_is_deleted(doc))
             .count();
         if existing.len() != note_count {
             return false;
         }
 
         for (note_id, doc) in docs.iter() {
-            if Self::is_views_doc(note_id) || note_doc_is_deleted(doc) {
+            if Self::is_special_doc(note_id) || note_doc_is_deleted(doc) {
                 continue;
             }
             let key = hex_id(note_id);
@@ -224,7 +222,7 @@ impl LoroEngine {
 
         for (note_id, doc) in docs.iter() {
             // The views registry doc is not a note — never index it.
-            if Self::is_views_doc(note_id) {
+            if Self::is_special_doc(note_id) {
                 continue;
             }
             if note_doc_is_deleted(doc) {

@@ -39,6 +39,29 @@ pub struct GraphEdge {
     pub target: String,
 }
 
+/// Rebuildable typed relation projection. It is intentionally separate from
+/// [`Link`] so wiki-link storage and consumers remain unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct RelationEdge {
+    pub source_page_id: crate::PageId,
+    pub source_note_id: String,
+    pub source_block_id: Option<String>,
+    pub property_key: String,
+    pub target_page_id: crate::PageId,
+}
+
+/// Relation backlink plus source display context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct RelationBacklink {
+    pub edge: RelationEdge,
+    pub source_slug: String,
+    pub source_title: String,
+}
+
 /// Parse [[wiki-links]] from markdown content
 pub fn extract_wiki_links(content: &str) -> Vec<Link> {
     let fenced = crate::note_tree::markdown_fence_mask(content);

@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
   import { blockDisplayText, parseBlocks, segmentText } from "$lib/block-parser";
-  import { parseQuery, blockMatches, applySort } from "$lib/query-language";
+  import { parseQuery, blockMatchesWithContext, applySort, type QueryContext } from "$lib/query-language";
   import { buildRegistry } from "$lib/property-registry";
   import {
     IconTable,
@@ -179,6 +179,12 @@
     queryFn: () => api.listNotes({ limit: 5000 }),
     enabled: queryText.length > 0,
   }));
+  const pageDirectoryQuery = createQuery(() => ({
+    queryKey: ["page-directory"] as const,
+    queryFn: () => api.getPageDirectory(),
+    enabled: queryText.length > 0,
+  }));
+  const queryContext = $derived<QueryContext>({ pages: pageDirectoryQuery.data ?? [] });
 
   // Combine the base query with the active tab's optional filter (intersection).
   const combinedQueryText = $derived.by(() => {
@@ -220,7 +226,7 @@
     for (const n of notes) {
       const noteBlocks = parseBlocks(n.id, n.body);
       for (const b of noteBlocks) {
-        if (blockMatches(b, parsedQuery, propertyTypes)) {
+        if (blockMatchesWithContext(b, parsedQuery, propertyTypes, queryContext).matched) {
           out.push({ block: b, noteTitle: n.title, noteId: n.id });
         }
       }

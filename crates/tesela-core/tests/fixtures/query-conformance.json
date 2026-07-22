@@ -8,11 +8,12 @@
     "per device. Rust is the source of truth — where implementations disagree, fix the",
     "implementation, never the fixture (unless Rust itself changes first).",
     "",
-    "Case shape: { name, dsl, block, expect }",
+    "Case shape: { name, dsl, block, expect, expectDiagnostics?, propertyTypes?, nodeContext? }",
     "  name    — unique snake/kebab id, used as the assertion message.",
     "  dsl     — the query string fed verbatim to the language's parser.",
     "  expect  — whether the block matches. All cases are block-kind (kind:block, the",
     "            grammar default); page-kind matching is out of fixture scope.",
+    "  expectDiagnostics — true requires a parser diagnostic for malformed authoring.",
     "",
     "Block shape (language-neutral; adapt to your engine's native block type):",
     "  text        — display text (first line, property lines stripped). Drives text:,",
@@ -48,7 +49,11 @@
     "propertyTypes (L5, optional) — { lowercased-prop-name: value_type } registry for the case.",
     "  Absent/empty → the registry-free heuristic (compare: number→date→string). Present → the",
     "  typed matcher (block_matches_typed): number=f64, date/datetime=ISO, checkbox=bool, else",
-    "  case-folded string with NO numeric promotion. Eq/Ne coerce for number+checkbox."
+    "  case-folded string with NO numeric promotion. Eq/Ne coerce for number+checkbox.",
+    "nodeContext (Node cases only, case-level) — { pages: [{ page_id, slug, title, aliases, deleted }] }.",
+    "  Rust, web, and iOS readers must reject a Node case without it. Node resolution is exact slug",
+    "  before title/alias; ambiguous/deleted/unresolved names fail closed. Fixture cases stay block-kind-only;",
+    "  page-owned Node properties have a separate Rust regression test."
   ],
   "cases": [
     {
@@ -3254,6 +3259,245 @@
         "tags": [
           "b"
         ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "node-wikilink-exact-slug-match",
+      "dsl": "project = [[tesela]]",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela Notes", "aliases": ["Graph"], "deleted": false }
+        ]
+      },
+      "expect": true
+    },
+    {
+      "name": "node-title-alias-and-raw-id-match",
+      "dsl": "project IN ([[Tesela Notes]], [[Graph]], 11111111-1111-5111-8111-111111111111)",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela Notes", "aliases": ["Graph"], "deleted": false }
+        ]
+      },
+      "expect": true
+    },
+    {
+      "name": "node-ambiguous-and-unresolved-fail-closed",
+      "dsl": "project = [[Shared]]",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Shared", "aliases": [], "deleted": false },
+          { "page_id": "22222222-2222-5222-8222-222222222222", "slug": "other", "title": "Shared", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": false
+    },
+    {
+      "name": "node-missing-property-keeps-ne-and-not-in-semantics",
+      "dsl": "project != [[tesela]] AND project NOT IN ([[tesela]])",
+      "block": {
+        "text": "No relation",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": true
+    },
+    {
+      "name": "node-resolved-ne-and-not-in-match",
+      "dsl": "project != [[other-project]] AND project NOT IN ([[other-project]])",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela", "aliases": [], "deleted": false },
+          { "page_id": "22222222-2222-5222-8222-222222222222", "slug": "other-project", "title": "Other Project", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": true
+    },
+    {
+      "name": "node-unresolved-in-fails-closed",
+      "dsl": "project IN ([[Missing Project]])",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": false
+    },
+    {
+      "name": "node-deleted-target-fails-closed",
+      "dsl": "project = [[Archived Project]]",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "22222222-2222-5222-8222-222222222222" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "22222222-2222-5222-8222-222222222222", "slug": "archived-project", "title": "Archived Project", "aliases": [], "deleted": true }
+        ]
+      },
+      "expect": false
+    },
+    {
+      "name": "node-deleted-raw-pageid-fails-closed",
+      "dsl": "project = 22222222-2222-5222-8222-222222222222",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "22222222-2222-5222-8222-222222222222" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "22222222-2222-5222-8222-222222222222", "slug": "archived-project", "title": "Archived Project", "aliases": [], "deleted": true }
+        ]
+      },
+      "expect": false
+    },
+    {
+      "name": "node-unresolved-predicate-does-not-mask-or-match",
+      "dsl": "project = [[Archived Project]] OR status = open",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "22222222-2222-5222-8222-222222222222", "status": "open" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "22222222-2222-5222-8222-222222222222", "slug": "archived-project", "title": "Archived Project", "aliases": [], "deleted": true }
+        ]
+      },
+      "expect": true
+    },
+    {
+      "name": "node-unresolved-rhs-under-not-fails-closed",
+      "dsl": "NOT project = [[Missing Project]]",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": false
+    },
+    {
+      "name": "bare-wikilink-is-diagnostic-non-match",
+      "dsl": "[[Tesela Notes]]",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false,
+      "expectDiagnostics": true
+    },
+    {
+      "name": "node-unterminated-wikilink-under-not-fails-closed",
+      "dsl": "NOT project = [[Missing Project",
+      "block": {
+        "text": "Relation",
+        "tags": [],
+        "properties": { "project": "11111111-1111-5111-8111-111111111111" },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "propertyTypes": { "project": "node" },
+      "nodeContext": {
+        "pages": [
+          { "page_id": "11111111-1111-5111-8111-111111111111", "slug": "tesela", "title": "Tesela", "aliases": [], "deleted": false }
+        ]
+      },
+      "expect": false,
+      "expectDiagnostics": true
+    },
+    {
+      "name": "has-link-wikilink-regression",
+      "dsl": "has-link:Tesela",
+      "block": {
+        "text": "See [[Tesela]]",
+        "tags": [],
         "properties": {},
         "isHeading": false,
         "onDailyPage": false,

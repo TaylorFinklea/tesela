@@ -30,4 +30,9 @@ filters: Array<QueryFilter>,
  * has no `ORDER BY`, in which case the caller's external `sort`
  * param (e.g. the HTTP body's `sort` field) is the fallback.
  */
-sort?: string, };
+sort?: string, 
+/**
+ * Syntax diagnostics. Additive so existing callers can continue using
+ * the boolean matcher while authoring surfaces explain fail-closed input.
+ */
+diagnostics: Array<string>, };

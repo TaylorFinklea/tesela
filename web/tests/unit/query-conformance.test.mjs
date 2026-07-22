@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import {
   parseQuery,
   blockMatches,
+  blockMatchesWithContext,
   INBOX_VIEW_DSL,
 } from "../../src/lib/query-language.ts";
 
@@ -72,7 +73,19 @@ test("all conformance cases pass through the real parser + matcher", () => {
   const failures = [];
   for (const c of fixture.cases) {
     const q = parseQuery(c.dsl);
-    const got = blockMatches(toParsedBlock(c.block), q, typesFor(c));
+    const types = typesFor(c);
+    const isNodeCase = [...types.values()].some((value) => value.toLowerCase() === "node");
+    assert.ok(
+      !isNodeCase || (Array.isArray(c.nodeContext?.pages) && c.nodeContext.pages.length > 0),
+      `${c.name}: Node case missing or undecoded nodeContext`,
+    );
+    assert.ok(
+      !c.expectDiagnostics || q.diagnostics.length > 0,
+      `${c.name}: expected parser diagnostics`,
+    );
+    const got = c.nodeContext
+      ? blockMatchesWithContext(toParsedBlock(c.block), q, types, c.nodeContext).matched
+      : blockMatches(toParsedBlock(c.block), q, types);
     if (got !== c.expect) {
       failures.push(
         `  ${c.name} — dsl ${JSON.stringify(c.dsl)}: expected ${c.expect}, got ${got}`,
@@ -117,4 +130,35 @@ test("fixture covers the required surface and pins the Inbox DSL verbatim", () =
     inboxCases >= 5,
     `expected a full Inbox-default matrix (>=5 cases using INBOX_VIEW_DSL verbatim), found ${inboxCases}`,
   );
+});
+
+test("conflicted directory pages fail closed for Node wiki-link and PageId RHS", () => {
+  const pageId = "11111111-1111-5111-8111-111111111111";
+  const block = toParsedBlock({
+    text: "Relation",
+    tags: [],
+    properties: { project: pageId },
+    isHeading: false,
+    onDailyPage: false,
+    noteType: null,
+  });
+  const context = {
+    pages: [{
+      page_id: pageId,
+      slug: "conflicted",
+      title: "Conflicted Page",
+      aliases: [],
+      deleted: false,
+      conflict: true,
+    }],
+  };
+  const types = new Map([["project", "node"]]);
+
+  for (const rhs of ["[[Conflicted Page]]", pageId]) {
+    assert.equal(
+      blockMatchesWithContext(block, parseQuery(`project = ${rhs}`), types, context).matched,
+      false,
+      `conflicted Node RHS ${rhs} must fail closed`,
+    );
+  }
 });

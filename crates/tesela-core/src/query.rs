@@ -183,6 +183,38 @@ pub struct ParsedQuery {
     #[serde(default)]
     #[cfg_attr(test, ts(optional))]
     pub sort: Option<String>,
+    /// Syntax diagnostics. Additive so existing callers can continue using
+    /// the boolean matcher while authoring surfaces explain fail-closed input.
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+/// One resolver candidate supplied to relation-aware query matching.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct QueryPage {
+    pub page_id: crate::PageId,
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct QueryContext {
+    #[serde(default)]
+    pub pages: Vec<QueryPage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryMatch {
+    pub matched: bool,
+    pub diagnostics: Vec<String>,
 }
 
 /// One row in a [`QueryResult`] — either a block or a whole page.
@@ -395,8 +427,16 @@ pub fn parse_query(input: &str) -> ParsedQuery {
         tokens,
         pos: 0,
         kind: Kind::Block,
+        diagnostics: Vec::new(),
     };
-    let expr = parser.parse_or().unwrap_or_default();
+    let parsed_expr = parser.parse_or();
+    let expr = parsed_expr.unwrap_or_else(|| {
+        if parser.diagnostics.is_empty() {
+            BoolExpr::default()
+        } else {
+            BoolExpr::Or { args: Vec::new() }
+        }
+    });
     let sort = parser.parse_order_by();
     let filters = flatten_to_legacy_filters(&expr);
     ParsedQuery {
@@ -404,6 +444,7 @@ pub fn parse_query(input: &str) -> ParsedQuery {
         expr,
         filters,
         sort,
+        diagnostics: parser.diagnostics,
     }
 }
 
@@ -428,6 +469,12 @@ enum Token {
     Word(String),
     /// `"..."` literal — value carries the unwrapped contents.
     Quoted(String),
+    /// Balanced `[[Page title]]` value, preserved through parsing so only a
+    /// Node-typed predicate can resolve it.
+    WikiLink(String),
+    /// A `[[` sequence without a matching closing `]]`. Kept distinct from
+    /// a WikiLink so a Node predicate cannot silently repair malformed input.
+    UnterminatedWikiLink(String),
     LParen,
     RParen,
     Comma,
@@ -473,6 +520,21 @@ fn tokenize(input: &str) -> Vec<Spanned> {
         }
         let start = i;
         let (tok, new_i) = match b {
+            b'[' if i + 1 < bytes.len() && bytes[i + 1] == b'[' => {
+                let value_start = i + 2;
+                let mut j = value_start;
+                while j + 1 < bytes.len() && !(bytes[j] == b']' && bytes[j + 1] == b']') {
+                    j += 1;
+                }
+                if j + 1 < bytes.len() {
+                    (Token::WikiLink(input[value_start..j].to_string()), j + 2)
+                } else {
+                    (
+                        Token::UnterminatedWikiLink(input[value_start..].to_string()),
+                        bytes.len(),
+                    )
+                }
+            }
             b'(' => (Token::LParen, i + 1),
             b')' => (Token::RParen, i + 1),
             b',' => (Token::Comma, i + 1),
@@ -543,6 +605,7 @@ struct Parser<'a> {
     /// candidate set the matcher walks, not how individual rows are
     /// filtered. Defaults to Block.
     kind: Kind,
+    diagnostics: Vec<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -617,7 +680,11 @@ impl<'a> Parser<'a> {
     /// (Used to detect implicit AND between space-separated atoms.)
     fn peek_starts_unary(&self) -> bool {
         match self.peek() {
-            Some(Token::LParen) | Some(Token::Word(_)) | Some(Token::Minus) => {
+            Some(Token::LParen)
+            | Some(Token::Word(_))
+            | Some(Token::WikiLink(_))
+            | Some(Token::UnterminatedWikiLink(_))
+            | Some(Token::Minus) => {
                 // `OR` / `AND` / `NOT` keywords don't start a unary — they're
                 // part of a higher-level rule.
                 !self.peek_keyword("or") && !self.peek_keyword("and")
@@ -739,6 +806,17 @@ impl<'a> Parser<'a> {
         let key_token = self.bump()?;
         let raw_key = match key_token {
             Token::Word(w) => w,
+            Token::WikiLink(value) => {
+                self.diagnostics.push(format!(
+                    "bare wikilink [[{value}]] is not a predicate; use a Node property comparison"
+                ));
+                return None;
+            }
+            Token::UnterminatedWikiLink(value) => {
+                self.diagnostics
+                    .push(format!("unterminated wikilink [[{value}"));
+                return None;
+            }
             // A standalone quoted string or punctuation at predicate
             // position is malformed — drop and let the next pass
             // re-synchronize at the next whitespace.
@@ -967,11 +1045,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value(&mut self) -> Option<String> {
-        // Quoted strings are always self-contained — never slurp past
-        // them; the user opted into explicit quoting.
-        if matches!(self.peek(), Some(Token::Quoted(_))) {
-            return self.bump().and_then(|t| match t {
-                Token::Quoted(s) => Some(s),
+        // Quoted strings and wikilinks are self-contained. Wikilink wrapping
+        // is intentionally preserved for Node-only resolver semantics.
+        if matches!(
+            self.peek(),
+            Some(Token::Quoted(_) | Token::WikiLink(_) | Token::UnterminatedWikiLink(_))
+        ) {
+            return self.bump().and_then(|token| match token {
+                Token::Quoted(value) => Some(value),
+                Token::WikiLink(value) => Some(format!("[[{value}]]")),
+                Token::UnterminatedWikiLink(value) => {
+                    self.diagnostics
+                        .push(format!("unterminated wikilink [[{value}"));
+                    None
+                }
                 _ => None,
             });
         }
@@ -1038,7 +1125,10 @@ impl<'a> Parser<'a> {
         let Some(next) = self.tokens.get(self.pos + 1) else {
             return false;
         };
-        matches!(next.tok, Token::Word(_) | Token::Quoted(_)) && next.start == comma.end
+        matches!(
+            next.tok,
+            Token::Word(_) | Token::Quoted(_) | Token::WikiLink(_) | Token::UnterminatedWikiLink(_)
+        ) && next.start == comma.end
     }
 
     /// Parse `(a, b, c)` — used for `IN (…)` / `NOT IN (…)`. Tolerates
@@ -1059,7 +1149,10 @@ impl<'a> Parser<'a> {
                 Some(Token::Comma) => {
                     self.bump();
                 }
-                Some(Token::Word(_)) | Some(Token::Quoted(_)) => {
+                Some(Token::Word(_))
+                | Some(Token::Quoted(_))
+                | Some(Token::WikiLink(_))
+                | Some(Token::UnterminatedWikiLink(_)) => {
                     if let Some(v) = self.parse_value() {
                         out.push(v);
                     }
@@ -1078,7 +1171,10 @@ impl<'a> Parser<'a> {
         let mut out = Vec::new();
         loop {
             match self.peek() {
-                Some(Token::Word(_)) | Some(Token::Quoted(_)) => {
+                Some(Token::Word(_))
+                | Some(Token::Quoted(_))
+                | Some(Token::WikiLink(_))
+                | Some(Token::UnterminatedWikiLink(_)) => {
                     if let Some(v) = self.parse_value() {
                         out.push(v);
                     }
@@ -1372,6 +1468,202 @@ pub fn block_matches_typed(
     eval_expr(block, &q.expr, types)
 }
 
+/// Relation-aware matcher. Existing boolean APIs remain source-compatible and
+/// delegate to the registry-only path; callers that have page-directory data
+/// use this additive result to surface ambiguity/unresolved diagnostics.
+pub fn block_matches_with_context(
+    block: &ParsedBlock,
+    q: &ParsedQuery,
+    context: &QueryContext,
+) -> QueryMatch {
+    block_matches_typed_with_context(block, q, &EMPTY_TYPES, context)
+}
+
+pub fn block_matches_typed_with_context(
+    block: &ParsedBlock,
+    q: &ParsedQuery,
+    types: &HashMap<String, ValueType>,
+    context: &QueryContext,
+) -> QueryMatch {
+    let mut diagnostics = q.diagnostics.clone();
+    let evaluation = eval_expr_with_context(block, &q.expr, types, context, &mut diagnostics);
+    QueryMatch {
+        matched: evaluation.matched,
+        diagnostics,
+    }
+}
+
+fn resolve_node_rhs(value: &str, context: &QueryContext) -> Result<crate::PageId, String> {
+    let value = value.trim();
+    if let Some(page_id) = crate::PageId::parse(value) {
+        let matches = context
+            .pages
+            .iter()
+            .filter(|page| !page.deleted && page.page_id == page_id)
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [_] => Ok(page_id),
+            [] => Err(format!("unresolved Node page {page_id}")),
+            _ => Err(format!("ambiguous Node PageId {page_id}")),
+        };
+    }
+    let name = value
+        .strip_prefix("[[")
+        .and_then(|inner| inner.strip_suffix("]]"))
+        .unwrap_or(value)
+        .trim();
+    let live = context.pages.iter().filter(|page| !page.deleted);
+    let slug_matches = live
+        .clone()
+        .filter(|page| page.slug.eq_ignore_ascii_case(name))
+        .collect::<Vec<_>>();
+    if slug_matches.len() == 1 {
+        return Ok(slug_matches[0].page_id);
+    }
+    if slug_matches.len() > 1 {
+        return Err(format!("ambiguous Node slug {name:?}"));
+    }
+    let title_matches = live
+        .filter(|page| {
+            page.title.eq_ignore_ascii_case(name)
+                || page
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(name))
+        })
+        .collect::<Vec<_>>();
+    match title_matches.as_slice() {
+        [page] => Ok(page.page_id),
+        [] => Err(format!("unresolved Node page {name:?}")),
+        _ => Err(format!("ambiguous Node title/alias {name:?}")),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContextEvaluation {
+    matched: bool,
+    valid: bool,
+}
+
+fn eval_expr_with_context(
+    block: &ParsedBlock,
+    expr: &BoolExpr,
+    types: &HashMap<String, ValueType>,
+    context: &QueryContext,
+    diagnostics: &mut Vec<String>,
+) -> ContextEvaluation {
+    match expr {
+        BoolExpr::And { args } => {
+            let mut matched = true;
+            let mut valid = true;
+            for arg in args {
+                let evaluation = eval_expr_with_context(block, arg, types, context, diagnostics);
+                matched &= evaluation.matched;
+                valid &= evaluation.valid;
+            }
+            ContextEvaluation { matched, valid }
+        }
+        BoolExpr::Or { args } => {
+            let mut matched = false;
+            let mut valid = true;
+            for arg in args {
+                let evaluation = eval_expr_with_context(block, arg, types, context, diagnostics);
+                matched |= evaluation.matched;
+                valid &= evaluation.valid;
+            }
+            ContextEvaluation { matched, valid }
+        }
+        BoolExpr::Not { arg } => {
+            let evaluation = eval_expr_with_context(block, arg, types, context, diagnostics);
+            ContextEvaluation {
+                matched: evaluation.valid && !evaluation.matched,
+                valid: evaluation.valid,
+            }
+        }
+        BoolExpr::Atom { pred } => {
+            pred_matches_with_context(block, pred, types, context, diagnostics)
+        }
+    }
+}
+
+fn pred_matches_with_context(
+    block: &ParsedBlock,
+    pred: &Predicate,
+    types: &HashMap<String, ValueType>,
+    context: &QueryContext,
+    diagnostics: &mut Vec<String>,
+) -> ContextEvaluation {
+    let key = match pred {
+        Predicate::Cmp { key, .. } | Predicate::In { key, .. } => key,
+    };
+    if types.get(&key.to_ascii_lowercase()) != Some(&ValueType::Node) {
+        return ContextEvaluation {
+            matched: pred_matches(block, pred, types),
+            valid: true,
+        };
+    }
+    let actual = block
+        .properties
+        .iter()
+        .find(|(property, _)| property.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value.as_str());
+    let matched = match pred {
+        Predicate::Cmp { op, value, .. } => {
+            let target = match resolve_node_rhs(value, context) {
+                Ok(target) => target,
+                Err(error) => {
+                    diagnostics.push(error);
+                    return ContextEvaluation {
+                        matched: false,
+                        valid: false,
+                    };
+                }
+            };
+            let equal = actual
+                .and_then(crate::PageId::parse)
+                .is_some_and(|page_id| page_id == target);
+            match (actual, op) {
+                (None, QueryOp::Ne) => true,
+                (None, _) => false,
+                (Some(_), QueryOp::Eq) => equal,
+                (Some(_), QueryOp::Ne) => !equal,
+                _ => false,
+            }
+        }
+        Predicate::In {
+            values, negated, ..
+        } => {
+            let mut targets = Vec::with_capacity(values.len());
+            for value in values {
+                match resolve_node_rhs(value, context) {
+                    Ok(target) => targets.push(target),
+                    Err(error) => {
+                        diagnostics.push(error);
+                        return ContextEvaluation {
+                            matched: false,
+                            valid: false,
+                        };
+                    }
+                }
+            }
+            let contained = actual
+                .and_then(crate::PageId::parse)
+                .is_some_and(|page_id| targets.contains(&page_id));
+            if actual.is_none() {
+                *negated
+            } else if *negated {
+                !contained
+            } else {
+                contained
+            }
+        }
+    };
+    ContextEvaluation {
+        matched,
+        valid: true,
+    }
+}
+
 /// Walk the `BoolExpr` tree, short-circuiting AND/OR. Empty `And` matches
 /// everything (the identity); empty `Or` matches nothing.
 fn eval_expr(block: &ParsedBlock, expr: &BoolExpr, types: &HashMap<String, ValueType>) -> bool {
@@ -1426,7 +1718,11 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate, types: &HashMap<String, V
     }
 }
 
-fn filter_matches(block: &ParsedBlock, f: &QueryFilter, types: &HashMap<String, ValueType>) -> bool {
+fn filter_matches(
+    block: &ParsedBlock,
+    f: &QueryFilter,
+    types: &HashMap<String, ValueType>,
+) -> bool {
     match f.key.as_str() {
         // Tag-system Phase 16 DSL extensions:
         //   `tag:foo`      — either page-level or block-level (current default)
@@ -1659,13 +1955,152 @@ mod tests {
     }
 
     #[test]
+    fn node_predicates_resolve_wikilink_slug_title_alias_and_uuid_fail_closed() {
+        let target = crate::PageId::from_legacy_doc_id(&[42; 16]);
+        let context = QueryContext {
+            pages: vec![QueryPage {
+                page_id: target,
+                slug: "tesela".into(),
+                title: "Tesela Notes".into(),
+                aliases: vec!["My graph".into()],
+                deleted: false,
+            }],
+        };
+        let types = types1("project", ValueType::Node);
+        let target_string = target.to_string();
+        let block = block_with(vec![], &[("project", target_string.as_str())]);
+        for rhs in [
+            "[[tesela]]",
+            "[[Tesela Notes]]",
+            "[[My graph]]",
+            target_string.as_str(),
+        ] {
+            let matched = block_matches_typed_with_context(
+                &block,
+                &parse_query(&format!("project = {rhs}")),
+                &types,
+                &context,
+            );
+            assert!(matched.matched, "Node RHS {rhs:?} should resolve");
+            assert!(matched.diagnostics.is_empty());
+        }
+        let unresolved = block_matches_typed_with_context(
+            &block,
+            &parse_query("project = [[No such page]]"),
+            &types,
+            &context,
+        );
+        assert!(!unresolved.matched);
+        assert!(unresolved
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("unresolved")));
+        let deleted_context = QueryContext {
+            pages: vec![QueryPage {
+                page_id: target,
+                slug: "tesela".into(),
+                title: "Tesela Notes".into(),
+                aliases: vec![],
+                deleted: true,
+            }],
+        };
+        let raw_deleted = block_matches_typed_with_context(
+            &block,
+            &parse_query(&format!("project = {target}")),
+            &types,
+            &deleted_context,
+        );
+        assert!(!raw_deleted.matched);
+        assert!(raw_deleted
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("unresolved")));
+
+        let alternate = block_with(vec![], &[("status", "done")]);
+        let invalid_or_valid = block_matches_typed_with_context(
+            &alternate,
+            &parse_query("status = done OR NOT project = [[No such page]]"),
+            &types,
+            &context,
+        );
+        assert!(
+            invalid_or_valid.matched,
+            "an invalid Node predicate must not suppress a separately true OR arm"
+        );
+    }
+
+    #[test]
+    fn unterminated_node_wikilink_is_diagnostic_and_fails_closed() {
+        let target = crate::PageId::from_legacy_doc_id(&[42; 16]);
+        let context = QueryContext {
+            pages: vec![QueryPage {
+                page_id: target,
+                slug: "tesela".into(),
+                title: "Tesela".into(),
+                aliases: Vec::new(),
+                deleted: false,
+            }],
+        };
+        let types = types1("project", ValueType::Node);
+        let block = block_with(vec![], &[("project", &target.to_string())]);
+        let query = parse_query("project = [[tesela");
+        let matched = block_matches_typed_with_context(&block, &query, &types, &context);
+
+        assert!(!matched.matched);
+        assert!(matched
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("unterminated wikilink")));
+    }
+
+    #[test]
+    fn node_predicates_respect_current_missing_property_ne_and_not_in_semantics() {
+        let target = crate::PageId::from_legacy_doc_id(&[42; 16]);
+        let context = QueryContext {
+            pages: vec![QueryPage {
+                page_id: target,
+                slug: "tesela".into(),
+                title: "Tesela".into(),
+                aliases: Vec::new(),
+                deleted: false,
+            }],
+        };
+        let types = types1("project", ValueType::Node);
+        let block = block_with(vec![], &[]);
+        assert!(
+            block_matches_typed_with_context(
+                &block,
+                &parse_query("project != [[tesela]]"),
+                &types,
+                &context,
+            )
+            .matched
+        );
+        assert!(
+            block_matches_typed_with_context(
+                &block,
+                &parse_query("project NOT IN ([[tesela]])"),
+                &types,
+                &context,
+            )
+            .matched
+        );
+    }
+
+    #[test]
     fn compare_typed_number_is_numeric_not_lexicographic() {
         use std::cmp::Ordering;
         // "10" vs "9": numeric Greater (lexicographic would be Less).
-        assert_eq!(compare_typed("10", "9", ValueType::Number), Ordering::Greater);
+        assert_eq!(
+            compare_typed("10", "9", ValueType::Number),
+            Ordering::Greater
+        );
         assert_eq!(compare_typed("2", "10", ValueType::Number), Ordering::Less);
         // Non-parseable number coerces to case-folded string, never panics.
-        assert_eq!(compare_typed("n/a", "n/a", ValueType::Number), Ordering::Equal);
+        assert_eq!(
+            compare_typed("n/a", "n/a", ValueType::Number),
+            Ordering::Equal
+        );
     }
 
     #[test]
@@ -1679,9 +2114,18 @@ mod tests {
     #[test]
     fn compare_typed_checkbox_orders_false_before_true() {
         use std::cmp::Ordering;
-        assert_eq!(compare_typed("true", "false", ValueType::Checkbox), Ordering::Greater);
-        assert_eq!(compare_typed("False", "True", ValueType::Checkbox), Ordering::Less);
-        assert_eq!(compare_typed("true", "TRUE", ValueType::Checkbox), Ordering::Equal);
+        assert_eq!(
+            compare_typed("true", "false", ValueType::Checkbox),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_typed("False", "True", ValueType::Checkbox),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_typed("true", "TRUE", ValueType::Checkbox),
+            Ordering::Equal
+        );
     }
 
     #[test]
@@ -1709,15 +2153,27 @@ mod tests {
         let block = block_with(vec![], &[("code", "10")]);
         let q = parse_query("code:>9");
         assert!(block_matches(&block, &q)); // untyped heuristic: numeric 10>9
-        assert!(!block_matches_typed(&block, &q, &types1("code", ValueType::Text)));
+        assert!(!block_matches_typed(
+            &block,
+            &q,
+            &types1("code", ValueType::Text)
+        ));
     }
 
     #[test]
     fn block_matches_typed_number_orders_correctly() {
         let q = parse_query("priority:>5");
         let types = types1("priority", ValueType::Number);
-        assert!(block_matches_typed(&block_with(vec![], &[("priority", "10")]), &q, &types));
-        assert!(!block_matches_typed(&block_with(vec![], &[("priority", "2")]), &q, &types));
+        assert!(block_matches_typed(
+            &block_with(vec![], &[("priority", "10")]),
+            &q,
+            &types
+        ));
+        assert!(!block_matches_typed(
+            &block_with(vec![], &[("priority", "2")]),
+            &q,
+            &types
+        ));
     }
 
     #[test]

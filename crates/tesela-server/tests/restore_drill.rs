@@ -154,7 +154,10 @@ async fn seed_two_peer_mosaic(mosaic: &Path) -> SeededMosaic {
     // matching the identity-preserving whole-note edit path real clients use.
     let second_content = format!(
         "{}- gamma added later <!-- bid:33333333-3333-3333-3333-333333333333 -->\n",
-        engine.render_note(note_id).await.expect("render first upsert")
+        engine
+            .render_note(note_id)
+            .await
+            .expect("render first upsert")
     );
     engine
         .record_local(OpPayload::NoteUpsert {
@@ -481,7 +484,7 @@ fn spawn_server_child(mosaic: &Path, addr: &str) -> Child {
         .env("TESELA_GROUP_KEY_FILE_STORE", "1")
         .env("RUST_LOG", "warn")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn tesela-server")
 }

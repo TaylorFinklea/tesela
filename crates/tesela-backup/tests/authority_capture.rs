@@ -16,6 +16,8 @@ use tesela_backup::{backup, restore, BackupOptions, Manifest, RestoreOptions};
 /// All the authority files a live engine mosaic carries.
 const AUTHORITY_FILES: &[&str] = &[
     ".tesela/loro/0123456789abcdef0123456789abcdef.bin",
+    // Reserved synced page-directory authority (`tesela.page.dir!`).
+    ".tesela/loro/746573656c612e706167652e64697221.bin",
     ".tesela/loro/_index.bin",
     ".tesela/loro/_broadcast.bin",
     ".tesela/device_id.hex",
@@ -38,6 +40,10 @@ fn make_engine_mosaic(root: &Path) -> std::io::Result<()> {
     fs::write(
         root.join(".tesela/loro/0123456789abcdef0123456789abcdef.bin"),
         b"\x01loro-snapshot-bytes",
+    )?;
+    fs::write(
+        root.join(".tesela/loro/746573656c612e706167652e64697221.bin"),
+        b"\x04page-directory",
     )?;
     fs::write(root.join(".tesela/loro/_index.bin"), b"\x02index-doc")?;
     fs::write(root.join(".tesela/loro/_broadcast.bin"), b"\x03cursors")?;

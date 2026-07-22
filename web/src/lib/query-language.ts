@@ -46,8 +46,9 @@ import type { Predicate } from "$lib/types/Predicate";
 import type { QueryFilter } from "$lib/types/QueryFilter";
 import type { QueryOp } from "$lib/types/QueryOp";
 import type { Kind } from "$lib/types/Kind";
+import type { QueryContext } from "$lib/types/QueryContext";
 
-export type { ParsedQuery, BoolExpr, Predicate, QueryFilter, QueryOp, Kind };
+export type { ParsedQuery, BoolExpr, Predicate, QueryFilter, QueryOp, Kind, QueryContext };
 
 /**
  * The seeded built-in Inbox view's DSL — mirrors `INBOX_VIEW_DSL` in
@@ -68,6 +69,8 @@ export const INBOX_VIEW_DSL = "status:backlog,todo -has:scheduled -has:deadline"
 export type Token =
   | { t: "word"; v: string }
   | { t: "quoted"; v: string }
+  | { t: "wikilink"; v: string }
+  | { t: "unterminated-wikilink"; v: string }
   | { t: "lparen" }
   | { t: "rparen" }
   | { t: "comma" }
@@ -104,7 +107,17 @@ export function tokenize(input: string): Spanned[] {
     }
     const start = i;
     let tok: Token;
-    if (c === "(") {
+    if (c === "[" && input[i + 1] === "[") {
+      const valueStart = i + 2;
+      const end = input.indexOf("]]", valueStart);
+      if (end >= 0) {
+        tok = { t: "wikilink", v: input.slice(valueStart, end) };
+        i = end + 2;
+      } else {
+        tok = { t: "unterminated-wikilink", v: input.slice(valueStart) };
+        i = n;
+      }
+    } else if (c === "(") {
       tok = { t: "lparen" };
       i += 1;
     } else if (c === ")") {
@@ -179,6 +192,8 @@ type ParserState = {
    * only under `parseQueryWithDiagnostics`.
    */
   diagnostics: Diagnostic[] | null;
+  /** Only a bare wiki link is a fatal no-predicate parse, mirroring Rust. */
+  fatalBareWikiLink: boolean;
 };
 
 function atom(pred: Predicate): BoolExpr {
@@ -187,6 +202,10 @@ function atom(pred: Predicate): BoolExpr {
 
 function emptyAnd(): BoolExpr {
   return { op: "and", args: [] };
+}
+
+function emptyOr(): BoolExpr {
+  return { op: "or", args: [] };
 }
 
 /**
@@ -233,22 +252,37 @@ function recordUnclosedQuotes(tokens: Spanned[], input: string, diagnostics: Dia
 function parseQueryInternal(input: string, diagnostics: Diagnostic[] | null): ParsedQuery {
   const tokens = tokenize(input);
   if (diagnostics) recordUnclosedQuotes(tokens, input, diagnostics);
-  const p: ParserState = { input, tokens, pos: 0, kind: "block", diagnostics };
-  const expr = parseOr(p) ?? emptyAnd();
+  const p: ParserState = {
+    input,
+    tokens,
+    pos: 0,
+    kind: "block",
+    diagnostics,
+    fatalBareWikiLink: false,
+  };
+  const parsedExpr = parseOr(p);
   const sort = parseOrderBy(p);
   if (diagnostics && p.pos < p.tokens.length) {
     const start = p.tokens[p.pos].start;
     const end = p.tokens[p.tokens.length - 1].end;
     recordDrop(p, start, end, input.slice(start, end), "unexpected trailing input");
   }
+  const expr = parsedExpr ?? (p.fatalBareWikiLink ? emptyOr() : emptyAnd());
   const filters = flattenToLegacyFilters(expr);
-  const out: ParsedQuery = { kind: p.kind, expr, filters };
+  const out: ParsedQuery = {
+    kind: p.kind,
+    expr,
+    filters,
+    diagnostics: diagnostics?.map((diagnostic) => diagnostic.hint || diagnostic.got) ?? [],
+  };
   if (sort !== null) out.sort = sort;
   return out;
 }
 
 export function parseQuery(input: string): ParsedQuery {
-  return parseQueryInternal(input, null);
+  // ParsedQuery carries diagnostics as generated shared data, so the plain
+  // and authoring entry points must produce the same structural result.
+  return parseQueryInternal(input, []);
 }
 
 /**
@@ -329,7 +363,14 @@ function parseOrderBy(p: ParserState): string | null {
 function peekStartsUnary(p: ParserState): boolean {
   const t = peek(p);
   if (t === null) return false;
-  if (t.t !== "lparen" && t.t !== "word" && t.t !== "minus") return false;
+  if (
+    t.t !== "lparen" &&
+    t.t !== "word" &&
+    t.t !== "wikilink" &&
+    t.t !== "unterminated-wikilink" &&
+    t.t !== "minus"
+  )
+    return false;
   // `OR` / `AND` keywords don't start a unary — they belong to a
   // higher-level rule.
   return !peekKeyword(p, "or") && !peekKeyword(p, "and");
@@ -442,8 +483,22 @@ function parseUnary(p: ParserState): BoolExpr | null {
  */
 function parsePredicate(p: ParserState): BoolExpr | null {
   const keySpanned = p.tokens[p.pos];
-  const keyTok = bump(p);
-  if (keyTok === null) return null;
+  if (!keySpanned) return null;
+  const keyTok = keySpanned.tok;
+  bump(p);
+  if (keyTok.t === "wikilink" || keyTok.t === "unterminated-wikilink") {
+    p.fatalBareWikiLink = true;
+    recordDrop(
+      p,
+      keySpanned.start,
+      keySpanned.end,
+      p.input.slice(keySpanned.start, keySpanned.end),
+      keyTok.t === "wikilink"
+        ? "bare wikilink is not a predicate; use a Node property comparison"
+        : "unterminated wikilink",
+    );
+    return null;
+  }
   // A standalone quoted string or punctuation at predicate position is
   // malformed — drop it and re-synchronize on the next token.
   if (keyTok.t !== "word") {
@@ -656,6 +711,12 @@ function parseValue(p: ParserState): string | null {
   if (!first) return null;
   p.pos += 1;
   if (first.tok.t === "quoted") return first.tok.v;
+  if (first.tok.t === "wikilink") return `[[${first.tok.v}]]`;
+  if (first.tok.t === "unterminated-wikilink") {
+    p.fatalBareWikiLink = true;
+    recordDrop(p, first.start, first.end, p.input.slice(first.start, first.end), "unterminated wikilink");
+    return null;
+  }
   if (first.tok.t !== "word") return null;
   let buf = first.tok.v;
   let endOffset = first.end;
@@ -701,7 +762,12 @@ function peekTightCommaContinuation(p: ParserState): boolean {
   if (p.tokens[p.pos - 1].end !== comma.start) return false; // ws before ','
   const next = p.tokens[p.pos + 1];
   if (!next) return false;
-  return (next.tok.t === "word" || next.tok.t === "quoted") && next.start === comma.end;
+  return (
+    next.tok.t === "word" ||
+    next.tok.t === "quoted" ||
+    next.tok.t === "wikilink" ||
+    next.tok.t === "unterminated-wikilink"
+  ) && next.start === comma.end;
 }
 
 /** Parse `(a, b, c)` — used for `IN (…)`. Tolerates missing parens. */
@@ -719,7 +785,12 @@ function parseParenValueList(p: ParserState): string[] {
       bump(p);
       continue;
     }
-    if (t?.t === "word" || t?.t === "quoted") {
+    if (
+      t?.t === "word" ||
+      t?.t === "quoted" ||
+      t?.t === "wikilink" ||
+      t?.t === "unterminated-wikilink"
+    ) {
       const v = parseValue(p);
       if (v !== null) out.push(v);
       continue;
@@ -737,7 +808,12 @@ function parseCommaListUntilWhitespace(p: ParserState): string[] {
   const out: string[] = [];
   for (;;) {
     const t = peek(p);
-    if (t?.t === "word" || t?.t === "quoted") {
+    if (
+      t?.t === "word" ||
+      t?.t === "quoted" ||
+      t?.t === "wikilink" ||
+      t?.t === "unterminated-wikilink"
+    ) {
       const v = parseValue(p);
       if (v !== null) out.push(v);
       continue;
@@ -992,6 +1068,121 @@ export function blockMatches(
   types: ReadonlyMap<string, string> = EMPTY_TYPES,
 ): boolean {
   return evalExpr(block, query.expr, types);
+}
+
+/** Additive relation-aware result used where synced page-directory authority is available. */
+export type QueryMatch = { matched: boolean; diagnostics: string[] };
+type ContextEvaluation = { matched: boolean; valid: boolean };
+
+export function blockMatchesWithContext(
+  block: ParsedBlock,
+  query: ParsedQuery,
+  types: ReadonlyMap<string, string>,
+  context: QueryContext,
+): QueryMatch {
+  const diagnostics = [...query.diagnostics];
+  const evaluation = evalExprWithContext(block, query.expr, types, context, diagnostics);
+  return {
+    matched: evaluation.matched,
+    diagnostics,
+  };
+}
+
+function isLiveNodePage(page: QueryContext["pages"][number]): boolean {
+  return !page.deleted && !("conflict" in page && page.conflict === true);
+}
+
+function resolveNodeRhs(value: string, context: QueryContext): string | null {
+  const raw = value.trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+    const matches = context.pages.filter(
+      (page) => isLiveNodePage(page) && page.page_id.toLowerCase() === raw.toLowerCase(),
+    );
+    return matches.length === 1 ? matches[0].page_id.toLowerCase() : null;
+  }
+  const name = raw.startsWith("[[") && raw.endsWith("]]") ? raw.slice(2, -2).trim() : raw;
+  const live = context.pages.filter(isLiveNodePage);
+  const slugMatches = live.filter((page) => eqIgnoreAsciiCase(page.slug, name));
+  if (slugMatches.length === 1) return slugMatches[0].page_id.toLowerCase();
+  if (slugMatches.length > 1) return null;
+  const displayMatches = live.filter(
+    (page) => eqIgnoreAsciiCase(page.title, name) || page.aliases.some((alias) => eqIgnoreAsciiCase(alias, name)),
+  );
+  return displayMatches.length === 1 ? displayMatches[0].page_id.toLowerCase() : null;
+}
+
+function nodePredicateMatches(
+  block: ParsedBlock,
+  pred: Predicate,
+  context: QueryContext,
+  diagnostics: string[],
+): ContextEvaluation {
+  const key = pred.key;
+  const actual = Object.entries(block.properties).find(([property]) => asciiLower(property) === asciiLower(key))?.[1];
+  const resolve = (value: string): string | null => {
+    const target = resolveNodeRhs(value, context);
+    if (target === null) diagnostics.push(`unresolved or ambiguous Node page ${value}`);
+    return target;
+  };
+  if (pred.kind === "cmp") {
+    const target = resolve(pred.value);
+    if (target === null) return { matched: false, valid: false };
+    if (actual === undefined) return { matched: pred.op === "Ne", valid: true };
+    const equal = actual.toLowerCase() === target;
+    if (pred.op === "Eq") return { matched: equal, valid: true };
+    if (pred.op === "Ne") return { matched: !equal, valid: true };
+    return { matched: false, valid: true };
+  }
+  const targets: string[] = [];
+  for (const value of pred.values) {
+    const target = resolve(value);
+    if (target === null) return { matched: false, valid: false };
+    targets.push(target);
+  }
+  if (actual === undefined) return { matched: pred.negated, valid: true };
+  const contained = targets.includes(actual.toLowerCase());
+  return { matched: pred.negated ? !contained : contained, valid: true };
+}
+
+function evalExprWithContext(
+  block: ParsedBlock,
+  expr: BoolExpr,
+  types: ReadonlyMap<string, string>,
+  context: QueryContext,
+  diagnostics: string[],
+): ContextEvaluation {
+  if (expr.op === "and") {
+    return expr.args.reduce<ContextEvaluation>(
+      (acc, arg) => {
+        const evaluation = evalExprWithContext(block, arg, types, context, diagnostics);
+        return {
+          matched: acc.matched && evaluation.matched,
+          valid: acc.valid && evaluation.valid,
+        };
+      },
+      { matched: true, valid: true },
+    );
+  }
+  if (expr.op === "or") {
+    return expr.args.reduce<ContextEvaluation>(
+      (acc, arg) => {
+        const evaluation = evalExprWithContext(block, arg, types, context, diagnostics);
+        return {
+          matched: acc.matched || evaluation.matched,
+          valid: acc.valid && evaluation.valid,
+        };
+      },
+      { matched: false, valid: true },
+    );
+  }
+  if (expr.op === "not") {
+    const evaluation = evalExprWithContext(block, expr.arg, types, context, diagnostics);
+    return { matched: evaluation.valid && !evaluation.matched, valid: evaluation.valid };
+  }
+  if (asciiLower(types.get(asciiLower(expr.pred.key)) ?? "") === "node") {
+    return nodePredicateMatches(block, expr.pred, context, diagnostics);
+  }
+  return { matched: predMatches(block, expr.pred, types), valid: true };
 }
 
 /**

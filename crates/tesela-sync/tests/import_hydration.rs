@@ -8,16 +8,25 @@ use tesela_core::import_logseq::{apply_plan_with_writer, build_plan, ApplyDecisi
 use tesela_core::stable_uuid_from_slug;
 use tesela_sync::{hydrate_note, DeviceId, EngineImportNoteWriter, Hlc, LoroEngine, SyncEngine};
 
-fn structural_projection(
-    content: &str,
-) -> (
+type StructuralProjection = (
     Option<String>,
     Vec<(String, String)>,
     Vec<(u16, String, Vec<(String, String)>)>,
-) {
+);
+
+fn structural_projection(content: &str) -> StructuralProjection {
     let parsed = tesela_core::note_tree::parse_note(content);
+    let frontmatter = parsed.frontmatter.map(|frontmatter| {
+        let mut normalized = frontmatter
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("tesela_page_id:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        normalized.push('\n');
+        normalized
+    });
     (
-        parsed.frontmatter,
+        frontmatter,
         parsed.page_properties,
         parsed
             .blocks
@@ -64,77 +73,87 @@ async fn engine_import_is_durable_relay_visible_idempotent_and_scales() {
     .unwrap();
     let plan = build_plan(&graph, &mosaic).unwrap();
     assert_eq!(plan.items.len(), 501);
-    let mut writer = EngineImportNoteWriter::new(&engine);
+    {
+        let mut writer = EngineImportNoteWriter::new(&engine);
 
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(20),
-        apply_plan_with_writer(&plan, &ApplyDecisions::default(), &mosaic, &mut writer),
-    )
-    .await
-    .expect("501-note import stays inside the request budget")
-    .unwrap();
-    assert_eq!(outcome.imported, 501);
-    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(20),
+            apply_plan_with_writer(&plan, &ApplyDecisions::default(), &mosaic, &mut writer),
+        )
+        .await
+        .expect("501-note import stays inside the request budget")
+        .unwrap();
+        assert_eq!(outcome.imported, 501);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
 
-    let tracked: HashSet<[u8; 16]> = engine.tracked_note_ids().await.into_iter().collect();
-    assert_eq!(tracked.len(), 501);
-    for item in &plan.items {
-        let note_id = stable_uuid_from_slug(&item.target_id);
-        assert!(tracked.contains(&note_id));
-        assert!(snapshots.join(format!("{}.bin", hex::encode(note_id))).is_file());
-        let materialized = fs::read_to_string(&item.target_path).unwrap();
+        let tracked: HashSet<[u8; 16]> = engine.tracked_note_ids().await.into_iter().collect();
         assert_eq!(
-            structural_projection(item.rendered_full.as_deref().unwrap()),
-            structural_projection(&materialized),
-            "materialized structure diverged for {}",
-            item.target_id
+            tracked.len(),
+            502,
+            "501 notes plus the synced page directory"
         );
+        for item in &plan.items {
+            let note_id = stable_uuid_from_slug(&item.target_id);
+            assert!(tracked.contains(&note_id));
+            assert!(snapshots
+                .join(format!("{}.bin", hex::encode(note_id)))
+                .is_file());
+            let materialized = fs::read_to_string(&item.target_path).unwrap();
+            assert_eq!(
+                structural_projection(item.rendered_full.as_deref().unwrap()),
+                structural_projection(&materialized),
+                "materialized structure diverged for {}",
+                item.target_id
+            );
+        }
+
+        let feature_id = stable_uuid_from_slug("feature");
+        let materialized = fs::read_to_string(notes.join("feature.md")).unwrap();
+        assert_eq!(
+            engine.render_note_full(feature_id).await.unwrap(),
+            materialized
+        );
+        assert!(materialized.contains("# Imported heading"));
+        assert!(materialized.contains("Imported prose line one"));
+        assert!(materialized.contains("line two"));
+        assert!(materialized.contains("```query"));
+        assert!(materialized.contains("status:: done"));
+        assert!(materialized.contains("- literal bullet"));
+
+        let updates = engine.produce_relay_updates().await;
+        assert_eq!(
+            updates.len(),
+            502,
+            "501 notes plus the synced page directory"
+        );
+        let committed: Vec<([u8; 16], Vec<u8>)> = updates
+            .iter()
+            .map(|(note_id, _, version)| (*note_id, version.clone()))
+            .collect();
+        engine.commit_broadcast_cursors(&committed).await;
+
+        let second_plan = build_plan(&graph, &mosaic).unwrap();
+        assert!(second_plan
+            .items
+            .iter()
+            .all(|item| item.kind == PlanKind::Unchanged));
+        let second = apply_plan_with_writer(
+            &second_plan,
+            &ApplyDecisions::default(),
+            &mosaic,
+            &mut writer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.unchanged, 501);
+        assert!(engine.produce_relay_updates().await.is_empty());
     }
-
-    let feature_id = stable_uuid_from_slug("feature");
-    let materialized = fs::read_to_string(notes.join("feature.md")).unwrap();
-    assert_eq!(
-        engine.render_note_full(feature_id).await.unwrap(),
-        materialized
-    );
-    assert!(materialized.contains("# Imported heading"));
-    assert!(materialized.contains("Imported prose line one"));
-    assert!(materialized.contains("line two"));
-    assert!(materialized.contains("```query"));
-    assert!(materialized.contains("status:: done"));
-    assert!(materialized.contains("- literal bullet"));
-
-    let updates = engine.produce_relay_updates().await;
-    assert_eq!(updates.len(), 501);
-    let committed: Vec<([u8; 16], Vec<u8>)> = updates
-        .iter()
-        .map(|(note_id, _, version)| (*note_id, version.clone()))
-        .collect();
-    engine.commit_broadcast_cursors(&committed).await;
-
-    let second_plan = build_plan(&graph, &mosaic).unwrap();
-    assert!(second_plan
-        .items
-        .iter()
-        .all(|item| item.kind == PlanKind::Unchanged));
-    let second = apply_plan_with_writer(
-        &second_plan,
-        &ApplyDecisions::default(),
-        &mosaic,
-        &mut writer,
-    )
-    .await
-    .unwrap();
-    assert_eq!(second.unchanged, 501);
-    assert!(engine.produce_relay_updates().await.is_empty());
-
-    drop(writer);
     drop(engine);
     let reopened =
         LoroEngine::with_dirs(device, Arc::new(Hlc::new(device)), snapshots, Some(notes))
             .await
             .unwrap();
-    assert_eq!(reopened.tracked_note_ids().await.len(), 501);
+    assert_eq!(reopened.tracked_note_ids().await.len(), 502);
     assert_eq!(reopened.index_entries().await.len(), 501);
 }
 
@@ -237,7 +256,7 @@ async fn restart_repairs_current_schema_index_with_stale_same_note_metadata() {
 }
 
 #[tokio::test]
-async fn restart_prunes_current_schema_index_when_all_note_snapshots_are_missing() {
+async fn restart_recovers_directory_bound_note_when_snapshot_is_missing() {
     let temp = TempDir::new().unwrap();
     let notes = temp.path().join("notes");
     let snapshots = temp.path().join(".tesela/loro");
@@ -261,7 +280,12 @@ async fn restart_prunes_current_schema_index_when_all_note_snapshots_are_missing
         LoroEngine::with_dirs(device, Arc::new(Hlc::new(device)), snapshots, Some(notes))
             .await
             .unwrap();
-    assert!(reopened.index_entries().await.is_empty());
+    assert_eq!(reopened.index_entries().await.len(), 1);
+    assert!(reopened
+        .render_note(note_id)
+        .await
+        .expect("materialized recovery")
+        .contains("ghost"));
 }
 
 #[tokio::test]

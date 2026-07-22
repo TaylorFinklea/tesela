@@ -24,7 +24,10 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use tesela_core::block::ParsedBlock;
 use tesela_core::property::ValueType;
-use tesela_core::query::{block_matches, block_matches_typed, parse_query, INBOX_VIEW_DSL};
+use tesela_core::query::{
+    block_matches, block_matches_typed, block_matches_typed_with_context, parse_query,
+    QueryContext, INBOX_VIEW_DSL,
+};
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -39,11 +42,17 @@ struct Case {
     dsl: String,
     block: FixtureBlock,
     expect: bool,
+    #[serde(default, rename = "expectDiagnostics")]
+    expect_diagnostics: bool,
     /// L5 optional registry: lowercased property name → value_type string.
     /// Absent/empty ⇒ the registry-free matcher (heuristic); present ⇒ the
     /// typed matcher (`block_matches_typed`).
     #[serde(default, rename = "propertyTypes")]
     property_types: HashMap<String, String>,
+    /// Required for every Node-typed fixture case so non-Rust mirrors cannot
+    /// silently skip resolver data.
+    #[serde(default, rename = "nodeContext")]
+    node_context: Option<QueryContext>,
 }
 
 #[derive(Deserialize)]
@@ -91,15 +100,35 @@ fn all_conformance_cases_pass_through_real_matcher() {
     let mut failures = Vec::new();
     for case in &fixture.cases {
         let q = parse_query(&case.dsl);
+        assert!(
+            !case.expect_diagnostics || !q.diagnostics.is_empty(),
+            "case {} expected parser diagnostics for {:?}",
+            case.name,
+            case.dsl
+        );
         let block = to_parsed_block(&case.block);
-        let got = if case.property_types.is_empty() {
+        let types: HashMap<String, ValueType> = case
+            .property_types
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), ValueType::parse(v)))
+            .collect();
+        let needs_node_context = types.values().any(|value| *value == ValueType::Node);
+        if needs_node_context {
+            let context = case
+                .node_context
+                .as_ref()
+                .expect("Node fixture case is missing required nodeContext");
+            assert!(
+                !context.pages.is_empty(),
+                "Node fixture case {} has an undecoded nodeContext",
+                case.name
+            );
+        }
+        let got = if let Some(context) = case.node_context.as_ref() {
+            block_matches_typed_with_context(&block, &q, &types, context).matched
+        } else if types.is_empty() {
             block_matches(&block, &q)
         } else {
-            let types: HashMap<String, ValueType> = case
-                .property_types
-                .iter()
-                .map(|(k, v)| (k.to_ascii_lowercase(), ValueType::parse(v)))
-                .collect();
             block_matches_typed(&block, &q, &types)
         };
         if got != case.expect {

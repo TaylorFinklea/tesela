@@ -6,6 +6,43 @@ struct PropertyListDelta: Equatable {
     let remove: [String]
 }
 
+struct NodePageCandidate: Identifiable, Equatable {
+    let pageId: String
+    let slug: String
+    let title: String
+    let aliases: [String]
+
+    init(pageId: String, slug: String, title: String, aliases: [String] = []) {
+        self.pageId = pageId
+        self.slug = slug
+        self.title = title
+        self.aliases = aliases
+    }
+
+    var id: String { pageId }
+}
+
+enum NodePageResolution: Equatable {
+    case resolved(title: String, slug: String)
+    case unresolved
+    case deleted
+    case conflict
+
+    var isResolved: Bool {
+        if case .resolved = self { return true }
+        return false
+    }
+
+    func label(for rawValue: String) -> String {
+        switch self {
+        case .resolved(let title, _): title
+        case .unresolved: "Unresolved: \(rawValue)"
+        case .deleted: "Deleted: \(rawValue)"
+        case .conflict: "Conflict: \(rawValue)"
+        }
+    }
+}
+
 struct PropertyEditTarget: Identifiable {
     let key: String
     let value: String
@@ -74,6 +111,38 @@ enum PropertyEditing {
         }
     }
 
+    /// Reuse the page autocomplete scorer for the canonical candidates behind
+    /// a Node property. The value written by the picker stays the PageId; aliases
+    /// only participate in selection ranking.
+    static func rankNodeCandidates(
+        _ candidates: [NodePageCandidate],
+        query: String,
+        limit: Int
+    ) -> [NodePageCandidate] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return Array(candidates.prefix(limit)) }
+
+        var scored: [(candidate: NodePageCandidate, score: Int)] = []
+        scored.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            var score = 0
+            for label in [candidate.title, candidate.slug] + candidate.aliases {
+                score = max(score, LinkSuggest.score(label.lowercased(), needle))
+            }
+            if score > 0 {
+                scored.append((candidate: candidate, score: score))
+            }
+        }
+        scored.sort {
+            $0.score != $1.score
+                ? $0.score > $1.score
+                : $0.candidate.title.count != $1.candidate.title.count
+                    ? $0.candidate.title.count < $1.candidate.title.count
+                    : $0.candidate.pageId < $1.candidate.pageId
+        }
+        return Array(scored.prefix(limit).map(\.candidate))
+    }
+
     private static func stableUnique(_ values: [String]) -> [String] {
         var output: [String] = []
         for raw in values {
@@ -88,19 +157,26 @@ struct PropertyEditSheet: View {
     let target: PropertyEditTarget
     let onSaveScalar: (String) -> Void
     let onSaveList: (PropertyListDelta) -> Void
+    let nodeCandidates: [NodePageCandidate]
+    let nodeSearch: ((String) -> [NodePageCandidate])?
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft: String
     @State private var selected: Set<String>
+    @State private var nodeFilter = ""
 
     init(
         target: PropertyEditTarget,
         onSaveScalar: @escaping (String) -> Void,
-        onSaveList: @escaping (PropertyListDelta) -> Void
+        onSaveList: @escaping (PropertyListDelta) -> Void,
+        nodeCandidates: [NodePageCandidate] = [],
+        nodeSearch: ((String) -> [NodePageCandidate])? = nil
     ) {
         self.target = target
         self.onSaveScalar = onSaveScalar
         self.onSaveList = onSaveList
+        self.nodeCandidates = nodeCandidates
+        self.nodeSearch = nodeSearch
         _draft = State(initialValue: target.value)
         _selected = State(initialValue: Set(PropertyEditing.multiSelectValues(target.value)))
     }
@@ -130,6 +206,7 @@ struct PropertyEditSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
@@ -170,6 +247,24 @@ struct PropertyEditSheet: View {
                     }
                 }
             }
+        case .node:
+            TextField("Search pages", text: $nodeFilter)
+                .textInputAutocapitalization(.never)
+            ForEach(filteredNodeCandidates) { page in
+                Button {
+                    draft = page.pageId
+                    nodeFilter = page.title
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(page.title).foregroundStyle(.primary)
+                            Text(page.slug).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if draft == page.pageId { Image(systemName: "checkmark") }
+                    }
+                }
+            }
         case .checkbox:
             Toggle("Checked", isOn: Binding(
                 get: { PropertyEditing.isChecked(draft) },
@@ -199,6 +294,17 @@ struct PropertyEditSheet: View {
             TextField("Value", text: $draft, axis: .vertical)
                 .lineLimit(1...4)
         }
+    }
+
+    private var filteredNodeCandidates: [NodePageCandidate] {
+        if let nodeSearch {
+            return nodeSearch(nodeFilter)
+        }
+        return PropertyEditing.rankNodeCandidates(
+            nodeCandidates,
+            query: nodeFilter,
+            limit: nodeCandidates.count
+        )
     }
 
     private func save() {
