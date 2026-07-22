@@ -914,9 +914,8 @@ fn forwarded_merge_propagates_only_uncontested_block_deletions() {
     let prior = tesela_core::note_tree::parse_note(&format!(
         "- delete me <!-- bid:{deleted_bid} -->\n- keep me <!-- bid:{retained_bid} -->\n"
     ));
-    let source = tesela_core::note_tree::parse_note(&format!(
-        "- keep me <!-- bid:{retained_bid} -->\n"
-    ));
+    let source =
+        tesela_core::note_tree::parse_note(&format!("- keep me <!-- bid:{retained_bid} -->\n"));
 
     let mut unchanged_target = prior.clone();
     merge_forwarded_source_changes(Some(&prior), &source, &mut unchanged_target);

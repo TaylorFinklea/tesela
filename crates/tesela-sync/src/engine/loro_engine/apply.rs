@@ -37,8 +37,9 @@ impl ImportMode {
 /// Result of [`LoroEngine::apply_import`]. Carries the only per-path-variable
 /// output: whether Loro left ops PENDING after the import (a causal gap
 /// surfaced by `apply_doc_update_status`; discarded by the other two publics).
-struct ImportOutcome {
-    pending: bool,
+pub(super) struct ImportOutcome {
+    pub(super) pending: bool,
+    pub(super) forwarded_targets: Vec<[u8; 16]>,
 }
 
 impl LoroEngine {
@@ -68,7 +69,10 @@ impl LoroEngine {
                 "tesela-sync/loro: ignoring inbound update for tombstoned document {} without a forwarding target",
                 hex_id(&source_note_id)
             );
-            return Ok(ImportOutcome { pending: false });
+            return Ok(ImportOutcome {
+                pending: false,
+                forwarded_targets: Vec::new(),
+            });
         };
         // Never raw-import a source stream into a different target document:
         // first-send relay frames and snapshot retries both use this delta
@@ -342,6 +346,7 @@ impl LoroEngine {
             doc.commit();
             self.refresh_note_derived(note_id, &doc).await;
         }
+        let mut forwarded_targets = Vec::new();
         if !pending {
             if let Some((before_content, was_deleted)) = forwarded_source_before {
                 let after_content = forwarded_peer_content
@@ -355,12 +360,21 @@ impl LoroEngine {
                     // pre-delete state: the latter may already contain an offline
                     // edit delivered before the directory/forwarding record.
                     let prior = (!source_became_deleted).then_some(before_content.as_str());
-                    self.replay_forwarded_source_after_import(
-                        source_note_id,
-                        prior,
-                        forwarded_peer_content.as_deref(),
-                    )
-                    .await?;
+                    match self
+                        .replay_forwarded_source_after_import(
+                            source_note_id,
+                            prior,
+                            forwarded_peer_content.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(Some(target)) => forwarded_targets.push(target),
+                        Ok(None) => {}
+                        Err(SyncError::Protocol(error)) => tracing::warn!(
+                            "tesela-sync/loro: retaining fail-closed direct forwarding state: {error}"
+                        ),
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -369,8 +383,10 @@ impl LoroEngine {
         // source: its precise in-memory pre-frame baseline above is stronger
         // than the persisted rename baseline used by deferred replay.
         if source_note_id == PAGE_DIRECTORY_DOC_ID || resolved_target == source_note_id {
-            self.replay_resident_forwarded_sources_after_directory_import()
-                .await?;
+            forwarded_targets.extend(
+                self.replay_resident_forwarded_sources_after_directory_import()
+                    .await?,
+            );
         }
         // An imported CRDT state is authoritative just like a local mutation:
         // durable snapshot first, then its Markdown projection. Without this
@@ -386,7 +402,12 @@ impl LoroEngine {
         if !pending && self.inner.materialize_dir.is_some() {
             self.materialize_note_checked(note_id).await?;
         }
-        Ok(ImportOutcome { pending })
+        forwarded_targets.sort_unstable();
+        forwarded_targets.dedup();
+        Ok(ImportOutcome {
+            pending,
+            forwarded_targets,
+        })
     }
 
     /// Apply a peer's Loro update bytes into the addressed note's doc —
@@ -485,6 +506,16 @@ impl LoroEngine {
     /// itself runs the SAME protected path as `import_doc_update` (twin
     /// tombstone + disjoint-twin heal + derived refresh + persist), so behavior
     /// is identical; only the pending bool is additionally reported.
+    /// Internal status plus every live target changed by forwarding replay.
+    pub(super) async fn apply_doc_update_outcome(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<ImportOutcome> {
+        self.apply_import(note_id, bytes, ImportMode::Delta).await
+    }
+
+    /// Apply one received update and report whether Loro retained pending ops.
     pub async fn apply_doc_update_status(
         &self,
         note_id: [u8; 16],

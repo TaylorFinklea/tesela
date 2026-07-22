@@ -1099,14 +1099,16 @@ impl LoroEngine {
             // status-aware path runs the SAME protected apply as
             // `import_doc_update` but additionally surfaces Loro's pending
             // status instead of discarding it.
-            match LoroEngine::apply_doc_update_status(self, *note_id, bytes).await {
-                Ok(false) => {
+            match self.apply_doc_update_outcome(*note_id, bytes).await {
+                Ok(outcome) if !outcome.pending => {
+                    report.forwarded_targets.extend(outcome.forwarded_targets);
                     report.applied.push(*note_id);
                     // A clean apply HEALED any prior causal gap for this note
                     // (the missing base arrived) — drop it from the ledger.
                     self.clear_pending_import(*note_id).await;
                 }
-                Ok(true) => {
+                Ok(outcome) => {
+                    report.forwarded_targets.extend(outcome.forwarded_targets);
                     tracing::warn!(
                         "tesela-sync/loro: relay update for {} imported PENDING \
                          (causal gap) — recording in ledger + needs snapshot catch-up",
@@ -1126,6 +1128,8 @@ impl LoroEngine {
                 }
             }
         }
+        report.forwarded_targets.sort_unstable();
+        report.forwarded_targets.dedup();
         report
     }
 
@@ -2543,7 +2547,9 @@ impl LoroEngine {
         Ok(Some(target_note_id))
     }
 
-    async fn replay_resident_forwarded_sources_after_directory_import(&self) -> SyncResult<()> {
+    async fn replay_resident_forwarded_sources_after_directory_import(
+        &self,
+    ) -> SyncResult<Vec<[u8; 16]>> {
         let source_ids = self
             .inner
             .docs
@@ -2553,6 +2559,7 @@ impl LoroEngine {
             .copied()
             .filter(|note_id| !Self::is_special_doc(note_id))
             .collect::<Vec<_>>();
+        let mut forwarded_targets = Vec::new();
         for source_id in source_ids {
             let source_doc = self.lazy_load_doc(source_id).await;
             let source_content = source_doc.as_ref().map(doc_full_markdown);
@@ -2596,24 +2603,29 @@ impl LoroEngine {
                     }
                 }
             }
-            if let Err(error) = self
+            match self
                 .replay_forwarded_source_after_import(source_id, None, source_content.as_deref())
                 .await
             {
-                // A merged directory conflict is valid fail-closed authority,
-                // not an import failure. Retain and persist the conflicting
-                // directory snapshot; only semantic forwarding is blocked.
-                if matches!(&error, SyncError::Protocol(message) if message.contains("forwarding") || message.contains("conflict") || message.contains("unloaded target"))
-                {
-                    tracing::warn!(
-                        "tesela-sync/loro: retaining fail-closed page-directory state: {error}"
-                    );
-                    continue;
+                Ok(Some(target)) => forwarded_targets.push(target),
+                Ok(None) => {}
+                Err(error) => {
+                    // A merged directory conflict is valid fail-closed authority,
+                    // not an import failure. Every Protocol error from this
+                    // semantic-only replay means the forwarding chain cannot be
+                    // proven safe right now; retain the imported CRDT state and
+                    // skip replay. Storage failures still abort persistence.
+                    if matches!(&error, SyncError::Protocol(_)) {
+                        tracing::warn!(
+                            "tesela-sync/loro: retaining fail-closed page-directory state: {error}"
+                        );
+                        continue;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
         }
-        Ok(())
+        Ok(forwarded_targets)
     }
 
     /// Persist canonical PageIds for legacy snapshots before their note

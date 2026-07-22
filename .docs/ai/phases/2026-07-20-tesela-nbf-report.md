@@ -20,7 +20,7 @@ Status: implementation complete; Bead open pending repository-wide gate cleanup
 Passing:
 
 - `cargo check -p tesela-sync`
-- `cargo test -p tesela-sync page_directory` — 19 passed
+- `cargo test -p tesela-sync page_directory` — 20 passed
 - `cargo test -p tesela-sync rename`
 - `cargo test -p tesela-backup --test authority_capture` — 4 passed
 - `cargo test -p tesela-server --test restore_drill` — 3 passed
@@ -40,13 +40,13 @@ Non-feature repository-wide blockers:
 
 - `cargo clippy --workspace -- -D warnings` reaches existing `tesela-tui/src/app.rs` `field_reassign_with_default` and existing `tesela-server/src/sync_relay.rs` doc-continuation warnings. New sync Clippy findings were corrected.
 - `cargo test -p tesela-server` passes 157 tests but the two `serve_in_process` 20-second shutdown tests time out only under full parallel load; the same suite passes in isolation (25.58 s total).
-- Consequently `cargo test --workspace` was not represented as passing independently; the constituent changed-package suites and focused gates above were run.
+- `cargo test --workspace` was run twice after the relation fixes. Relay convergence is green; both runs stop only on the same two parallel `serve_in_process` 20-second timeouts documented above.
 
 ## Review
 
-Fresh adversarial review identified forwarding-order, deletion, conflict-import, dispatch, and cache-invalidation risks. The reviewed snapshot was stale for full-snapshot routing, persisted-baseline replay, conflict retention, and web invalidation; current code already addresses those paths. One valid gap remained: semantic replay omitted source block deletions. The merge now deletes only when the target still equals the frozen pre-rename source block, with a regression proving concurrent target edits survive.
+Fresh adversarial review identified forwarding-order, deletion, conflict-import, dispatch, and cache-invalidation risks. Full-snapshot routing, persisted-baseline replay, conflict retention, and web invalidation were already repaired. Follow-up fixes added uncontested forwarded block deletion, fail-closed Protocol handling without aborting imported-state persistence, engine-reported direct/deferred forwarding targets, and target-specific `NoteUpdated` invalidation.
 
 ## Residual risk
 
-- Forwarded semantic target mutations currently surface through broad refresh rather than an effective-target-tagged binary delta; final target state converges, but an already-open editor may refresh rather than apply an exact-id splice.
+- Forwarded semantic target mutations emit target-specific `NoteUpdated` refetch signals, but the binary frame remains addressed to the retained source lineage; open target editors converge through authoritative refetch rather than an exact-id splice.
 - Full workspace green remains blocked by unrelated existing Clippy warnings and parallel timing sensitivity documented above. Keep `tesela-nbf` open until those required gates are clean or explicitly waived.

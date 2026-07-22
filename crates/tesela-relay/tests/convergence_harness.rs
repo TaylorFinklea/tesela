@@ -44,8 +44,8 @@ use tesela_sync::group::GroupId;
 use tesela_sync::transport::relay::RelayClient;
 use tesela_sync::wire::envelope::SyncEnvelope;
 use tesela_sync::{
-    decode_loro_relay_payload, encode_loro_relay_payload, Hlc, LoroDocUpdate, LoroEngine,
-    OpPayload, SyncEngine,
+    decode_loro_relay_payload, encode_loro_relay_payload, is_special_doc, Hlc, LoroDocUpdate,
+    LoroEngine, OpPayload, SyncEngine,
 };
 
 struct Ctx {
@@ -137,10 +137,9 @@ async fn relay_push(
     Some(seq)
 }
 
-/// Mirror of `tick`'s inbound Loro branch: poll, skip own echoes,
-/// decode the v2 payload, apply, then advance + ack the cursor to the
-/// batch watermark — which covers skipped (poisoned) rows too, exactly
-/// like the live tick. Returns `(rows_delivered, applied_count)`.
+/// Mirrors the live tick's poll/apply/ack path. Returns
+/// `(rows_delivered, applied_note_count)`; reserved registry documents may
+/// share an envelope but are not user-note mutations.
 async fn relay_pull(
     engine: &LoroEngine,
     client: &RelayClient,
@@ -156,7 +155,12 @@ async fn relay_pull(
                     .into_iter()
                     .map(|u| (u.doc, u.update_bytes))
                     .collect();
-                applied += engine.apply_relay_updates(&pairs).await.applied_count();
+                let report = engine.apply_relay_updates(&pairs).await;
+                applied += report
+                    .applied
+                    .iter()
+                    .filter(|doc_id| !is_special_doc(doc_id))
+                    .count();
             }
         }
     }
@@ -306,7 +310,7 @@ async fn quiet_period_compaction_then_new_edit_reaches_caught_up_peer() {
         .await
         .expect("a pushed");
     let (_, applied) = relay_pull(&b, &client_b, &mut cur_b, dev_b).await;
-    assert_eq!(applied, 1, "B applied A's note");
+    assert_eq!(applied, 1, "B applied A's user note");
     assert_eq!(cur_b, seq1, "B caught up to the head of the log");
     assert_converged(&a, &b, NOTE, "pre-compaction").await;
 
@@ -386,7 +390,12 @@ async fn fresh_device_bootstraps_past_gc_then_tail_polls_new_edits() {
 
     let (watermark, snaps) = client_c.fetch_snapshots().await.expect("fetch snapshots");
     assert_eq!(watermark, covers, "relay watermark = the covered push");
-    assert_eq!(snaps.len(), 2, "one snapshot per note");
+    // Two user notes plus the authoritative, synced page directory.
+    assert_eq!(
+        snaps.len(),
+        3,
+        "one snapshot per user note plus page directory"
+    );
     for (stream_id, _snapshot_seq, snap_bytes) in &snaps {
         let id: [u8; 16] = stream_id.as_slice().try_into().expect("16-byte stream id");
         c.import_doc_update(id, snap_bytes)
@@ -538,8 +547,14 @@ async fn poisoned_envelope_between_good_ones_both_good_apply_and_sync_continues(
     // ONE pull: both good envelopes apply, the poison is skipped, the
     // cursor lands past it.
     let (rows, applied) = relay_pull(&b, &client_b, &mut cur_b, dev_b).await;
-    assert_eq!(rows, 2, "both good envelopes delivered around the poison");
-    assert_eq!(applied, 2, "both good envelopes applied");
+    // The page-directory update shares the first valid envelope but is
+    // excluded from this helper's user-note count. The raw poison remains
+    // undeliverable and does not count as a delivered row.
+    assert_eq!(
+        rows, 2,
+        "both valid note envelopes delivered around the poison"
+    );
+    assert_eq!(applied, 2, "both user-note documents applied");
     assert!(
         cur_b >= good2_seq,
         "cursor advanced past the poisoned row (cursor {cur_b})"

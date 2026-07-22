@@ -127,6 +127,9 @@ pub struct ExportedDocUpdate {
 pub struct RelayApplyReport {
     /// Notes whose update imported cleanly (fully integrated).
     pub applied: Vec<[u8; 16]>,
+    /// Live target documents changed by semantic forwarding replay, including
+    /// deferred resident-source rescans triggered by another document.
+    pub forwarded_targets: Vec<[u8; 16]>,
     /// Notes whose update imported but was left PENDING by Loro — a causal
     /// gap (missing dependencies). The bytes are buffered in-memory only,
     /// so the caller should trigger an authoritative-snapshot catch-up for

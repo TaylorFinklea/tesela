@@ -539,8 +539,11 @@ pub async fn apply_inbound_delta(
     }
     // Notify web (finding #4) for each distinct note that visibly changed
     // (cleanly applied, or healed by the snapshot catch-up).
+    let mut visible_docs = report.applied.clone();
+    visible_docs.extend(healed.iter().copied());
+    visible_docs.extend(report.forwarded_targets.iter().copied());
     let mut seen: Vec<[u8; 16]> = Vec::new();
-    for doc in report.applied.iter().chain(healed.iter()) {
+    for doc in &visible_docs {
         if seen.contains(doc) {
             continue;
         }
