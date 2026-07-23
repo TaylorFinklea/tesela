@@ -2,10 +2,10 @@
 Branch: `main`
 
 ## Plan
-- [x] `tesela-nbf` complete; unrelated repository-wide failures explicitly waived
+- [ ] Run `tesela-8c9v`: stock Logseq + extensions audit; `.1`–`.5` are user-verify gates, `.6` adjudicates
 
 ## Blockers
-- None
+- Physical iPhone/iPad checks and disposable-graph restore/conflict drills require Taylor
 
 ## Open questions
-- None
+- None; approved sequence is Logseq extensions → Emacs/mobile pilot → Logseq-derived Tesela

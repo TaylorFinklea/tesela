@@ -1,5 +1,7 @@
 # Tesela Roadmap
 
+> **DIRECTION PAUSED (2026-07-22):** independent Tesela product work is frozen while `tesela-8c9v` tests stock Logseq DB plus extensions. Approved fallback order is Emacs/Org plus a mobile companion, then—only if that pilot fails—a rebranded Logseq fork as the new Tesela. The roadmap below preserves the prior product arc; the actionable queue lives in beads. Rationale: `decisions.md` 2026-07-22.
+
 ## Product Roadmap — refined order (2026-06-03, Taylor + agent)
 
 Taylor's proposed order, refined together. Arc = **infra → platform → features → collaboration**. Sync spec: `phases/2026-06-03-encrypted-replica-spine-spec.md`.

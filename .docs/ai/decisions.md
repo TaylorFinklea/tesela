@@ -976,3 +976,11 @@ A reserved synced Loro page-directory maps PageId to current legacy document sta
 Rename remains create-copy/delete. It writes a restartable forwarding intent, copies the original PageId to the new document, publishes aliases/forwarding before tombstoning the source, and retains stale source-stream edits on their original lineage. Semantic replay forwards only changes relative to the frozen pre-rename baseline; uncontested edits/additions/deletions reach the live target, while conflicting target edits win and incompatible renames remain explicit conflicts.
 
 Node properties store exactly one canonical PageId through existing typed property containers. A rebuildable `relation_edges` projection is separate from wiki-link `links`; backlinks combine both additively. Legacy strings and deleted/unresolved/conflicted targets remain visible but non-navigable. JQL resolves Node RHS values through explicit page-directory context, with exact slug precedence and fail-closed diagnostics for unresolved or ambiguous values.
+
+### 2026-07-22 — Test Logseq extensions, then Emacs/mobile, before a Logseq-derived Tesela
+
+**Decision:** freeze Tesela as an independent product stack and preserve its source/history. Test personal-system replacements in this order: stock Logseq DB plus supported configuration/plugins; Emacs/Org plus a mobile companion; only then, if both fail named non-negotiable requirements, a rebranded Logseq fork as the new Tesela.
+
+The order distinguishes expected fit from experiment cost. Fable 5 and Kimi K3 independently ranked expected requirement fit as Logseq extensions > narrow Logseq fork > Emacs. Taylor chose Emacs second because it is cheaper and more reversible to pilot than accepting permanent upstream, regression, signing, distribution, AGPL, and trademark obligations. Emacs must still prove the existing task/graph/rich-mobile/no-silent-loss requirements; those requirements are not relaxed merely to make the pilot pass.
+
+The stock Logseq trial must prove supported desktop command reach, rich iPhone/iPad use, Parakeet capture, disposable-graph recovery, and no silent edit loss. A blocking result triggers a separate Emacs/mobile pilot spec, not a fork. A fork requires a later explicit architecture decision and may not be used as an unreviewed repair for Logseq DB schema, storage, sync, validation, or conflict semantics.
